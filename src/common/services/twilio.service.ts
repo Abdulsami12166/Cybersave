@@ -11,14 +11,22 @@ export class TwilioService {
     const sid = process.env.TWILIO_ACCOUNT_SID;
     const token = process.env.TWILIO_AUTH_TOKEN;
     this.fromNumber = process.env.TWILIO_PHONE_NUMBER || '+12015550123';
-    if (sid && token) {
-      this.client = new Twilio(sid, token);
+
+    if (sid && token && sid.startsWith('AC')) {
+      try {
+        this.client = new Twilio(sid, token);
+        this.logger.log('Twilio client initialized successfully.');
+      } catch (error) {
+        this.logger.warn(`Twilio init failed (${error.message}). Operating in SMS fallback mode.`);
+      }
+    } else {
+      this.logger.warn('Twilio Account SID missing or invalid (must start with AC). Operating in SMS fallback mode.');
     }
   }
 
   async sendSms(to: string, body: string) {
     if (!this.client) {
-      this.logger.warn('Twilio credentials missing. Mocking SMS send.');
+      this.logger.warn(`[SMS Fallback] To: ${to} | Message: "${body}"`);
       return { sid: 'mock-sms-sid-123' };
     }
 
