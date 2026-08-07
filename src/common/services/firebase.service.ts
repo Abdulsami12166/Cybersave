@@ -9,33 +9,82 @@ export class FirebaseService implements OnModuleInit {
   onModuleInit() {
     try {
       if (!admin.apps.length) {
-        const serviceAccountJson = process.env.FIREBASE_SERVICE_ACCOUNT_JSON;
-        if (serviceAccountJson) {
-          const serviceAccount = JSON.parse(serviceAccountJson);
-          admin.initializeApp({
-            credential: admin.credential.cert(serviceAccount),
-          });
+        const credential = this.getFirebaseCredential();
+        if (credential) {
+          admin.initializeApp({ credential });
           this.isInitialized = true;
-          this.logger.log('Firebase Admin initialized successfully');
+          this.logger.log('Firebase Admin SDK initialized successfully.');
         } else {
-          this.logger.warn('FIREBASE_SERVICE_ACCOUNT_JSON missing. Running in fallback mode.');
+          this.logger.warn(
+            'Firebase config missing or incomplete in env. Operating in fallback mock mode.',
+          );
         }
       } else {
         this.isInitialized = true;
       }
     } catch (error) {
-      this.logger.warn(`Firebase Admin init warning: ${error.message}. Running in fallback mode.`);
+      this.logger.warn(
+        `Firebase Admin SDK init warning: ${error.message}. Operating in fallback mock mode.`,
+      );
     }
   }
 
-  async verifyIdToken(idToken: string) {
+  private getFirebaseCredential() {
+    // Check Option 1: Full JSON string
+    const jsonStr = process.env.FIREBASE_SERVICE_ACCOUNT_JSON;
+    if (jsonStr && !jsonStr.includes('your_')) {
+      try {
+        const parsed = JSON.parse(jsonStr);
+        if (parsed.private_key) {
+          parsed.private_key = parsed.private_key.replace(/\\n/g, '\n');
+        }
+        return admin.credential.cert(parsed);
+      } catch (e) {
+        this.logger.warn(`Failed to parse FIREBASE_SERVICE_ACCOUNT_JSON: ${e.message}`);
+      }
+    }
+
+    // Check Option 2: Individual variables
+    const projectId = process.env.FIREBASE_PROJECT_ID;
+    const clientEmail = process.env.FIREBASE_CLIENT_EMAIL;
+    let privateKey = process.env.FIREBASE_PRIVATE_KEY;
+
+    if (
+      projectId &&
+      clientEmail &&
+      privateKey &&
+      !projectId.includes('your_') &&
+      !clientEmail.includes('your_') &&
+      !privateKey.includes('YOUR_')
+    ) {
+      if (privateKey.startsWith('"') && privateKey.endsWith('"')) {
+        privateKey = privateKey.slice(1, -1);
+      }
+      privateKey = privateKey.replace(/\\n/g, '\n');
+
+      return admin.credential.cert({
+        projectId,
+        clientEmail,
+        privateKey,
+      });
+    }
+
+    return null;
+  }
+
+  async verifyIdToken(idToken: string): Promise<{ uid: string; email: string; phone_number?: string }> {
     if (!this.isInitialized || idToken.startsWith('mock-')) {
-      this.logger.warn(`Mocking verification for token: ${idToken}`);
+      this.logger.log(`Mocking verification for token: ${idToken}`);
       const mockUid = idToken.replace('mock-', '') || 'mock-user-123';
       return { uid: mockUid, email: `${mockUid}@cybersave.test`, phone_number: '+919876543210' };
     }
     try {
-      return await admin.auth().verifyIdToken(idToken);
+      const decoded = await admin.auth().verifyIdToken(idToken);
+      return {
+        uid: decoded.uid,
+        email: decoded.email || `${decoded.uid}@cybersave.gov.in`,
+        phone_number: decoded.phone_number,
+      };
     } catch (error) {
       this.logger.error('Firebase token verification failed', error);
       throw error;
