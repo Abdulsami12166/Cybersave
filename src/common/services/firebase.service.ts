@@ -1,22 +1,25 @@
 import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
-import * as firebaseAdmin from 'firebase-admin';
+import * as firebaseAdminModule from 'firebase-admin';
 
 @Injectable()
 export class FirebaseService implements OnModuleInit {
   private readonly logger = new Logger('FirebaseService');
   private isInitialized = false;
+  private adminRef: any = null;
 
   onModuleInit() {
     try {
-      const adminModule: any = firebaseAdmin;
-      const apps = adminModule.apps || (adminModule.default && adminModule.default.apps) || [];
+      const admin: any = (firebaseAdminModule as any).default || firebaseAdminModule;
+      this.adminRef = admin;
+
+      const apps = admin.apps || (firebaseAdminModule as any).apps || [];
       if (!apps.length) {
-        const credential = this.getFirebaseCredential();
+        const credential = this.getFirebaseCredential(admin);
         if (credential) {
-          if (typeof adminModule.initializeApp === 'function') {
-            adminModule.initializeApp({ credential });
-          } else if (adminModule.default && typeof adminModule.default.initializeApp === 'function') {
-            adminModule.default.initializeApp({ credential });
+          if (typeof admin.initializeApp === 'function') {
+            admin.initializeApp({ credential });
+          } else if (admin.default && typeof admin.default.initializeApp === 'function') {
+            admin.default.initializeApp({ credential });
           }
           this.isInitialized = true;
           this.logger.log('Firebase Admin SDK initialized successfully.');
@@ -35,11 +38,15 @@ export class FirebaseService implements OnModuleInit {
     }
   }
 
-  private getFirebaseCredential() {
-    const adminModule: any = firebaseAdmin;
-    const credentialObj = adminModule.credential || (adminModule.default && adminModule.default.credential);
-    if (!credentialObj || typeof credentialObj.cert !== 'function') {
-      this.logger.error('Firebase Admin SDK credential object not found.');
+  private getFirebaseCredential(admin: any) {
+    const credentialFactory =
+      admin?.credential ||
+      (firebaseAdminModule as any)?.credential ||
+      admin?.default?.credential ||
+      (firebaseAdminModule as any)?.default?.credential;
+
+    if (!credentialFactory || typeof credentialFactory.cert !== 'function') {
+      this.logger.warn('Firebase Admin credential.cert method not available. Operating in fallback mock mode.');
       return null;
     }
 
@@ -54,7 +61,7 @@ export class FirebaseService implements OnModuleInit {
           if (parsed.private_key) {
             parsed.private_key = parsed.private_key.replace(/\\n/g, '\n');
           }
-          const cert = credentialObj.cert(parsed);
+          const cert = credentialFactory.cert(parsed);
           this.logger.log('Firebase Service Account loaded from FIREBASE_SERVICE_ACCOUNT_JSON.');
           return cert;
         } catch (e) {
@@ -68,15 +75,7 @@ export class FirebaseService implements OnModuleInit {
     const clientEmail = process.env.FIREBASE_CLIENT_EMAIL;
     const rawPrivateKey = process.env.FIREBASE_PRIVATE_KEY;
 
-    this.logger.log(
-      `Checking individual Firebase env vars: FIREBASE_PROJECT_ID=${projectId ? 'SET' : 'MISSING'}, FIREBASE_CLIENT_EMAIL=${clientEmail ? 'SET' : 'MISSING'}, FIREBASE_PRIVATE_KEY=${rawPrivateKey ? 'SET' : 'MISSING'}`,
-    );
-
-    const isProjectValid = Boolean(projectId && !projectId.includes('your_'));
-    const isEmailValid = Boolean(clientEmail && !clientEmail.includes('your_'));
-    const isKeyValid = Boolean(rawPrivateKey && !rawPrivateKey.includes('YOUR_'));
-
-    if (isProjectValid && isEmailValid && isKeyValid && projectId && clientEmail && rawPrivateKey) {
+    if (projectId && clientEmail && rawPrivateKey && !projectId.includes('your_')) {
       try {
         let privateKey = rawPrivateKey;
         if (privateKey.startsWith('"') && privateKey.endsWith('"')) {
@@ -84,7 +83,7 @@ export class FirebaseService implements OnModuleInit {
         }
         privateKey = privateKey.replace(/\\n/g, '\n');
 
-        const cert = credentialObj.cert({
+        const cert = credentialFactory.cert({
           projectId,
           clientEmail,
           privateKey,
@@ -106,9 +105,9 @@ export class FirebaseService implements OnModuleInit {
       return { uid: mockUid, email: `${mockUid}@cybersave.test`, phone_number: '+919876543210' };
     }
     try {
-      const adminModule: any = firebaseAdmin;
-      const authObj = adminModule.auth ? adminModule.auth() : adminModule.default.auth();
-      const decoded = await authObj.verifyIdToken(idToken);
+      const admin = this.adminRef || firebaseAdminModule;
+      const authFn = admin.auth || admin.default?.auth;
+      const decoded = await authFn().verifyIdToken(idToken);
       return {
         uid: decoded.uid,
         email: decoded.email || `${decoded.uid}@cybersave.gov.in`,
@@ -126,9 +125,9 @@ export class FirebaseService implements OnModuleInit {
       return { success: true };
     }
     try {
-      const adminModule: any = firebaseAdmin;
-      const messagingObj = adminModule.messaging ? adminModule.messaging() : adminModule.default.messaging();
-      const response = await messagingObj.send({
+      const admin = this.adminRef || firebaseAdminModule;
+      const messagingFn = admin.messaging || admin.default?.messaging;
+      const response = await messagingFn().send({
         token: fcmToken,
         notification: { title, body },
         data,
