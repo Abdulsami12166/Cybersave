@@ -9,37 +9,48 @@ export class RedisService implements OnModuleInit, OnModuleDestroy {
 
   onModuleInit() {
     const redisUrl = process.env.REDIS_URL;
-    if (redisUrl) {
+    if (redisUrl && !redisUrl.includes('your_redis')) {
       try {
+        const isTls = redisUrl.startsWith('rediss://');
+
         this.client = new Redis(redisUrl, {
-          maxRetriesPerRequest: 3,
+          maxRetriesPerRequest: 2,
           connectTimeout: 5000,
+          enableOfflineQueue: true,
+          retryStrategy(times) {
+            if (times > 3) return null; // Stop retrying and fallback after 3 attempts
+            return Math.min(times * 500, 2000);
+          },
+          ...(isTls ? { tls: { rejectUnauthorized: false } } : {}),
         });
 
         this.client.on('connect', () => {
-          this.logger.log('Connected to remote Redis database.');
+          this.logger.log('Connected to remote Redis Cloud instance successfully.');
         });
 
         this.client.on('error', (err) => {
-          this.logger.warn(`Redis connection error: ${err.message}. Falling back to in-memory cache.`);
-          this.client = null; // force in-memory fallback
+          this.logger.warn(`Redis connection event warning: ${err.message}. Operating with fallback in-memory cache.`);
         });
       } catch (error) {
         this.logger.error('Failed to initialize Redis connection', error);
       }
     } else {
-      this.logger.warn('REDIS_URL missing from env. Operating in in-memory cache mode.');
+      this.logger.warn('REDIS_URL missing or default placeholder. Operating in in-memory cache mode.');
     }
   }
 
   async onModuleDestroy() {
     if (this.client) {
-      await this.client.quit();
+      try {
+        await this.client.quit();
+      } catch (e) {
+        // ignore quit error on shutdown
+      }
     }
   }
 
   async get(key: string): Promise<string | null> {
-    if (this.client) {
+    if (this.client && this.client.status === 'ready') {
       try {
         return await this.client.get(key);
       } catch (err) {
@@ -57,7 +68,7 @@ export class RedisService implements OnModuleInit, OnModuleDestroy {
   }
 
   async set(key: string, value: string, ttlSeconds = 3600): Promise<void> {
-    if (this.client) {
+    if (this.client && this.client.status === 'ready') {
       try {
         await this.client.set(key, value, 'EX', ttlSeconds);
         return;
@@ -73,7 +84,7 @@ export class RedisService implements OnModuleInit, OnModuleDestroy {
   }
 
   async del(key: string): Promise<void> {
-    if (this.client) {
+    if (this.client && this.client.status === 'ready') {
       try {
         await this.client.del(key);
         return;
