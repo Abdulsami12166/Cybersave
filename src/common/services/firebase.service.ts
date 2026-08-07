@@ -1,5 +1,5 @@
 import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
-const admin = require('firebase-admin');
+import * as firebaseAdmin from 'firebase-admin';
 
 @Injectable()
 export class FirebaseService implements OnModuleInit {
@@ -8,16 +8,21 @@ export class FirebaseService implements OnModuleInit {
 
   onModuleInit() {
     try {
-      const apps = admin.apps || (admin.default && admin.default.apps) || [];
+      const adminModule: any = firebaseAdmin;
+      const apps = adminModule.apps || (adminModule.default && adminModule.default.apps) || [];
       if (!apps.length) {
         const credential = this.getFirebaseCredential();
         if (credential) {
-          admin.initializeApp({ credential });
+          if (typeof adminModule.initializeApp === 'function') {
+            adminModule.initializeApp({ credential });
+          } else if (adminModule.default && typeof adminModule.default.initializeApp === 'function') {
+            adminModule.default.initializeApp({ credential });
+          }
           this.isInitialized = true;
           this.logger.log('Firebase Admin SDK initialized successfully.');
         } else {
           this.logger.warn(
-            'Firebase Admin SDK could not initialize due to missing or invalid credentials (see logs above). Operating in fallback mock mode.',
+            'Firebase Admin SDK could not initialize due to missing or invalid credentials. Operating in fallback mock mode.',
           );
         }
       } else {
@@ -31,9 +36,10 @@ export class FirebaseService implements OnModuleInit {
   }
 
   private getFirebaseCredential() {
-    const credObj = admin.credential || (admin.default && admin.default.credential);
-    if (!credObj || typeof credObj.cert !== 'function') {
-      this.logger.error('Firebase Admin SDK: cert factory method not available.');
+    const adminModule: any = firebaseAdmin;
+    const credentialObj = adminModule.credential || (adminModule.default && adminModule.default.credential);
+    if (!credentialObj || typeof credentialObj.cert !== 'function') {
+      this.logger.error('Firebase Admin SDK credential object not found.');
       return null;
     }
 
@@ -45,15 +51,10 @@ export class FirebaseService implements OnModuleInit {
       } else {
         try {
           const parsed = JSON.parse(jsonStr);
-          if (!parsed.project_id) this.logger.warn('FIREBASE_SERVICE_ACCOUNT_JSON missing "project_id"');
-          if (!parsed.client_email) this.logger.warn('FIREBASE_SERVICE_ACCOUNT_JSON missing "client_email"');
-          if (!parsed.private_key) this.logger.warn('FIREBASE_SERVICE_ACCOUNT_JSON missing "private_key"');
-
           if (parsed.private_key) {
             parsed.private_key = parsed.private_key.replace(/\\n/g, '\n');
           }
-
-          const cert = credObj.cert(parsed);
+          const cert = credentialObj.cert(parsed);
           this.logger.log('Firebase Service Account loaded from FIREBASE_SERVICE_ACCOUNT_JSON.');
           return cert;
         } catch (e) {
@@ -75,10 +76,6 @@ export class FirebaseService implements OnModuleInit {
     const isEmailValid = Boolean(clientEmail && !clientEmail.includes('your_'));
     const isKeyValid = Boolean(rawPrivateKey && !rawPrivateKey.includes('YOUR_'));
 
-    if (!isProjectValid) this.logger.warn(`FIREBASE_PROJECT_ID issue: value is "${projectId || 'undefined'}"`);
-    if (!isEmailValid) this.logger.warn(`FIREBASE_CLIENT_EMAIL issue: value is "${clientEmail || 'undefined'}"`);
-    if (!isKeyValid) this.logger.warn(`FIREBASE_PRIVATE_KEY issue: key is missing or contains placeholder text.`);
-
     if (isProjectValid && isEmailValid && isKeyValid && projectId && clientEmail && rawPrivateKey) {
       try {
         let privateKey = rawPrivateKey;
@@ -87,7 +84,7 @@ export class FirebaseService implements OnModuleInit {
         }
         privateKey = privateKey.replace(/\\n/g, '\n');
 
-        const cert = credObj.cert({
+        const cert = credentialObj.cert({
           projectId,
           clientEmail,
           privateKey,
@@ -109,7 +106,8 @@ export class FirebaseService implements OnModuleInit {
       return { uid: mockUid, email: `${mockUid}@cybersave.test`, phone_number: '+919876543210' };
     }
     try {
-      const authObj = admin.auth ? admin.auth() : admin.default.auth();
+      const adminModule: any = firebaseAdmin;
+      const authObj = adminModule.auth ? adminModule.auth() : adminModule.default.auth();
       const decoded = await authObj.verifyIdToken(idToken);
       return {
         uid: decoded.uid,
@@ -128,7 +126,8 @@ export class FirebaseService implements OnModuleInit {
       return { success: true };
     }
     try {
-      const messagingObj = admin.messaging ? admin.messaging() : admin.default.messaging();
+      const adminModule: any = firebaseAdmin;
+      const messagingObj = adminModule.messaging ? adminModule.messaging() : adminModule.default.messaging();
       const response = await messagingObj.send({
         token: fcmToken,
         notification: { title, body },
