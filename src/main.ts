@@ -1,0 +1,62 @@
+import { NestFactory } from '@nestjs/core';
+import { AppModule } from './app.module';
+import { winstonLoggerInstance } from './common/config/winston.config';
+import { GlobalExceptionFilter } from './common/filters/http-exception.filter';
+import { LoggingInterceptor } from './common/interceptors/logging.interceptor';
+import { ValidationPipe } from '@nestjs/common';
+import helmet from 'helmet';
+import compression from 'compression';
+import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
+
+async function bootstrap() {
+  const app = await NestFactory.create(AppModule, {
+    logger: winstonLoggerInstance,
+  });
+
+  // Enable CORS
+  app.enableCors({
+    origin: '*', // In production, replace with specific domain list
+    methods: 'GET,HEAD,PUT,PATCH,POST,DELETE,OPTIONS',
+    credentials: true,
+  });
+
+  // Security Headers using Helmet
+  app.use(helmet());
+
+  // Compression for bandwidth optimization
+  app.use(compression());
+
+  // Global Validation Pipe
+  app.useGlobalPipes(
+    new ValidationPipe({
+      whitelist: true,
+      transform: true,
+      forbidNonWhitelisted: true,
+      transformOptions: {
+        enableImplicitConversion: true,
+      },
+    }),
+  );
+
+  // Global HTTP Exception Filter
+  app.useGlobalFilters(new GlobalExceptionFilter());
+
+  // Global Logging Interceptor
+  app.useGlobalInterceptors(new LoggingInterceptor());
+
+  // Swagger Documentation Setup
+  const config = new DocumentBuilder()
+    .setTitle('CyberSave API')
+    .setDescription('The CyberSave enterprise production backend API documentation.')
+    .setVersion('1.0')
+    .addBearerAuth()
+    .build();
+  const document = SwaggerModule.createDocument(app, config);
+  SwaggerModule.setup('api/docs', app, document);
+
+  const port = process.env.PORT || 3000;
+  await app.listen(port);
+  winstonLoggerInstance.log(`Application is running on: http://localhost:${port}`);
+  winstonLoggerInstance.log(`Swagger docs available at: http://localhost:${port}/api/docs`);
+}
+bootstrap();
