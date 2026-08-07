@@ -31,6 +31,11 @@ export class FirebaseService implements OnModuleInit {
   }
 
   private getFirebaseCredential() {
+    const credObj = admin.credential || (admin.default && admin.default.credential);
+    if (!credObj || typeof credObj.cert !== 'function') {
+      return null;
+    }
+
     // Check Option 1: Full JSON string
     const jsonStr = process.env.FIREBASE_SERVICE_ACCOUNT_JSON;
     if (jsonStr && !jsonStr.includes('your_')) {
@@ -39,7 +44,7 @@ export class FirebaseService implements OnModuleInit {
         if (parsed.private_key) {
           parsed.private_key = parsed.private_key.replace(/\\n/g, '\n');
         }
-        return admin.credential.cert(parsed);
+        return credObj.cert(parsed);
       } catch (e) {
         this.logger.warn(`Failed to parse FIREBASE_SERVICE_ACCOUNT_JSON: ${e.message}`);
       }
@@ -63,7 +68,7 @@ export class FirebaseService implements OnModuleInit {
       }
       privateKey = privateKey.replace(/\\n/g, '\n');
 
-      return admin.credential.cert({
+      return credObj.cert({
         projectId,
         clientEmail,
         privateKey,
@@ -80,7 +85,8 @@ export class FirebaseService implements OnModuleInit {
       return { uid: mockUid, email: `${mockUid}@cybersave.test`, phone_number: '+919876543210' };
     }
     try {
-      const decoded = await admin.auth().verifyIdToken(idToken);
+      const authObj = admin.auth ? admin.auth() : admin.default.auth();
+      const decoded = await authObj.verifyIdToken(idToken);
       return {
         uid: decoded.uid,
         email: decoded.email || `${decoded.uid}@cybersave.gov.in`,
@@ -98,7 +104,8 @@ export class FirebaseService implements OnModuleInit {
       return { success: true };
     }
     try {
-      const response = await admin.messaging().send({
+      const messagingObj = admin.messaging ? admin.messaging() : admin.default.messaging();
+      const response = await messagingObj.send({
         token: fcmToken,
         notification: { title, body },
         data,

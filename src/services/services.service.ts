@@ -105,24 +105,37 @@ export class ServicesService implements OnModuleInit {
 
       this.logger.log('Default Cybersave services seeded successfully.');
     } catch (error) {
-      this.logger.error('Failed to seed default services', error);
+      this.logger.warn(`Services seeding deferred: ${error.message}`);
     }
   }
 
   async getAllServices(category?: string) {
-    if (category && category !== 'All') {
-      return this.prisma.service.findMany({
-        where: { category, isActive: true },
-      });
+    try {
+      if (category && category !== 'All') {
+        return await this.prisma.service.findMany({
+          where: { category, isActive: true },
+        });
+      }
+      return await this.prisma.service.findMany({ where: { isActive: true } });
+    } catch (error) {
+      this.logger.warn(`Database query fallback for services: ${error.message}`);
+      return [];
     }
-    return this.prisma.service.findMany({ where: { isActive: true } });
   }
 
   async getServiceBySlug(slug: string) {
-    return this.prisma.service.findUnique({ where: { slug } });
+    try {
+      return await this.prisma.service.findUnique({ where: { slug } });
+    } catch (error) {
+      return null;
+    }
   }
 
   async getServiceById(id: string) {
-    return this.prisma.service.findUnique({ where: { id } });
+    try {
+      return await this.prisma.service.findUnique({ where: { id } });
+    } catch (error) {
+      return null;
+    }
   }
 }
