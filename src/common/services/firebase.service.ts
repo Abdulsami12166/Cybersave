@@ -8,7 +8,8 @@ export class FirebaseService implements OnModuleInit {
 
   onModuleInit() {
     try {
-      if (!admin.apps.length) {
+      const apps = admin.apps || (admin.default && admin.default.apps) || [];
+      if (!apps.length) {
         const credential = this.getFirebaseCredential();
         if (credential) {
           admin.initializeApp({ credential });
