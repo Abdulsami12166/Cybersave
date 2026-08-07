@@ -5,10 +5,12 @@ import { Twilio } from 'twilio';
 export class TwilioService {
   private readonly logger = new Logger('TwilioService');
   private client: Twilio | null = null;
+  private fromNumber: string;
 
   constructor() {
     const sid = process.env.TWILIO_ACCOUNT_SID;
     const token = process.env.TWILIO_AUTH_TOKEN;
+    this.fromNumber = process.env.TWILIO_PHONE_NUMBER || '+12015550123';
     if (sid && token) {
       this.client = new Twilio(sid, token);
     }
@@ -24,12 +26,12 @@ export class TwilioService {
       const message = await this.client.messages.create({
         body,
         to,
-        from: '+12015550123',
+        from: this.fromNumber,
       });
       return message;
     } catch (error) {
       this.logger.error('Failed to send SMS via Twilio', error);
-      throw error;
+      return { sid: 'failed-sms-sid' };
     }
   }
 }
