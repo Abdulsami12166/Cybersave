@@ -10,6 +10,7 @@ import { ServicesModule } from './services/services.module';
 import { ApplicationsModule } from './applications/applications.module';
 import { WalletModule } from './wallet/wallet.module';
 import { AiModule } from './ai/ai.module';
+import { DocumentsModule } from './documents/documents.module';
 import { IntegrationsModule } from './common/services/integrations.module';
 
 @Module({
@@ -25,6 +26,7 @@ import { IntegrationsModule } from './common/services/integrations.module';
     ApplicationsModule,
     WalletModule,
     AiModule,
+    DocumentsModule,
     IntegrationsModule,
   ],
   controllers: [AppController],
