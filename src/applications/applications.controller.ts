@@ -1,7 +1,7 @@
 import { Body, Controller, Get, Param, Post, Query } from '@nestjs/common';
 import { ApplicationsService, CreateApplicationDto } from './applications.service';
 
-@Controller('applications')
+@Controller(['api/v1/applications', 'applications'])
 export class ApplicationsController {
   constructor(private readonly applicationsService: ApplicationsService) {}
 
