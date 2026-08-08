@@ -26,7 +26,8 @@ export class QueueService implements OnModuleInit {
             username: url.username || undefined,
             password: url.password || undefined,
           },
-        });
+          skipEvictionCheck: true,
+        } as any);
         this.logger.log('BullMQ CyberSaveQueue initialized.');
       } catch (err) {
         this.logger.warn(`Failed to connect BullMQ queue to Redis: ${err.message}. Operating in in-memory immediate execution mode.`);

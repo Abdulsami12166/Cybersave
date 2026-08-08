@@ -3,6 +3,7 @@ import { JwtModule } from '@nestjs/jwt';
 import { AuthService } from './auth.service';
 import { AuthController } from './auth.controller';
 import { FirebaseService } from './firebase.service';
+import { RedisService } from '../common/services/redis.service';
 import { JwtAuthGuard } from '../common/guards/jwt.guard';
 
 @Module({
@@ -11,8 +12,8 @@ import { JwtAuthGuard } from '../common/guards/jwt.guard';
       global: true, // Export JwtService globally so other modules can use the JwtAuthGuard easily
     }),
   ],
-  providers: [AuthService, FirebaseService, JwtAuthGuard],
+  providers: [AuthService, FirebaseService, RedisService, JwtAuthGuard],
   controllers: [AuthController],
-  exports: [AuthService, FirebaseService, JwtAuthGuard],
+  exports: [AuthService, FirebaseService, RedisService, JwtAuthGuard],
 })
 export class AuthModule {}
