@@ -43,8 +43,9 @@ export class SmsService {
     const number = to.replace(/^\+91|^91/, '').replace(/\D/g, '');
     const params = new URLSearchParams({
       authorization: this.fast2smsKey,
-      route: 'otp',
-      variables_values: otp,
+      route: 'q',
+      message: `Your CyberSave OTP is ${otp}. Valid for 5 minutes. Do not share.`,
+      language: 'english',
       flash: '0',
       numbers: number,
     });
