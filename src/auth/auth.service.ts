@@ -43,20 +43,11 @@ export class AuthService {
   }
 
   /**
-   * Verifies 4-digit OTP code and signs in or creates a new user.
+   * Legacy verifyOtp endpoint — Phone authentication is performed natively via Firebase 6-digit SMS verification.
    */
   async verifyOtp(verifyOtpDto: VerifyOtpDto) {
     const cleanPhone = verifyOtpDto.phone.trim().replace(/\s+/g, '');
-    const { otp, fullName, email } = verifyOtpDto;
-
-    const cachedOtp = await this.redisService.get(`otp:${cleanPhone}`);
-
-    // Verify against actual stored OTP code in Redis/Cache
-    if (!cachedOtp || cachedOtp !== otp) {
-      throw new BadRequestException('Invalid or expired OTP code.');
-    }
-
-    await this.redisService.del(`otp:${cleanPhone}`);
+    const { fullName, email } = verifyOtpDto;
 
     let user: any = await this.prisma.user.findFirst({
       where: {
@@ -257,7 +248,7 @@ export class AuthService {
             profile: {
               create: {
                 fullName,
-                phone: phone || '+919876543210',
+                phone: phone || null,
                 email,
               },
             },
