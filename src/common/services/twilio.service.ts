@@ -8,40 +8,39 @@ export class TwilioService {
   private readonly from: string;
 
   constructor() {
-    const sid = process.env.TWILIO_ACCOUNT_SID;
-    const token = process.env.TWILIO_AUTH_TOKEN;
-    const apiSecret = process.env.TWILIO_API_KEY_SECRET;
-    const realAccountSid = process.env.TWILIO_REAL_ACCOUNT_SID;
+    const accountSid = process.env.TWILIO_ACCOUNT_SID;   // AC...
+    const authToken  = process.env.TWILIO_AUTH_TOKEN;    // 32-char hex from Twilio console
+    const apiKeySid  = process.env.TWILIO_API_KEY_SID;   // SK... (optional)
+    const apiSecret  = process.env.TWILIO_API_KEY_SECRET; // API Key secret (optional)
     this.from = process.env.TWILIO_PHONE_NUMBER || '';
 
-    if (!sid || !token) {
-      this.logger.warn('Twilio credentials not set — SMS disabled.');
+    if (!this.from) {
+      this.logger.warn('TWILIO_PHONE_NUMBER not set — SMS disabled.');
       return;
     }
 
     try {
-      if (sid.startsWith('AC')) {
-        // Standard: Account SID + Auth Token
-        this.client = new Twilio(sid, token);
-      } else if (sid.startsWith('SK') && apiSecret && realAccountSid) {
-        // API Key SID + API Key Secret + Account SID
-        this.client = new Twilio(sid, apiSecret, { accountSid: realAccountSid });
-      } else if (sid.startsWith('SK') && realAccountSid) {
-        // API Key SID + Auth Token + Account SID
-        this.client = new Twilio(sid, token, { accountSid: realAccountSid });
+      if (accountSid?.startsWith('AC') && authToken) {
+        // Standard: Account SID + Auth Token (recommended)
+        this.client = new Twilio(accountSid, authToken);
+        this.logger.log(`Twilio ready (Account SID auth). From: ${this.from}`);
+      } else if (apiKeySid?.startsWith('SK') && apiSecret && accountSid?.startsWith('AC')) {
+        // API Key: SK SID + API Secret + Account SID
+        this.client = new Twilio(apiKeySid, apiSecret, { accountSid });
+        this.logger.log(`Twilio ready (API Key auth). From: ${this.from}`);
       } else {
-        this.logger.warn(`Twilio: unrecognised SID format (${sid?.slice(0, 4)}). Set TWILIO_REAL_ACCOUNT_SID if using API Key.`);
-        return;
+        this.logger.warn(
+          'Twilio: set TWILIO_ACCOUNT_SID (AC...) + TWILIO_AUTH_TOKEN, or TWILIO_API_KEY_SID + TWILIO_API_KEY_SECRET + TWILIO_ACCOUNT_SID (AC...)',
+        );
       }
-      this.logger.log(`Twilio initialized. From: ${this.from}`);
     } catch (e) {
-      this.logger.error(`Twilio init failed: ${e.message}`);
+      this.logger.error(`Twilio init error: ${e.message}`);
     }
   }
 
   async sendSms(to: string, body: string): Promise<boolean> {
-    if (!this.client || !this.from) {
-      this.logger.warn(`[SMS disabled] OTP for ${to}: "${body}"`);
+    if (!this.client) {
+      this.logger.warn(`[SMS disabled] ${to}`);
       return false;
     }
     try {
@@ -49,8 +48,8 @@ export class TwilioService {
       this.logger.log(`SMS sent to ${to} | SID: ${msg.sid}`);
       return true;
     } catch (e) {
-      this.logger.error(`SMS failed to ${to}: ${e.message}`);
-      return false; // ponytail: don't crash the OTP flow if SMS fails
+      this.logger.error(`SMS send failed to ${to}: ${e.message}`);
+      return false;
     }
   }
 }
