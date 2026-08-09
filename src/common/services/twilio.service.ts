@@ -10,7 +10,7 @@ export class TwilioService {
   constructor() {
     const sid = process.env.TWILIO_ACCOUNT_SID;
     const token = process.env.TWILIO_AUTH_TOKEN;
-    this.from = process.env.TWILIO_PHONE_NUMBER;
+    this.from = process.env.TWILIO_PHONE_NUMBER || '';
 
     if (!sid || !token || !this.from) {
       throw new Error('Missing Twilio env vars: TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_PHONE_NUMBER');
