@@ -4,7 +4,7 @@ import { AuthService } from './auth.service';
 import { AuthController } from './auth.controller';
 import { FirebaseService } from './firebase.service';
 import { RedisService } from '../common/services/redis.service';
-import { TwilioService } from '../common/services/twilio.service';
+import { SmsService } from '../common/services/sms.service';
 import { JwtAuthGuard } from '../common/guards/jwt.guard';
 
 @Module({
@@ -13,8 +13,8 @@ import { JwtAuthGuard } from '../common/guards/jwt.guard';
       global: true, // Export JwtService globally so other modules can use the JwtAuthGuard easily
     }),
   ],
-  providers: [AuthService, FirebaseService, RedisService, TwilioService, JwtAuthGuard],
+  providers: [AuthService, FirebaseService, RedisService, SmsService, JwtAuthGuard],
   controllers: [AuthController],
-  exports: [AuthService, FirebaseService, RedisService, TwilioService, JwtAuthGuard],
+  exports: [AuthService, FirebaseService, RedisService, SmsService, JwtAuthGuard],
 })
 export class AuthModule {}

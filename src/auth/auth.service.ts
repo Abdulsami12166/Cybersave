@@ -9,7 +9,7 @@ import { JwtService } from '@nestjs/jwt';
 import { PrismaService } from '../database/prisma.service';
 import { FirebaseService } from '../common/services/firebase.service';
 import { RedisService } from '../common/services/redis.service';
-import { TwilioService } from '../common/services/twilio.service';
+import { SmsService } from '../common/services/sms.service';
 import { hashPassword, comparePassword } from '../common/utils/password-crypto.util';
 import { SendOtpDto } from './dto/send-otp.dto';
 import { VerifyOtpDto } from './dto/verify-otp.dto';
@@ -24,7 +24,7 @@ export class AuthService {
     private readonly prisma: PrismaService,
     private readonly firebaseService: FirebaseService,
     private readonly redisService: RedisService,
-    private readonly twilioService: TwilioService,
+    private readonly smsService: SmsService,
     private readonly jwtService: JwtService,
   ) {}
 
@@ -40,11 +40,8 @@ export class AuthService {
     await this.redisService.set(`otp:${cleanPhone}`, otp, 300);
     this.logger.log(`[AuthService] Production OTP generated for ${cleanPhone}: ${otp}`);
 
-    // Send real SMS via Twilio / SMS Gateway
-    await this.twilioService.sendSms(
-      cleanPhone,
-      `Your CyberSave security OTP is ${otp}. Valid for 5 minutes. Do not share this code with anyone.`,
-    );
+    // Send real SMS via Fast2SMS (India) or Twilio (international)
+    await this.smsService.sendSms(cleanPhone, otp);
 
     return {
       success: true,
