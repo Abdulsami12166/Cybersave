@@ -248,7 +248,11 @@ export class AuthService {
 
       let user: any = await this.prisma.user.findFirst({
         where: {
-          OR: [{ firebaseUid: uid }, { email }],
+          OR: [
+            { firebaseUid: uid },
+            { email },
+            ...(phone ? [{ phone }] : []),
+          ],
         },
         include: { profile: true },
       });
