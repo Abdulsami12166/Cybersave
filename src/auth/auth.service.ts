@@ -27,20 +27,22 @@ export class AuthService {
   ) {}
 
   /**
-   * Generates and stores a 4-digit OTP for phone authentication.
+   * Generates and stores a dynamic 4-digit OTP for phone authentication.
    */
   async sendOtp(sendOtpDto: SendOtpDto) {
     const cleanPhone = sendOtpDto.phone.trim().replace(/\s+/g, '');
-    const otp = '1234'; // Standard default OTP for production demo / testing
+    // Generate real dynamic 4-digit OTP (e.g. 5892, 4123)
+    const otp = Math.floor(1000 + Math.random() * 9000).toString();
 
     // Store OTP in Redis / memory cache with 5 minutes TTL
     await this.redisService.set(`otp:${cleanPhone}`, otp, 300);
-    this.logger.log(`[AuthService] OTP generated for ${cleanPhone}: ${otp}`);
+    this.logger.log(`[AuthService] Production OTP generated for ${cleanPhone}: ${otp}`);
 
     return {
       success: true,
       message: 'OTP sent successfully to mobile number.',
       phone: cleanPhone,
+      otpCode: otp, // Sent to mobile client for display & automated SMS autofill simulation
     };
   }
 
@@ -53,8 +55,8 @@ export class AuthService {
 
     const cachedOtp = await this.redisService.get(`otp:${cleanPhone}`);
 
-    // Allow cached OTP or default fallback codes ('1234', '4444')
-    if (cachedOtp !== otp && otp !== '1234' && otp !== '4444') {
+    // Verify against actual stored OTP code in Redis/Cache
+    if (!cachedOtp || cachedOtp !== otp) {
       throw new BadRequestException('Invalid or expired OTP code.');
     }
 
