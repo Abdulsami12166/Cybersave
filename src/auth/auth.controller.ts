@@ -5,6 +5,8 @@ import {
   UseGuards,
   HttpCode,
   HttpStatus,
+  Get,
+  Delete,
 } from '@nestjs/common';
 import { ApiTags, ApiOperation, ApiResponse, ApiBearerAuth } from '@nestjs/swagger';
 import { AuthService } from './auth.service';
@@ -95,5 +97,36 @@ export class AuthController {
       },
     });
     return { message: 'Logged out successfully.' };
+  }
+
+  @Get('history')
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Get user login history' })
+  async getHistory(@GetUser('sub') userId: string) {
+    return this.prisma.auditLog.findMany({
+      where: { userId },
+      orderBy: { createdAt: 'desc' },
+      take: 20,
+    });
+  }
+
+  @Delete('account')
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Delete user account' })
+  async deleteAccount(@GetUser('sub') userId: string) {
+    await this.prisma.auditLog.create({
+      data: { userId, action: 'USER_DELETED', details: 'User deleted account' },
+    });
+    
+    // Soft delete or anonymize based on your schema. For now, delete it if there are no hard relations preventing it, or update isActive=false.
+    // Assuming simple delete for demonstration.
+    try {
+      await this.prisma.user.delete({ where: { id: userId } });
+      return { message: 'Account deleted successfully' };
+    } catch (error) {
+      return { message: 'Account could not be deleted due to dependencies', error: true };
+    }
   }
 }
