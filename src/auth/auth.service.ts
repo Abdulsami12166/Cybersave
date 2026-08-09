@@ -29,25 +29,16 @@ export class AuthService {
   ) {}
 
   /**
-   * Generates and stores a dynamic 4-digit OTP for phone authentication.
+   * Phone authentication is handled directly by Firebase Phone Auth (6-digit SMS).
    */
   async sendOtp(sendOtpDto: SendOtpDto) {
     const cleanPhone = sendOtpDto.phone.trim().replace(/\s+/g, '');
-    // Generate real dynamic 4-digit OTP (e.g. 5892, 4123)
-    const otp = Math.floor(1000 + Math.random() * 9000).toString();
-
-    // Store OTP in Redis / memory cache with 5 minutes TTL
-    await this.redisService.set(`otp:${cleanPhone}`, otp, 300);
-    this.logger.log(`[AuthService] Production OTP generated for ${cleanPhone}: ${otp}`);
-
-    // Send real SMS via Fast2SMS (India) or Twilio (international)
-    await this.smsService.sendSms(cleanPhone, otp);
+    this.logger.log(`[AuthService] Phone authentication request for ${cleanPhone} delegated to Firebase Phone Auth (6-digit native SMS).`);
 
     return {
       success: true,
-      message: 'OTP sent successfully to mobile number.',
+      message: 'SMS delivery managed natively by Firebase Phone Authentication.',
       phone: cleanPhone,
-      otpCode: otp, // Sent to mobile client for auto-fill simulation & toast display
     };
   }
 
