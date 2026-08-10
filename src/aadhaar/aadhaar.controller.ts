@@ -1,6 +1,6 @@
 import { Controller, Post, UseInterceptors, UploadedFile, Body, Req, UseGuards, Delete, Param, Get } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
-import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
+import { JwtAuthGuard } from '../common/guards/jwt.guard';
 import { AadhaarService } from './aadhaar.service';
 
 @Controller('v1/aadhaar')
@@ -11,7 +11,7 @@ export class AadhaarController {
   @Post('import')
   @UseInterceptors(FileInterceptor('file'))
   async importAadhaar(
-    @UploadedFile() file: Express.Multer.File,
+    @UploadedFile() file: any,
     @Body('shareCode') shareCode: string,
     @Req() req: any
   ) {

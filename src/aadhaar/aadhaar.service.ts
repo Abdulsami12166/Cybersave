@@ -1,6 +1,6 @@
 import { Injectable, BadRequestException, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../database/prisma.service';
-import * as AdmZip from 'adm-zip';
+import AdmZip = require('adm-zip');
 import * as xml2js from 'xml2js';
 import * as crypto from 'crypto';
 
@@ -8,7 +8,7 @@ import * as crypto from 'crypto';
 export class AadhaarService {
   constructor(private prisma: PrismaService) {}
 
-  async processAadhaarZip(userId: string, file: Express.Multer.File, shareCode: string) {
+  async processAadhaarZip(userId: string, file: any, shareCode: string) {
     if (!file) throw new BadRequestException('No file provided');
     if (!shareCode || shareCode.length !== 4) throw new BadRequestException('Invalid Share Code');
     
@@ -26,7 +26,7 @@ export class AadhaarService {
       const zipEntries = zip.getEntries();
       if (zipEntries.length === 0) throw new BadRequestException('Empty ZIP file');
       
-      const xmlEntry = zipEntries.find(e => e.entryName.endsWith('.xml'));
+      const xmlEntry = zipEntries.find((e: any) => e.entryName.endsWith('.xml'));
       if (!xmlEntry) throw new BadRequestException('No XML found in the ZIP');
 
       // In a real environment, zip.readAsText(xmlEntry, shareCode) would decrypt. 
