@@ -53,6 +53,7 @@ model User {
   wallet        Wallet?
   applications  Application[]
   documents     DocumentUpload[]
+  aadhaarDocs   AadhaarDocument[]
   notifications Notification[]
   auditLogs     AuditLog[]
 
@@ -202,4 +203,27 @@ model AuditLog {
 
   @@index([userId])
   @@index([createdAt])
+}
+
+model AadhaarDocument {
+  id                 String   @id @default(uuid())
+  userId             String
+  user               User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  documentType       String   @default("OFFLINE_EKYC")
+  referenceId        String?
+  verificationStatus String   @default("NOT_IMPORTED")
+  verificationMethod String   @default("UIDAI_XML")
+  name               String?
+  gender             String?
+  dateOfBirth        String?
+  yearOfBirth        String?
+  address            String?
+  photoStorageKey    String?
+  fileStorageKey     String?
+  uploadedAt         DateTime @default(now())
+  verifiedAt         DateTime?
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+
+  @@index([userId])
 }

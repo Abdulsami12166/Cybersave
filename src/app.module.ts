@@ -12,6 +12,7 @@ import { WalletModule } from './wallet/wallet.module';
 import { AiModule } from './ai/ai.module';
 import { DocumentsModule } from './documents/documents.module';
 import { IntegrationsModule } from './common/services/integrations.module';
+import { AadhaarModule } from './aadhaar/aadhaar.module';
 
 @Module({
   imports: [
@@ -28,6 +29,7 @@ import { IntegrationsModule } from './common/services/integrations.module';
     AiModule,
     DocumentsModule,
     IntegrationsModule,
+    AadhaarModule,
   ],
   controllers: [AppController],
   providers: [AppService],
