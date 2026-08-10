@@ -1,7 +1,7 @@
 import { Injectable, BadRequestException, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../database/prisma.service';
 import AdmZip = require('adm-zip');
-import * as xml2js from 'xml2js';
+const xml2js = require('xml2js');
 import * as crypto from 'crypto';
 
 @Injectable()
