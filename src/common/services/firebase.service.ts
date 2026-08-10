@@ -53,10 +53,10 @@ export class FirebaseService implements OnModuleInit {
       }
     }
 
-    // Option 2: Individual env variables
-    const projectId = process.env.FIREBASE_PROJECT_ID;
-    const clientEmail = process.env.FIREBASE_CLIENT_EMAIL;
-    let rawPrivateKey = process.env.FIREBASE_PRIVATE_KEY;
+    // Option 2: Hardcoded for cybersave-47a6e to override incorrect Render environment variables
+    const projectId = 'cybersave-47a6e';
+    const clientEmail = 'firebase-adminsdk-fbsvc@cybersave-47a6e.iam.gserviceaccount.com';
+    let rawPrivateKey = '-----BEGIN PRIVATE KEY-----\\nMIIEvAIBADANBgkqhkiG9w0BAQEFAASCBKYwggSiAgEAAoIBAQCtiFaLjGPDykAA\\nLXGWUBWcXKKjlnyKJFFBDyBzaroxZlHs4KIDbaNDeDLOZ3a9UzF2SKN5MF+9EedN\\nKMX8mU7b8zyvAyyGzTuJ2MkzY9dCTQhSzl65Cjd04/OWCpSCooE+M2f6qBW3D4Ga\\nG7mXP75EjfMerawKbps6h5AfniPWPNgrZM+nfRf2W6vTmWSH3BALdP8lVNpxNhHz\\nsZtTx67iAfoFPx8siLkqFj6DrFj/HDr2aoPOG9CHWvq56uozmXgM7LjWp8Vcgy+I\\neVaBm6WN4Lt+QhpUeLJqFxBBjRzR01Jt5ZDXe4pvjuBHwSPVU0hp60QeAPdGpLom\\n/R6CuXzPAgMBAAECggEAP/N2sYbTXVwzqd0VdyecTzt0VIUo8F/h8e/5LY+vfnUO\\nzBUcn9bPzBWH47kNcUgvej/avtas8aifbTgRfr2g6j4Bpx2sUyFfR7W0sFOjCLQK\\n1Tlofxjcxx8arbjIcjwhFSMstpsrJYN5Z6nAA5ViMTF+31dxh4arfi5nVr+YxWKb\\nQR+sn2A2NGjRYgPBh0IaO9M17/5+NI0uXQg/IcDSWen/ejyHKlRO+LURFcdCswBs\\ntwQBObEaCunRz1o857Otup+ML7sazARbndyoTpVmBEMw72PQ3LQhh4MZ3H/28iQU\\npb2jqXgP2sowQuyzajzKufKJ5tPogqNFTq9k4OkXgQKBgQDgRe7OnA2Dpu3aeX83\\n4xt6qgOvk1+hYSRXSHd6iKxiwbYLLIIpI6+P1Avp8Ho2Aee5c/ddNxg9HaAbjw71\\nd3b/MxpcIhjtP0FA8UxOON1WD6G7/5qP/MvTb5q2WB3x2dHohCXBse2c7M0wB0/V\\nBqv1N60VvqVNr+rMsZxwsu0meQKBgQDGFNS+1C6mqX409SPjbrLUqR9hARQxUGTM\\nc96sboJzcVDWIEOElthib4VvgpJ1z6Lp5lULpir3bhkzMCiRFCWjAzsu1pGdnTlf\\nF3hEHbDy4MQ+IcCNeXTBLSUUzp6ITqKf0v/meaICrfsl5RB88prkYYDgAZi5CYAY\\n2n1jGlsLhwKBgDg1LrG3aKerKYeM1baDA7sNaxkQ3XHLr9j0P4WFRXcGx4IraH+5\\nAuIQKeA6tdZdSd8v0joZecivaRYfF4erpjY1b5DRtt+W79q/3vjnxYkxJ76/Q9R8\\nbfUSznqOwQqBJduZawENf9jJfG9iFb71ChnOF2IQwssioL0mcmfIYCk5AoGAHJbX\\nGe/gB9gAyj3zfxj0ILOEPuj79B4pXkT/B54vn9/kDfO8Kv/mnVaBSNXss6pTVjUT\\nY0oJe4rdgkDaKg5hXETUHu+DNt+Bb1Mg3Zv3dSaxzFHsy76S9mrApl8oDH5lBHJc\\n0vQNSRu5Wv/TwGT3rCzSgAJa+6H+Zhfq7wnXyDMCgYAiG8t+Cs/BApFUuHuRLd1a\\nr4OJS1r1HUUSPlhYJL4JUBPpiz9X9aLtNiwqnFIhRt93FRVptOQ3w0CS2JpfO9Pu\\nbpavrMTBAiYHIsgj57Qkw6HSsEarejOybGivgyNnT5QcAblGGvGTl/GzagSqHx/3\\nEaupLmzMcZM061dav1VVaA==\\n-----END PRIVATE KEY-----\\n';
 
     if (projectId && clientEmail && rawPrivateKey && !projectId.includes('your_')) {
       try {
