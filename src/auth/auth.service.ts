@@ -322,7 +322,7 @@ export class AuthService {
 
     const accessToken = this.jwtService.sign(payload, {
       secret: process.env.JWT_SECRET || 'cybersave-prod-jwt-secret-key-321-secure',
-      expiresIn: (process.env.JWT_ACCESS_EXPIRATION || '15m') as any,
+      expiresIn: '7d', // Hardcoded to 7d to prevent rapid expiration lockouts
     });
 
     const refreshToken = this.jwtService.sign(payload, {
