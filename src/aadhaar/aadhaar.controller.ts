@@ -1,5 +1,13 @@
-import { Controller, Post, UseInterceptors, UploadedFile, Body, Req, UseGuards, Delete, Param, Get } from '@nestjs/common';
-import { FileInterceptor } from '@nestjs/platform-express';
+import {
+  Controller,
+  Post,
+  Body,
+  Req,
+  UseGuards,
+  Delete,
+  Param,
+  Get,
+} from '@nestjs/common';
 import { JwtAuthGuard } from '../common/guards/jwt.guard';
 import { AadhaarService } from './aadhaar.service';
 
@@ -8,14 +16,22 @@ import { AadhaarService } from './aadhaar.service';
 export class AadhaarController {
   constructor(private readonly aadhaarService: AadhaarService) {}
 
-  @Post('import')
-  @UseInterceptors(FileInterceptor('file'))
-  async importAadhaar(
-    @UploadedFile() file: any,
-    @Body('shareCode') shareCode: string,
-    @Req() req: any
+  @Post('okyc/send-otp')
+  async sendOtp(
+    @Body('aadhaarNumber') aadhaarNumber: string,
+    @Body('consent') consent: string,
+    @Req() req: any,
   ) {
-    return this.aadhaarService.processAadhaarZip(req.user.id, file, shareCode);
+    return this.aadhaarService.sendOkycOtp(req.user.id, aadhaarNumber, consent);
+  }
+
+  @Post('okyc/verify-otp')
+  async verifyOtp(
+    @Body('referenceId') referenceId: string,
+    @Body('otp') otp: string,
+    @Req() req: any,
+  ) {
+    return this.aadhaarService.verifyOkycOtp(req.user.id, referenceId, otp);
   }
 
   @Get()

@@ -8,7 +8,12 @@ import {
   Get,
   Delete,
 } from '@nestjs/common';
-import { ApiTags, ApiOperation, ApiResponse, ApiBearerAuth } from '@nestjs/swagger';
+import {
+  ApiTags,
+  ApiOperation,
+  ApiResponse,
+  ApiBearerAuth,
+} from '@nestjs/swagger';
 import { AuthService } from './auth.service';
 import { VerifyTokenDto } from './dto/verify-token.dto';
 import { RefreshTokenDto } from './dto/refresh-token.dto';
@@ -47,7 +52,9 @@ export class AuthController {
 
   @Post('register')
   @HttpCode(HttpStatus.CREATED)
-  @ApiOperation({ summary: 'Register a new user account with Email & Password' })
+  @ApiOperation({
+    summary: 'Register a new user account with Email & Password',
+  })
   @ApiResponse({ status: 201, description: 'User registered successfully' })
   @ApiResponse({ status: 409, description: 'Email already in use' })
   async register(@Body() registerDto: RegisterDto) {
@@ -56,7 +63,9 @@ export class AuthController {
 
   @Post('login')
   @HttpCode(HttpStatus.OK)
-  @ApiOperation({ summary: 'Authenticate user with Email / Phone and Password' })
+  @ApiOperation({
+    summary: 'Authenticate user with Email / Phone and Password',
+  })
   @ApiResponse({ status: 200, description: 'User logged in successfully' })
   @ApiResponse({ status: 401, description: 'Invalid credentials' })
   async login(@Body() loginDto: LoginDto) {
@@ -65,8 +74,13 @@ export class AuthController {
 
   @Post('verify')
   @HttpCode(HttpStatus.OK)
-  @ApiOperation({ summary: 'Verify Firebase / Google token and login/register user' })
-  @ApiResponse({ status: 200, description: 'User successfully authenticated and JWT tokens issued' })
+  @ApiOperation({
+    summary: 'Verify Firebase / Google token and login/register user',
+  })
+  @ApiResponse({
+    status: 200,
+    description: 'User successfully authenticated and JWT tokens issued',
+  })
   @ApiResponse({ status: 401, description: 'Invalid token' })
   async verify(@Body() verifyTokenDto: VerifyTokenDto) {
     return this.authService.verifyFirebaseToken(verifyTokenDto.token);
@@ -75,7 +89,10 @@ export class AuthController {
   @Post('refresh')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'Refresh custom access token using refresh token' })
-  @ApiResponse({ status: 200, description: 'Access token refreshed successfully' })
+  @ApiResponse({
+    status: 200,
+    description: 'Access token refreshed successfully',
+  })
   @ApiResponse({ status: 401, description: 'Invalid refresh token' })
   async refresh(@Body() refreshTokenDto: RefreshTokenDto) {
     return this.authService.refreshToken(refreshTokenDto.refreshToken);
@@ -119,14 +136,17 @@ export class AuthController {
     await this.prisma.auditLog.create({
       data: { userId, action: 'USER_DELETED', details: 'User deleted account' },
     });
-    
+
     // Soft delete or anonymize based on your schema. For now, delete it if there are no hard relations preventing it, or update isActive=false.
     // Assuming simple delete for demonstration.
     try {
       await this.prisma.user.delete({ where: { id: userId } });
       return { message: 'Account deleted successfully' };
     } catch (error) {
-      return { message: 'Account could not be deleted due to dependencies', error: true };
+      return {
+        message: 'Account could not be deleted due to dependencies',
+        error: true,
+      };
     }
   }
 }

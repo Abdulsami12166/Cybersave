@@ -1,4 +1,9 @@
-import { Injectable, Logger, OnModuleInit, OnModuleDestroy } from '@nestjs/common';
+import {
+  Injectable,
+  Logger,
+  OnModuleInit,
+  OnModuleDestroy,
+} from '@nestjs/common';
 import Redis from 'ioredis';
 
 @Injectable()
@@ -25,17 +30,23 @@ export class RedisService implements OnModuleInit, OnModuleDestroy {
         });
 
         this.client.on('connect', () => {
-          this.logger.log('Connected to remote Redis Cloud instance successfully.');
+          this.logger.log(
+            'Connected to remote Redis Cloud instance successfully.',
+          );
         });
 
         this.client.on('error', (err) => {
-          this.logger.warn(`Redis connection event warning: ${err.message}. Operating with fallback in-memory cache.`);
+          this.logger.warn(
+            `Redis connection event warning: ${err.message}. Operating with fallback in-memory cache.`,
+          );
         });
       } catch (error) {
         this.logger.error('Failed to initialize Redis connection', error);
       }
     } else {
-      this.logger.warn('REDIS_URL missing or default placeholder. Operating in in-memory cache mode.');
+      this.logger.warn(
+        'REDIS_URL missing or default placeholder. Operating in in-memory cache mode.',
+      );
     }
   }
 
@@ -54,7 +65,9 @@ export class RedisService implements OnModuleInit, OnModuleDestroy {
       try {
         return await this.client.get(key);
       } catch (err) {
-        this.logger.warn(`Redis get failed: ${err.message}. Using in-memory fallback.`);
+        this.logger.warn(
+          `Redis get failed: ${err.message}. Using in-memory fallback.`,
+        );
       }
     }
 
@@ -73,7 +86,9 @@ export class RedisService implements OnModuleInit, OnModuleDestroy {
         await this.client.set(key, value, 'EX', ttlSeconds);
         return;
       } catch (err) {
-        this.logger.warn(`Redis set failed: ${err.message}. Using in-memory fallback.`);
+        this.logger.warn(
+          `Redis set failed: ${err.message}. Using in-memory fallback.`,
+        );
       }
     }
 
@@ -89,7 +104,9 @@ export class RedisService implements OnModuleInit, OnModuleDestroy {
         await this.client.del(key);
         return;
       } catch (err) {
-        this.logger.warn(`Redis del failed: ${err.message}. Using in-memory fallback.`);
+        this.logger.warn(
+          `Redis del failed: ${err.message}. Using in-memory fallback.`,
+        );
       }
     }
 

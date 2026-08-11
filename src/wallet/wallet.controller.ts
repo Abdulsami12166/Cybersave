@@ -18,6 +18,10 @@ export class WalletController {
     @Body('method') method?: string,
   ) {
     const targetUserId = userId || 'default-user-id';
-    return this.walletService.addMoney(targetUserId, amount || 100, method || 'UPI');
+    return this.walletService.addMoney(
+      targetUserId,
+      amount || 100,
+      method || 'UPI',
+    );
   }
 }

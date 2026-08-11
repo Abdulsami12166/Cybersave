@@ -1,5 +1,18 @@
-import { Controller, Get, Post, Delete, Param, Body, UseGuards } from '@nestjs/common';
-import { ApiTags, ApiOperation, ApiResponse, ApiBearerAuth } from '@nestjs/swagger';
+import {
+  Controller,
+  Get,
+  Post,
+  Delete,
+  Param,
+  Body,
+  UseGuards,
+} from '@nestjs/common';
+import {
+  ApiTags,
+  ApiOperation,
+  ApiResponse,
+  ApiBearerAuth,
+} from '@nestjs/swagger';
 import { DocumentsService } from './documents.service';
 import { JwtAuthGuard } from '../common/guards/jwt.guard';
 import { GetUser } from '../common/decorators/user.decorator';
@@ -27,14 +40,24 @@ export class DocumentsController {
   @ApiOperation({ summary: 'Save uploaded document metadata' })
   async uploadDocument(
     @GetUser('sub') userId: string,
-    @Body() body: { fileName: string; fileUrl: string; fileType?: string; fileSize?: number; applicationId?: string },
+    @Body()
+    body: {
+      fileName: string;
+      fileUrl: string;
+      fileType?: string;
+      fileSize?: number;
+      applicationId?: string;
+    },
   ) {
     return this.documentsService.createDocument(userId, body);
   }
 
   @Delete(':id')
   @ApiOperation({ summary: 'Delete document by ID' })
-  async deleteDocument(@GetUser('sub') userId: string, @Param('id') id: string) {
+  async deleteDocument(
+    @GetUser('sub') userId: string,
+    @Param('id') id: string,
+  ) {
     return this.documentsService.deleteDocument(userId, id);
   }
 }

@@ -1,4 +1,9 @@
-import { Injectable, Logger, OnModuleInit, OnModuleDestroy } from '@nestjs/common';
+import {
+  Injectable,
+  Logger,
+  OnModuleInit,
+  OnModuleDestroy,
+} from '@nestjs/common';
 import { Worker, Job } from 'bullmq';
 import { ResendService } from '../services/resend.service';
 import { TwilioService } from '../services/twilio.service';
@@ -21,7 +26,9 @@ export class AppWorker implements OnModuleInit, OnModuleDestroy {
         this.worker = new Worker(
           'CyberSaveQueue',
           async (job: Job) => {
-            this.logger.log(`[Worker] Processing job ${job.id} of type ${job.name}`);
+            this.logger.log(
+              `[Worker] Processing job ${job.id} of type ${job.name}`,
+            );
             await this.processJob(job.name, job.data);
           },
           {
@@ -42,7 +49,9 @@ export class AppWorker implements OnModuleInit, OnModuleDestroy {
           this.logger.error(`[Worker] Job ${job?.id} failed: ${err.message}`);
         });
       } catch (err) {
-        this.logger.warn(`Could not start BullMQ background worker: ${err.message}`);
+        this.logger.warn(
+          `Could not start BullMQ background worker: ${err.message}`,
+        );
       }
     }
   }

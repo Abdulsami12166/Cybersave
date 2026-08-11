@@ -22,9 +22,11 @@ export class ProfileService {
 
     // Sync User table email/phone if provided
     const userUpdateData: any = {};
-    if (updateProfileDto.email) userUpdateData.email = updateProfileDto.email.trim().toLowerCase();
-    if (updateProfileDto.phone) userUpdateData.phone = updateProfileDto.phone.trim();
-    
+    if (updateProfileDto.email)
+      userUpdateData.email = updateProfileDto.email.trim().toLowerCase();
+    if (updateProfileDto.phone)
+      userUpdateData.phone = updateProfileDto.phone.trim();
+
     if (Object.keys(userUpdateData).length > 0) {
       try {
         await this.prisma.user.update({
@@ -47,8 +49,11 @@ export class ProfileService {
   }
 
   async uploadAvatar(userId: string, base64Image: string) {
-    const avatarUrl = await this.cloudinaryService.uploadBase64Image(base64Image, 'cybersave/avatars');
-    
+    const avatarUrl = await this.cloudinaryService.uploadBase64Image(
+      base64Image,
+      'cybersave/avatars',
+    );
+
     const updatedProfile = await this.prisma.profile.upsert({
       where: { userId },
       update: { avatarUrl },

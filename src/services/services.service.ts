@@ -22,20 +22,25 @@ export class ServicesService implements OnModuleInit {
         {
           slug: 'aadhaar-update',
           title: 'Aadhaar Services',
-          description: 'UIDAI Official Central Services for address, mobile, name updates',
+          description:
+            'UIDAI Official Central Services for address, mobile, name updates',
           category: 'Government',
           department: 'UIDAI Central Authority',
           fee: 50.0,
           processingTime: '5-7 Days',
           eligibility: ['Citizen of India', 'Valid ID & Address proof'],
-          requiredDocs: ['Aadhaar Card', 'Proof of Address (Utility bill/Rent agreement)'],
+          requiredDocs: [
+            'Aadhaar Card',
+            'Proof of Address (Utility bill/Rent agreement)',
+          ],
           iconName: 'shield-account-outline',
           colorHex: '#2F6BFF',
         },
         {
           slug: 'pan-card',
           title: 'PAN Card Services',
-          description: 'Income Tax Department - New PAN, corrections, reprint & linking',
+          description:
+            'Income Tax Department - New PAN, corrections, reprint & linking',
           category: 'Government',
           department: 'Income Tax Department',
           fee: 50.0,
@@ -48,20 +53,28 @@ export class ServicesService implements OnModuleInit {
         {
           slug: 'birth-certificate',
           title: 'Birth Certificate',
-          description: 'Official certified document issued by Municipal Registrar',
+          description:
+            'Official certified document issued by Municipal Registrar',
           category: 'Government',
           department: 'Municipal Corporation',
           fee: 50.0,
           processingTime: '7-15 Days',
-          eligibility: ['Citizen of India', 'Birth occurred within state limits'],
-          requiredDocs: ['Hospital Discharge Slip', 'Parent ID Proof (Aadhaar/PAN)'],
+          eligibility: [
+            'Citizen of India',
+            'Birth occurred within state limits',
+          ],
+          requiredDocs: [
+            'Hospital Discharge Slip',
+            'Parent ID Proof (Aadhaar/PAN)',
+          ],
           iconName: 'baby-carriage',
           colorHex: '#2F6BFF',
         },
         {
           slug: 'income-certificate',
           title: 'Income Certificate',
-          description: 'State Revenue Department Income Verification Certificate',
+          description:
+            'State Revenue Department Income Verification Certificate',
           category: 'Government',
           department: 'Revenue Department',
           fee: 30.0,
@@ -118,7 +131,9 @@ export class ServicesService implements OnModuleInit {
       }
       return await this.prisma.service.findMany({ where: { isActive: true } });
     } catch (error) {
-      this.logger.warn(`Database query fallback for services: ${error.message}`);
+      this.logger.warn(
+        `Database query fallback for services: ${error.message}`,
+      );
       return [];
     }
   }

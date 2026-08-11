@@ -30,10 +30,14 @@ export class QueueService implements OnModuleInit {
         } as any);
         this.logger.log('BullMQ CyberSaveQueue initialized.');
       } catch (err) {
-        this.logger.warn(`Failed to connect BullMQ queue to Redis: ${err.message}. Operating in in-memory immediate execution mode.`);
+        this.logger.warn(
+          `Failed to connect BullMQ queue to Redis: ${err.message}. Operating in in-memory immediate execution mode.`,
+        );
       }
     } else {
-      this.logger.warn('REDIS_URL missing. Operating in in-memory immediate execution mode.');
+      this.logger.warn(
+        'REDIS_URL missing. Operating in in-memory immediate execution mode.',
+      );
     }
   }
 
@@ -48,13 +52,18 @@ export class QueueService implements OnModuleInit {
         });
         return;
       } catch (err) {
-        this.logger.warn(`Failed to add job to BullMQ: ${err.message}. Falling back to immediate execution.`);
+        this.logger.warn(
+          `Failed to add job to BullMQ: ${err.message}. Falling back to immediate execution.`,
+        );
       }
     }
 
     // Fallback: process job immediately in the background
     this.processJobInMemory(name, data).catch((err) => {
-      this.logger.error(`In-memory background job execution failed for ${name}`, err);
+      this.logger.error(
+        `In-memory background job execution failed for ${name}`,
+        err,
+      );
     });
   }
 

@@ -1,8 +1,16 @@
-import { Injectable, Logger, OnModuleInit, OnModuleDestroy } from '@nestjs/common';
+import {
+  Injectable,
+  Logger,
+  OnModuleInit,
+  OnModuleDestroy,
+} from '@nestjs/common';
 import { PrismaClient } from '@prisma/client';
 
 @Injectable()
-export class PrismaService extends PrismaClient implements OnModuleInit, OnModuleDestroy {
+export class PrismaService
+  extends PrismaClient
+  implements OnModuleInit, OnModuleDestroy
+{
   private readonly logger = new Logger('PrismaService');
 
   async onModuleInit() {
@@ -11,7 +19,9 @@ export class PrismaService extends PrismaClient implements OnModuleInit, OnModul
     while (attempts < maxAttempts) {
       try {
         await this.$connect();
-        this.logger.log('Prisma connected to PostgreSQL database successfully.');
+        this.logger.log(
+          'Prisma connected to PostgreSQL database successfully.',
+        );
 
         // Automatic Table Schema Verification & Creation
         try {
@@ -43,14 +53,22 @@ export class PrismaService extends PrismaClient implements OnModuleInit, OnModul
 
           // Migration alter if column was created as TEXT
           try {
-            await this.$executeRawUnsafe(`ALTER TABLE "User" ALTER COLUMN "role" DROP DEFAULT;`);
-            await this.$executeRawUnsafe(`ALTER TABLE "User" ALTER COLUMN "role" TYPE "Role" USING "role"::"Role";`);
-            await this.$executeRawUnsafe(`ALTER TABLE "User" ALTER COLUMN "role" SET DEFAULT 'USER'::"Role";`);
+            await this.$executeRawUnsafe(
+              `ALTER TABLE "User" ALTER COLUMN "role" DROP DEFAULT;`,
+            );
+            await this.$executeRawUnsafe(
+              `ALTER TABLE "User" ALTER COLUMN "role" TYPE "Role" USING "role"::"Role";`,
+            );
+            await this.$executeRawUnsafe(
+              `ALTER TABLE "User" ALTER COLUMN "role" SET DEFAULT 'USER'::"Role";`,
+            );
           } catch (alterErr) {
             // Role column already properly typed as Role enum
           }
 
-          this.logger.log('Database tables and PostgreSQL ENUM types verified successfully.');
+          this.logger.log(
+            'Database tables and PostgreSQL ENUM types verified successfully.',
+          );
         } catch (tableErr) {
           this.logger.warn(`Table verification warning: ${tableErr.message}`);
         }
@@ -58,9 +76,13 @@ export class PrismaService extends PrismaClient implements OnModuleInit, OnModul
         break;
       } catch (error) {
         attempts++;
-        this.logger.warn(`Database connection attempt ${attempts} failed: ${error.message}`);
+        this.logger.warn(
+          `Database connection attempt ${attempts} failed: ${error.message}`,
+        );
         if (attempts >= maxAttempts) {
-          this.logger.error('Could not establish initial database connection. Server starting in offline mode.');
+          this.logger.error(
+            'Could not establish initial database connection. Server starting in offline mode.',
+          );
         } else {
           await new Promise((res) => setTimeout(res, 2000));
         }

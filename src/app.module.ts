@@ -13,6 +13,7 @@ import { AiModule } from './ai/ai.module';
 import { DocumentsModule } from './documents/documents.module';
 import { IntegrationsModule } from './common/services/integrations.module';
 import { AadhaarModule } from './aadhaar/aadhaar.module';
+import { SandboxModule } from './sandbox/sandbox.module';
 
 @Module({
   imports: [
@@ -30,6 +31,7 @@ import { AadhaarModule } from './aadhaar/aadhaar.module';
     DocumentsModule,
     IntegrationsModule,
     AadhaarModule,
+    SandboxModule,
   ],
   controllers: [AppController],
   providers: [AppService],

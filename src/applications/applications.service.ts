@@ -34,7 +34,9 @@ export class ApplicationsService {
 
     let serviceId = dto.serviceId;
     if (!serviceId && dto.serviceSlug) {
-      const srv = await this.prisma.service.findUnique({ where: { slug: dto.serviceSlug } });
+      const srv = await this.prisma.service.findUnique({
+        where: { slug: dto.serviceSlug },
+      });
       if (srv) serviceId = srv.id;
     }
     if (!serviceId) {
@@ -48,7 +50,7 @@ export class ApplicationsService {
         userId: dto.userId,
         serviceId,
         serviceTitle: dto.serviceTitle,
-        status: ApplicationStatus.IN_PROGRESS,
+        status: ApplicationStatus.SUBMITTED,
         estimatedCompletion: '7-10 Days',
         officialOfficer: 'Officer Sharma (SDM)',
         feePaid: dto.feePaid || 50.0,
@@ -79,7 +81,9 @@ export class ApplicationsService {
         { refNumber },
       );
     } catch (err) {
-      this.logger.warn(`Notification warning on application creation: ${err.message}`);
+      this.logger.warn(
+        `Notification warning on application creation: ${err.message}`,
+      );
     }
 
     return application;
@@ -89,7 +93,9 @@ export class ApplicationsService {
     const whereClause: any = { userId };
     if (status && status !== 'All') {
       const upper = status.toUpperCase().replace(/\s+/g, '_');
-      if (Object.values(ApplicationStatus).includes(upper as ApplicationStatus)) {
+      if (
+        Object.values(ApplicationStatus).includes(upper as ApplicationStatus)
+      ) {
         whereClause.status = upper as ApplicationStatus;
       }
     }

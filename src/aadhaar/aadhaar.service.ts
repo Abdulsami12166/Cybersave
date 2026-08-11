@@ -1,119 +1,88 @@
-import { Injectable, BadRequestException, NotFoundException } from '@nestjs/common';
+import {
+  Injectable,
+  BadRequestException,
+  NotFoundException,
+} from '@nestjs/common';
 import { PrismaService } from '../database/prisma.service';
-import AdmZip = require('adm-zip');
-const xml2js = require('xml2js');
-import * as crypto from 'crypto';
+import { SandboxService } from '../sandbox/sandbox.service';
 
 @Injectable()
 export class AadhaarService {
-  constructor(private prisma: PrismaService) {}
+  constructor(
+    private prisma: PrismaService,
+    private sandboxService: SandboxService,
+  ) {}
 
-  async processAadhaarZip(userId: string, file: any, shareCode: string) {
-    if (!file) throw new BadRequestException('No file provided');
-    if (!shareCode || shareCode.length !== 4) throw new BadRequestException('Invalid Share Code');
-    
-    // Create audit log for starting import
+  async sendOkycOtp(userId: string, aadhaarNumber: string, consent: string) {
+    if (consent !== 'Y') {
+      throw new BadRequestException(
+        'User consent is required for Aadhaar OKYC',
+      );
+    }
+
     await this.prisma.auditLog.create({
-      data: { userId, action: 'AADHAAR_IMPORT_STARTED', details: 'Started offline e-KYC import' }
+      data: {
+        userId,
+        action: 'AADHAAR_OTP_INITIATED',
+        details: 'Started Sandbox OKYC flow',
+      },
     });
 
-    try {
-      // 1. Unzip and extract XML
-      // UIDAI zips are password protected with the Share Code
-      const zip = new AdmZip(file.buffer);
-      // ponytail: adm-zip does not natively support ZIP crypto decryption easily in all node versions. 
-      // We will assume the XML file is the first entry. For a strict production system, we would use a robust C++ binding unzipper.
-      const zipEntries = zip.getEntries();
-      if (zipEntries.length === 0) throw new BadRequestException('Empty ZIP file');
-      
-      const xmlEntry = zipEntries.find((e: any) => e.entryName.endsWith('.xml'));
-      if (!xmlEntry) throw new BadRequestException('No XML found in the ZIP');
+    return this.sandboxService.sendAadhaarOtp(aadhaarNumber, consent);
+  }
 
-      // In a real environment, zip.readAsText(xmlEntry, shareCode) would decrypt. 
-      // ponytail: intentional simplification - we'll just read the text, assuming it's accessible or we bypass crypto for testing.
-      let xmlContent = '';
-      try {
-        xmlContent = zip.readAsText(xmlEntry, /* password= */ shareCode);
-      } catch (e) {
-        // If adm-zip fails on crypto, fallback for testing
-        xmlContent = zip.readAsText(xmlEntry);
-      }
-      
-      if (!xmlContent) throw new BadRequestException('Failed to read XML. Incorrect Share Code?');
+  async verifyOkycOtp(userId: string, referenceId: string, otp: string) {
+    const result = await this.sandboxService.verifyAadhaarOtp(referenceId, otp);
 
-      // 2. Validate Digital Signature
-      // ponytail: proper XML-DSig requires complex canonicalization and xml-crypto library. 
-      // We will perform a simplified validation by checking for the Signature node.
-      if (!xmlContent.includes('<Signature') || !xmlContent.includes('</Signature>')) {
-        await this.prisma.auditLog.create({
-          data: { userId, action: 'AADHAAR_SIGNATURE_FAILED', details: 'No valid digital signature found in XML' }
-        });
-        throw new BadRequestException('Invalid Document: Digital Signature missing or tampered');
-      }
-
-      // 3. Parse XML
-      const parser = new xml2js.Parser({ explicitArray: false, mergeAttrs: true });
-      const parsedXml = await parser.parseStringPromise(xmlContent);
-      
-      const kycRes = parsedXml.OfflinePaperlessKyc;
-      if (!kycRes) throw new BadRequestException('Invalid UIDAI XML format');
-
-      const uidData = kycRes.UidData;
-      const poi = uidData?.Poi || {};
-      const poa = uidData?.Poa || {};
-      const refId = kycRes.referenceId || '';
-
-      // 4. Data Extraction & Minimization
-      const name = poi.name || null;
-      const gender = poi.gender || null;
-      const dob = poi.dob || null;
-      const address = [poa.house, poa.street, poa.loc, poa.dist, poa.state, poa.pc].filter(Boolean).join(', ');
-
-      // 5. Store in Database
+    if (result.success && result.data.kyc) {
+      // Save minimal verification data to DB
       const doc = await this.prisma.aadhaarDocument.create({
         data: {
           userId,
-          referenceId: refId,
+          referenceId,
           verificationStatus: 'VERIFIED',
-          verificationMethod: 'UIDAI_XML_OFFLINE',
-          name,
-          gender,
-          dateOfBirth: dob,
-          address,
-          verifiedAt: new Date()
-        }
+          verificationMethod: 'SANDBOX_OKYC',
+          name: result.data.kyc.name,
+          gender: result.data.kyc.gender,
+          dateOfBirth: result.data.kyc.dateOfBirth,
+          address: result.data.kyc.address,
+          verifiedAt: new Date(),
+        },
       });
 
       await this.prisma.auditLog.create({
-        data: { userId, action: 'AADHAAR_SIGNATURE_SUCCESS', details: `Successfully verified Aadhaar doc ${doc.id}` }
+        data: {
+          userId,
+          action: 'AADHAAR_OTP_VERIFIED',
+          details: `Successfully verified Aadhaar doc ${doc.id}`,
+        },
       });
-
-      return doc;
-    } catch (error: any) {
-      await this.prisma.auditLog.create({
-        data: { userId, action: 'AADHAAR_IMPORT_FAILED', details: error.message }
-      });
-      throw new BadRequestException(error.message || 'Failed to process Aadhaar ZIP');
     }
+
+    return result;
   }
 
   async getUserDocuments(userId: string) {
     return this.prisma.aadhaarDocument.findMany({
       where: { userId },
-      orderBy: { createdAt: 'desc' }
+      orderBy: { createdAt: 'desc' },
     });
   }
 
   async deleteDocument(userId: string, id: string) {
     const doc = await this.prisma.aadhaarDocument.findFirst({
-      where: { id, userId }
+      where: { id, userId },
     });
     if (!doc) throw new NotFoundException('Document not found');
 
     await this.prisma.aadhaarDocument.delete({ where: { id } });
-    
+
     await this.prisma.auditLog.create({
-      data: { userId, action: 'AADHAAR_DOC_DELETED', details: `Deleted Aadhaar doc ${id}` }
+      data: {
+        userId,
+        action: 'AADHAAR_DOC_DELETED',
+        details: `Deleted Aadhaar doc ${id}`,
+      },
     });
     return { success: true };
   }

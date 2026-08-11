@@ -12,7 +12,16 @@ export class DocumentsService {
     });
   }
 
-  async createDocument(userId: string, data: { fileName: string; fileUrl: string; fileType?: string; fileSize?: number; applicationId?: string }) {
+  async createDocument(
+    userId: string,
+    data: {
+      fileName: string;
+      fileUrl: string;
+      fileType?: string;
+      fileSize?: number;
+      applicationId?: string;
+    },
+  ) {
     return this.prisma.documentUpload.create({
       data: {
         userId,
@@ -49,9 +58,10 @@ export class DocumentsService {
       totalAllowedBytes,
       usedMB: (usedBytes / (1024 * 1024)).toFixed(2),
       usedGB: (usedBytes / (1024 * 1024 * 1024)).toFixed(2),
-      formattedUsed: usedBytes > 1024 * 1024 * 1024 
-        ? `${(usedBytes / (1024 * 1024 * 1024)).toFixed(2)} GB` 
-        : `${(usedBytes / (1024 * 1024)).toFixed(1)} MB`,
+      formattedUsed:
+        usedBytes > 1024 * 1024 * 1024
+          ? `${(usedBytes / (1024 * 1024 * 1024)).toFixed(2)} GB`
+          : `${(usedBytes / (1024 * 1024)).toFixed(1)} MB`,
       documentCount: docs.length,
     };
   }

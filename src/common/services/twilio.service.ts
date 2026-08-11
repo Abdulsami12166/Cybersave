@@ -8,10 +8,10 @@ export class TwilioService {
   private readonly from: string;
 
   constructor() {
-    const accountSid = process.env.TWILIO_ACCOUNT_SID;   // AC...
-    const authToken  = process.env.TWILIO_AUTH_TOKEN;    // 32-char hex from Twilio console
-    const apiKeySid  = process.env.TWILIO_API_KEY_SID;   // SK... (optional)
-    const apiSecret  = process.env.TWILIO_API_KEY_SECRET; // API Key secret (optional)
+    const accountSid = process.env.TWILIO_ACCOUNT_SID; // AC...
+    const authToken = process.env.TWILIO_AUTH_TOKEN; // 32-char hex from Twilio console
+    const apiKeySid = process.env.TWILIO_API_KEY_SID; // SK... (optional)
+    const apiSecret = process.env.TWILIO_API_KEY_SECRET; // API Key secret (optional)
     this.from = process.env.TWILIO_PHONE_NUMBER || '';
 
     if (!this.from) {
@@ -24,7 +24,11 @@ export class TwilioService {
         // Standard: Account SID + Auth Token (recommended)
         this.client = new Twilio(accountSid, authToken);
         this.logger.log(`Twilio ready (Account SID auth). From: ${this.from}`);
-      } else if (apiKeySid?.startsWith('SK') && apiSecret && accountSid?.startsWith('AC')) {
+      } else if (
+        apiKeySid?.startsWith('SK') &&
+        apiSecret &&
+        accountSid?.startsWith('AC')
+      ) {
         // API Key: SK SID + API Secret + Account SID
         this.client = new Twilio(apiKeySid, apiSecret, { accountSid });
         this.logger.log(`Twilio ready (API Key auth). From: ${this.from}`);
@@ -44,7 +48,11 @@ export class TwilioService {
       return false;
     }
     try {
-      const msg = await this.client.messages.create({ body, to, from: this.from });
+      const msg = await this.client.messages.create({
+        body,
+        to,
+        from: this.from,
+      });
       this.logger.log(`SMS sent to ${to} | SID: ${msg.sid}`);
       return true;
     } catch (e) {

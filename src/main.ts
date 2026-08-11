@@ -47,7 +47,9 @@ async function bootstrap() {
   // Swagger Documentation Setup
   const config = new DocumentBuilder()
     .setTitle('CyberSave API')
-    .setDescription('The CyberSave enterprise production backend API documentation.')
+    .setDescription(
+      'The CyberSave enterprise production backend API documentation.',
+    )
     .setVersion('1.0')
     .addBearerAuth()
     .build();
@@ -56,7 +58,11 @@ async function bootstrap() {
 
   const port = process.env.PORT || 3000;
   await app.listen(port);
-  winstonLoggerInstance.log(`Application is running on: http://localhost:${port}`);
-  winstonLoggerInstance.log(`Swagger docs available at: http://localhost:${port}/api/docs`);
+  winstonLoggerInstance.log(
+    `Application is running on: http://localhost:${port}`,
+  );
+  winstonLoggerInstance.log(
+    `Swagger docs available at: http://localhost:${port}/api/docs`,
+  );
 }
 bootstrap();

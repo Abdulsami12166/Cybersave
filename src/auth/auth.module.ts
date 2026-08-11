@@ -13,8 +13,20 @@ import { JwtAuthGuard } from '../common/guards/jwt.guard';
       global: true, // Export JwtService globally so other modules can use the JwtAuthGuard easily
     }),
   ],
-  providers: [AuthService, FirebaseService, RedisService, SmsService, JwtAuthGuard],
+  providers: [
+    AuthService,
+    FirebaseService,
+    RedisService,
+    SmsService,
+    JwtAuthGuard,
+  ],
   controllers: [AuthController],
-  exports: [AuthService, FirebaseService, RedisService, SmsService, JwtAuthGuard],
+  exports: [
+    AuthService,
+    FirebaseService,
+    RedisService,
+    SmsService,
+    JwtAuthGuard,
+  ],
 })
 export class AuthModule {}

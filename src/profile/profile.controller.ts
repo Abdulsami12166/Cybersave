@@ -1,5 +1,10 @@
 import { Controller, Put, Post, Body, UseGuards } from '@nestjs/common';
-import { ApiTags, ApiOperation, ApiResponse, ApiBearerAuth } from '@nestjs/swagger';
+import {
+  ApiTags,
+  ApiOperation,
+  ApiResponse,
+  ApiBearerAuth,
+} from '@nestjs/swagger';
 import { ProfileService } from './profile.service';
 import { UpdateProfileDto } from './dto/update-profile.dto';
 import { JwtAuthGuard } from '../common/guards/jwt.guard';
@@ -25,7 +30,10 @@ export class ProfileController {
 
   @Post('upload-avatar')
   @ApiOperation({ summary: 'Upload profile photo avatar to Cloudinary' })
-  @ApiResponse({ status: 200, description: 'Avatar uploaded successfully to Cloudinary' })
+  @ApiResponse({
+    status: 200,
+    description: 'Avatar uploaded successfully to Cloudinary',
+  })
   async uploadAvatar(
     @GetUser('sub') userId: string,
     @Body() body: { base64Image: string },

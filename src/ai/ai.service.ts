@@ -15,17 +15,26 @@ export class AiService implements OnModuleInit {
     if (apiKey) {
       try {
         this.genAI = new GoogleGenerativeAI(apiKey);
-        this.model = this.genAI.getGenerativeModel({ model: 'gemini-1.5-flash' });
-        this.logger.log('Gemini AI Service initialized successfully for Cyberbot.');
+        this.model = this.genAI.getGenerativeModel({
+          model: 'gemini-1.5-flash',
+        });
+        this.logger.log(
+          'Gemini AI Service initialized successfully for Cyberbot.',
+        );
       } catch (error) {
         this.logger.error('Failed to initialize Gemini AI Client', error);
       }
     } else {
-      this.logger.warn('GEMINI_API_KEY missing from env. Operating in mock mode.');
+      this.logger.warn(
+        'GEMINI_API_KEY missing from env. Operating in mock mode.',
+      );
     }
   }
 
-  private async generateText(prompt: string, systemInstruction?: string): Promise<string> {
+  private async generateText(
+    prompt: string,
+    systemInstruction?: string,
+  ): Promise<string> {
     if (!this.model) {
       return this.getMockResponse(prompt);
     }
@@ -39,7 +48,10 @@ export class AiService implements OnModuleInit {
       const response = await result.response;
       return response.text().trim();
     } catch (error) {
-      this.logger.error('Gemini generation failed, falling back to mock response', error);
+      this.logger.error(
+        'Gemini generation failed, falling back to mock response',
+        error,
+      );
       return this.getMockResponse(prompt);
     }
   }
@@ -67,7 +79,11 @@ export class AiService implements OnModuleInit {
     if (lower.includes('pan') || lower.includes('link')) {
       return 'Linking PAN card with Aadhaar is mandatory under Income Tax rules. You can select "Link with Aadhaar" under PAN Services in the Cybersave app, enter your 10-digit PAN and 12-digit Aadhaar number, and verify via OTP.';
     }
-    if (lower.includes('certificate') || lower.includes('birth') || lower.includes('income')) {
+    if (
+      lower.includes('certificate') ||
+      lower.includes('birth') ||
+      lower.includes('income')
+    ) {
       return 'You can apply for state certificates directly under Certificates in Cybersave. Required documents include hospital discharge slips, parent Aadhaar cards, or income proofs. Standard processing fee is ₹30-₹50.';
     }
     return 'Namaste! I am CyberBot, your digital assistant for National Government Services. How can I assist you with Aadhaar, PAN card, certificates, or schemes today?';

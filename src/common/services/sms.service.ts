@@ -7,7 +7,8 @@ export class SmsService {
   private readonly resendApiKey: string;
 
   constructor() {
-    this.resendApiKey = process.env.RESEND_API_KEY || '66bee090-551b-487b-88aa-ec3f652897bc';
+    this.resendApiKey =
+      process.env.RESEND_API_KEY || '66bee090-551b-487b-88aa-ec3f652897bc';
     if (this.resendApiKey) {
       this.logger.log('Resend API Service initialized for OTP notifications.');
     }
@@ -63,10 +64,14 @@ export class SmsService {
         res.on('data', (chunk) => (data += chunk));
         res.on('end', () => {
           if (res.statusCode && res.statusCode >= 200 && res.statusCode < 300) {
-            this.logger.log(`Resend OTP Email sent successfully for ${cleanPhone}`);
+            this.logger.log(
+              `Resend OTP Email sent successfully for ${cleanPhone}`,
+            );
             resolve(true);
           } else {
-            this.logger.warn(`Resend API response (${res.statusCode}): ${data}`);
+            this.logger.warn(
+              `Resend API response (${res.statusCode}): ${data}`,
+            );
             resolve(true); // Don't block auth flow if email sandbox restricts unverified recipients
           }
         });

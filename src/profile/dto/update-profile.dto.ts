@@ -2,32 +2,56 @@ import { IsString, IsOptional, IsObject } from 'class-validator';
 import { ApiProperty } from '@nestjs/swagger';
 
 export class UpdateProfileDto {
-  @ApiProperty({ description: 'Full name of the user', example: 'Rajesh Kumar', required: false })
+  @ApiProperty({
+    description: 'Full name of the user',
+    example: 'Rajesh Kumar',
+    required: false,
+  })
   @IsString()
   @IsOptional()
   fullName?: string;
 
-  @ApiProperty({ description: 'First name of the user', example: 'John', required: false })
+  @ApiProperty({
+    description: 'First name of the user',
+    example: 'John',
+    required: false,
+  })
   @IsString()
   @IsOptional()
   firstName?: string;
 
-  @ApiProperty({ description: 'Last name of the user', example: 'Doe', required: false })
+  @ApiProperty({
+    description: 'Last name of the user',
+    example: 'Doe',
+    required: false,
+  })
   @IsString()
   @IsOptional()
   lastName?: string;
 
-  @ApiProperty({ description: 'Email address', example: 'user@cybersave.gov.in', required: false })
+  @ApiProperty({
+    description: 'Email address',
+    example: 'user@cybersave.gov.in',
+    required: false,
+  })
   @IsString()
   @IsOptional()
   email?: string;
 
-  @ApiProperty({ description: 'Phone number of the user', example: '+919876543210', required: false })
+  @ApiProperty({
+    description: 'Phone number of the user',
+    example: '+919876543210',
+    required: false,
+  })
   @IsString()
   @IsOptional()
   phone?: string;
 
-  @ApiProperty({ description: 'Avatar image URL', example: 'https://cloudinary.com/avatar.jpg', required: false })
+  @ApiProperty({
+    description: 'Avatar image URL',
+    example: 'https://cloudinary.com/avatar.jpg',
+    required: false,
+  })
   @IsString()
   @IsOptional()
   avatarUrl?: string;
@@ -62,7 +86,11 @@ export class UpdateProfileDto {
   @IsOptional()
   gender?: string;
 
-  @ApiProperty({ description: 'JSON structure containing mood settings', example: { preferredColors: ['#FF5733'] }, required: false })
+  @ApiProperty({
+    description: 'JSON structure containing mood settings',
+    example: { preferredColors: ['#FF5733'] },
+    required: false,
+  })
   @IsObject()
   @IsOptional()
   moodPreferences?: any;
