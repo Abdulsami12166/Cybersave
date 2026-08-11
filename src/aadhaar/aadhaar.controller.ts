@@ -11,7 +11,7 @@ import {
 import { JwtAuthGuard } from '../common/guards/jwt.guard';
 import { AadhaarService } from './aadhaar.service';
 
-@Controller('v1/aadhaar')
+@Controller('api/v1/aadhaar')
 @UseGuards(JwtAuthGuard)
 export class AadhaarController {
   constructor(private readonly aadhaarService: AadhaarService) {}
