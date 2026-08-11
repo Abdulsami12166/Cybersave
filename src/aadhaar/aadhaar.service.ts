@@ -39,7 +39,7 @@ export class AadhaarService {
       const doc = await this.prisma.aadhaarDocument.create({
         data: {
           userId,
-          referenceId,
+          referenceId: String(referenceId),
           verificationStatus: 'VERIFIED',
           verificationMethod: 'SANDBOX_OKYC',
           name: result.data.kyc.name,
