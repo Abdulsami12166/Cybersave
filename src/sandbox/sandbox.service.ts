@@ -158,8 +158,8 @@ export class SandboxService {
           },
           body: JSON.stringify({
             '@entity': 'in.co.sandbox.kyc.aadhaar.okyc.request',
-            reference_id: referenceId,
-            otp: otp,
+            reference_id: String(referenceId),
+            otp: String(otp),
           }),
         },
       );
