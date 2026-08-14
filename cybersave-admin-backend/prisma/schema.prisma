@@ -1,0 +1,251 @@
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+enum Role {
+  USER
+  ADMIN
+}
+
+enum ApplicationStatus {
+  SUBMITTED
+  VERIFYING
+  IN_PROGRESS
+  APPROVED
+  REJECTED
+}
+
+enum TransactionType {
+  CREDIT
+  DEBIT
+}
+
+enum NotificationType {
+  APPLICATION_UPDATE
+  PAYMENT
+  SYSTEM
+}
+
+enum NotificationStatus {
+  PENDING
+  SENT
+  FAILED
+  READ
+}
+
+model User {
+  id            String    @id @default(uuid())
+  phone         String?   @unique
+  email         String?   @unique
+  keycloakId    String?   @unique
+  passwordHash  String?
+  fcmToken      String?
+  role          Role      @default(USER)
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+  deletedAt     DateTime?
+
+  profile       Profile?
+  wallet        Wallet?
+  applications  Application[]
+  documents     DocumentUpload[]
+  aadhaarDocs   AadhaarDocument[]
+  notifications Notification[]
+  auditLogs     AuditLog[]
+  supportTickets SupportTicket[]
+
+  @@index([phone])
+  @@index([email])
+  @@index([keycloakId])
+}
+
+model Profile {
+  id          String   @id @default(uuid())
+  userId      String   @unique
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  fullName    String?
+  phone       String?
+  email       String?
+  avatarUrl   String?
+  address     String?
+  district    String?
+  state       String?
+  pinCode     String?
+  dob         String?
+  gender      String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([userId])
+}
+
+model Service {
+  id             String        @id @default(uuid())
+  slug           String        @unique // e.g. "birth-certificate", "aadhaar-address"
+  title          String
+  description    String
+  category       String        // "Government", "Finance", "Popular"
+  department     String
+  fee            Float         @default(0.0)
+  processingTime String
+  eligibility    Json?         // Array of string rules
+  requiredDocs   Json?         // Array of required doc descriptions
+  subServices    Json?         // Configured sub-services
+  formDataSchema Json?         // Interface form builder schema
+  pricingConfig  Json?         // Pricing and tax configurations
+  iconName       String
+  colorHex       String
+  isActive       Boolean       @default(true)
+  createdAt      DateTime      @default(now())
+  updatedAt      DateTime      @updatedAt
+
+  applications   Application[]
+
+  @@index([category])
+  @@index([slug])
+}
+
+model Application {
+  id                   String            @id @default(uuid())
+  refNumber            String            @unique // e.g. "CSB2024001234"
+  userId               String
+  user                 User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  serviceId            String
+  service              Service           @relation(fields: [serviceId], references: [id])
+  serviceTitle         String
+  status               ApplicationStatus @default(SUBMITTED)
+  rejectionReason      String?
+  estimatedCompletion  String?
+  officialOfficer      String?           @default("Officer Sharma (SDM)")
+  feePaid              Float             @default(50.0)
+  paymentStatus        String            @default("Success")
+  formData             Json?             // Form input fields (fullName, dob, state, etc.)
+  documents            Json?             // List of uploaded file objects/URLs
+  submittedAt          DateTime          @default(now())
+  updatedAt            DateTime          @updatedAt
+
+  documentUploads      DocumentUpload[]
+
+  @@index([userId])
+  @@index([refNumber])
+  @@index([status])
+}
+
+model Wallet {
+  id           String              @id @default(uuid())
+  userId       String              @unique
+  user         User                @relation(fields: [userId], references: [id], onDelete: Cascade)
+  balance      Float               @default(0.0)
+  createdAt    DateTime            @default(now())
+  updatedAt    DateTime            @updatedAt
+
+  transactions WalletTransaction[]
+
+  @@index([userId])
+}
+
+model WalletTransaction {
+  id          String          @id @default(uuid())
+  walletId    String
+  wallet      Wallet          @relation(fields: [walletId], references: [id], onDelete: Cascade)
+  userId      String
+  type        TransactionType @default(CREDIT)
+  title       String
+  subtitle    String?
+  amount      Float
+  refId       String?
+  status      String          @default("SUCCESS")
+  createdAt   DateTime        @default(now())
+
+  @@index([walletId])
+  @@index([userId])
+}
+
+model DocumentUpload {
+  id            String       @id @default(uuid())
+  userId        String
+  user          User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  applicationId String?
+  application   Application? @relation(fields: [applicationId], references: [id], onDelete: SetNull)
+  fileUrl       String       // Cloudinary URL
+  fileName      String
+  fileType      String?
+  fileSize      Int?
+  uploadedAt    DateTime     @default(now())
+
+  @@index([userId])
+  @@index([applicationId])
+}
+
+model Notification {
+  id        String             @id @default(uuid())
+  userId    String
+  user      User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+  title     String
+  body      String
+  type      NotificationType   @default(APPLICATION_UPDATE)
+  status    NotificationStatus @default(PENDING)
+  sentAt    DateTime?
+  createdAt DateTime           @default(now())
+
+  @@index([userId])
+  @@index([status])
+}
+
+model AuditLog {
+  id        String   @id @default(uuid())
+  userId    String?
+  user      User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+  action    String   // e.g., "USER_LOGIN", "SUBMIT_APPLICATION"
+  details   String?
+  ipAddress String?
+  createdAt DateTime @default(now())
+
+  @@index([userId])
+  @@index([createdAt])
+}
+
+model AadhaarDocument {
+  id                 String   @id @default(uuid())
+  userId             String
+  user               User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  documentType       String   @default("OFFLINE_EKYC")
+  referenceId        String?
+  verificationStatus String   @default("NOT_IMPORTED")
+  verificationMethod String   @default("UIDAI_XML")
+  name               String?
+  gender             String?
+  dateOfBirth        String?
+  yearOfBirth        String?
+  address            String?
+  photoStorageKey    String?
+  fileStorageKey     String?
+  uploadedAt         DateTime @default(now())
+  verifiedAt         DateTime?
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+
+  @@index([userId])
+}
+
+model SupportTicket {
+  id          String   @id @default(uuid())
+  refNumber   String   @unique // e.g. TKT-2024-001
+  userId      String?
+  user        User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+  title       String
+  category    String   @default("Technical")
+  priority    String   @default("Medium") // High, Medium, Low, Critical
+  status      String   @default("OPEN") // OPEN, IN_PROGRESS, RESOLVED, ESCALATED
+  assignedTo  String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([userId])
+  @@index([status])
+}
