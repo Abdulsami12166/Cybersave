@@ -9,6 +9,8 @@ export interface User {
   phone?: string;
   fullName?: string;
   role?: string;
+  avatarUrl?: string;
+  profile?: any;
 }
 
 interface AuthContextType {
