@@ -69,7 +69,7 @@ export type RootStackParamList = {
   Language: undefined;
   Login: undefined;
   Register: undefined;
-  OTP: undefined;
+  OTP: { email: string } | undefined;
   Home: undefined;
   Notifications: undefined;
   Schemes: undefined;

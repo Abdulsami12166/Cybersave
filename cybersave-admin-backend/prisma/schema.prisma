@@ -52,6 +52,8 @@ model User {
   passwordHash  String?
   fcmToken      String?
   role          Role      @default(USER)
+  otpCode       String?
+  otpExpiry     DateTime?
   createdAt     DateTime  @default(now())
   updatedAt     DateTime  @updatedAt
   deletedAt     DateTime?

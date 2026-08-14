@@ -1,16 +1,7 @@
 import React, { createContext, useContext, useState, useEffect } from 'react';
 import { useDispatch, useSelector } from 'react-redux';
 import { setCredentials, logout as logoutAction } from '../redux/slices/authSlice';
-import { setAuthToken } from '../api/client';
-import { authorize, logout as appAuthLogout } from 'react-native-app-auth';
-
-// ponytail: keep keycloak config inline and simple
-const keycloakConfig = {
-  issuer: process.env.KEYCLOAK_ISSUER || 'https://your-keycloak.com/realms/cybersave',
-  clientId: process.env.KEYCLOAK_CLIENT_ID || 'Cybersave-app',
-  redirectUrl: process.env.KEYCLOAK_REDIRECT_URI || 'cybersave://oauthredirect',
-  scopes: ['openid', 'profile', 'email', 'phone'],
-};
+import { setAuthToken, apiClient } from '../api/client';
 
 export interface User {
   id: string;
@@ -18,15 +9,16 @@ export interface User {
   phone?: string;
   fullName?: string;
   role?: string;
-  avatarUrl?: string;
-  profile?: any;
 }
 
 interface AuthContextType {
   user: User | null;
   token: string | null;
   isAuthenticated: boolean;
-  login: () => Promise<boolean>;
+  register: (email: string, password: string, fullName: string) => Promise<boolean>;
+  login: (email: string, password: string) => Promise<boolean>;
+  verifyOtp: (email: string, otp: string) => Promise<boolean>;
+  resendOtp: (email: string) => Promise<boolean>;
   logout: () => Promise<void>;
 }
 
@@ -34,7 +26,10 @@ const AuthContext = createContext<AuthContextType>({
   user: null,
   token: null,
   isAuthenticated: false,
+  register: async () => false,
   login: async () => false,
+  verifyOtp: async () => false,
+  resendOtp: async () => false,
   logout: async () => {},
 });
 
@@ -44,14 +39,11 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   const [user, setUser] = useState<User | null>(reduxAuth?.user || null);
   const [token, setToken] = useState<string | null>(reduxAuth?.token || null);
-  const [idToken, setIdToken] = useState<string | null>(reduxAuth?.idToken || null);
 
   useEffect(() => {
-    if (reduxAuth?.user) {
-      setUser(reduxAuth.user);
-    } else {
-      setUser(null);
-    }
+    if (reduxAuth?.user) setUser(reduxAuth.user);
+    else setUser(null);
+
     if (reduxAuth?.token) {
       setToken(reduxAuth.token);
       setAuthToken(reduxAuth.token);
@@ -59,56 +51,64 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       setToken(null);
       setAuthToken(null);
     }
-    if (reduxAuth?.idToken) {
-      setIdToken(reduxAuth.idToken);
-    }
   }, [reduxAuth]);
 
-  const login = async () => {
+  const register = async (email: string, password: string, fullName: string) => {
     try {
-      const authState = await authorize(keycloakConfig);
-      // Extract sub from jwt or just use dummy user until backend /me call
-      const userData = { id: 'keycloak-user', email: 'user@keycloak' } as User;
-      
-      setUser(userData);
-      setToken(authState.accessToken);
-      setIdToken(authState.idToken);
-      setAuthToken(authState.accessToken);
-      
-      dispatch(setCredentials({ 
-        user: userData as any, 
-        accessToken: authState.accessToken, 
-        refreshToken: authState.refreshToken,
-        idToken: authState.idToken 
-      }));
-      return true;
-    } catch (error) {
-      console.error('Keycloak Login Error:', error);
+      const res = await apiClient.post('/auth/register', { email, password, fullName });
+      return !!res.data.success;
+    } catch (e) {
+      console.error('Register error:', e);
+      return false;
+    }
+  };
+
+  const login = async (email: string, password: string) => {
+    try {
+      const res = await apiClient.post('/auth/login', { email, password });
+      return !!res.data.success;
+    } catch (e) {
+      console.error('Login error:', e);
+      return false;
+    }
+  };
+
+  const verifyOtp = async (email: string, otp: string) => {
+    try {
+      const res = await apiClient.post('/auth/verify-otp', { email, otp });
+      if (res.data.accessToken) {
+        setUser(res.data.user);
+        setToken(res.data.accessToken);
+        setAuthToken(res.data.accessToken);
+        dispatch(setCredentials({ user: res.data.user, accessToken: res.data.accessToken }));
+        return true;
+      }
+      return false;
+    } catch (e) {
+      console.error('Verify OTP error:', e);
+      return false;
+    }
+  };
+
+  const resendOtp = async (email: string) => {
+    try {
+      const res = await apiClient.post('/auth/resend-otp', { email });
+      return !!res.data.success;
+    } catch (e) {
+      console.error('Resend OTP error:', e);
       return false;
     }
   };
 
   const logout = async () => {
-    try {
-      if (idToken) {
-        await appAuthLogout(keycloakConfig, {
-          idToken: idToken,
-          postLogoutRedirectUrl: keycloakConfig.redirectUrl,
-        });
-      }
-    } catch (err) {
-      console.error('Keycloak Logout Error:', err);
-    } finally {
-      setUser(null);
-      setToken(null);
-      setIdToken(null);
-      setAuthToken(null);
-      dispatch(logoutAction());
-    }
+    setUser(null);
+    setToken(null);
+    setAuthToken(null);
+    dispatch(logoutAction());
   };
 
   return (
-    <AuthContext.Provider value={{ user, token, isAuthenticated: !!user, login, logout }}>
+    <AuthContext.Provider value={{ user, token, isAuthenticated: !!user, register, login, verifyOtp, resendOtp, logout }}>
       {children}
     </AuthContext.Provider>
   );

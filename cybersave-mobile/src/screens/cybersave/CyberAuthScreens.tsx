@@ -8,6 +8,7 @@ import {
   View,
   ActivityIndicator,
   Alert,
+  TextInput,
 } from 'react-native';
 import MaterialCommunityIcons from 'react-native-vector-icons/MaterialCommunityIcons';
 import { storage } from '../../utils/storage';
@@ -78,45 +79,118 @@ export const LanguageScreen = ({ navigation }: any) => {
   );
 };
 
-export const LoginScreen = ({ navigation }: any) => {
-  const { login } = useAuth();
+export const RegisterScreen = ({ navigation }: any) => {
+  const { register } = useAuth();
   const [loading, setLoading] = useState(false);
+  const [form, setForm] = useState({ fullName: '', email: '', password: '' });
 
-  const handleKeycloakLogin = async () => {
+  const handleRegister = async () => {
+    if (!form.email || !form.password) return Alert.alert('Error', 'Email and password required');
     setLoading(true);
-    const success = await login();
+    const success = await register(form.email, form.password, form.fullName);
     setLoading(false);
     if (success) {
-      navigation.replace('Home');
+      Alert.alert('Success', 'Registration complete. Please log in.');
+      navigation.navigate('Login');
     } else {
-      Alert.alert('Login Failed', 'Authentication was cancelled or failed.');
+      Alert.alert('Registration Failed', 'Please try again.');
     }
   };
 
   return (
     <SafeAreaView style={styles.lightContainer}>
       <StatusBar backgroundColor="#1768FF" barStyle="dark-content" />
-      <Header title="Welcome Back" subtitle="Sign in to safely access your e-gov portal" />
-
+      <Header title="Create Account" subtitle="Join Cybersave Platform" />
       <View style={styles.loginCard}>
-        <Text style={styles.authInfo}>
-          Authentication is securely managed by National Identity Vault. You will be redirected to complete your SMS OTP verification.
-        </Text>
-        
-        <PrimaryButton 
-          title="Login with Phone / SMS OTP" 
-          onPress={handleKeycloakLogin} 
-          style={styles.sendOtpButton} 
-          loading={loading} 
-        />
+        <TextInput style={styles.input} placeholder="Full Name" value={form.fullName} onChangeText={t => setForm({ ...form, fullName: t })} />
+        <TextInput style={styles.input} placeholder="Email" autoCapitalize="none" keyboardType="email-address" value={form.email} onChangeText={t => setForm({ ...form, email: t })} />
+        <TextInput style={styles.input} placeholder="Password" secureTextEntry value={form.password} onChangeText={t => setForm({ ...form, password: t })} />
+        <PrimaryButton title="Register" onPress={handleRegister} loading={loading} />
+        <TouchableOpacity onPress={() => navigation.navigate('Login')} style={styles.linkButton}>
+          <Text style={styles.linkText}>Already have an account? Login</Text>
+        </TouchableOpacity>
       </View>
     </SafeAreaView>
   );
 };
 
-// ponytail: Removed OtpScreen and RegisterScreen as Keycloak handles these flows via the browser
-export const RegisterScreen = LoginScreen;
-export const OtpScreen = LoginScreen;
+export const LoginScreen = ({ navigation }: any) => {
+  const { login } = useAuth();
+  const [loading, setLoading] = useState(false);
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+
+  const handleLogin = async () => {
+    if (!email || !password) return Alert.alert('Error', 'Email and password required');
+    setLoading(true);
+    const success = await login(email, password);
+    setLoading(false);
+    if (success) {
+      navigation.navigate('OTP', { email });
+    } else {
+      Alert.alert('Login Failed', 'Invalid credentials.');
+    }
+  };
+
+  return (
+    <SafeAreaView style={styles.lightContainer}>
+      <StatusBar backgroundColor="#1768FF" barStyle="dark-content" />
+      <Header title="Welcome Back" subtitle="Sign in with Email and Password" />
+      <View style={styles.loginCard}>
+        <TextInput style={styles.input} placeholder="Email" autoCapitalize="none" keyboardType="email-address" value={email} onChangeText={setEmail} />
+        <TextInput style={styles.input} placeholder="Password" secureTextEntry value={password} onChangeText={setPassword} />
+        <PrimaryButton title="Login" onPress={handleLogin} loading={loading} />
+        <TouchableOpacity onPress={() => navigation.navigate('Register')} style={styles.linkButton}>
+          <Text style={styles.linkText}>New here? Register</Text>
+        </TouchableOpacity>
+      </View>
+    </SafeAreaView>
+  );
+};
+
+export const OtpScreen = ({ route, navigation }: any) => {
+  const { verifyOtp, resendOtp } = useAuth();
+  const { email } = route.params || {};
+  const [loading, setLoading] = useState(false);
+  const [otp, setOtp] = useState('');
+
+  const handleVerify = async () => {
+    if (!otp) return Alert.alert('Error', 'OTP required');
+    setLoading(true);
+    const success = await verifyOtp(email, otp);
+    setLoading(false);
+    if (success) {
+      // AuthContext will update and navigate to Home automatically via RootNavigator
+    } else {
+      Alert.alert('Error', 'Invalid OTP.');
+    }
+  };
+
+  const handleResend = async () => {
+    setLoading(true);
+    const success = await resendOtp(email);
+    setLoading(false);
+    if (success) {
+      Alert.alert('Success', 'OTP resent to your email.');
+    } else {
+      Alert.alert('Error', 'Failed to resend OTP.');
+    }
+  };
+
+  return (
+    <SafeAreaView style={styles.lightContainer}>
+      <StatusBar backgroundColor="#1768FF" barStyle="dark-content" />
+      <Header title="Verify OTP" subtitle={`Sent to ${email}`} />
+      <View style={styles.loginCard}>
+        <TextInput style={styles.input} placeholder="Enter 6-digit OTP" keyboardType="number-pad" maxLength={6} value={otp} onChangeText={setOtp} />
+        <PrimaryButton title="Verify OTP" onPress={handleVerify} loading={loading} />
+        <TouchableOpacity onPress={handleResend} style={styles.linkButton} disabled={loading}>
+          <Text style={styles.linkText}>Resend OTP</Text>
+        </TouchableOpacity>
+      </View>
+    </SafeAreaView>
+  );
+};
 
 const styles = StyleSheet.create({
   lightContainer: { flex: 1, backgroundColor: BG },
@@ -135,6 +209,7 @@ const styles = StyleSheet.create({
   primaryButton: { height: 47, borderRadius: 13, alignItems: 'center', justifyContent: 'center', backgroundColor: BLUE, shadowColor: '#1E55C8', shadowOpacity: 0.2, shadowOffset: { width: 0, height: 8 }, shadowRadius: 14, elevation: 4 },
   primaryButtonText: { color: '#FFFFFF', fontSize: 13, lineHeight: 18, fontWeight: '800' },
   loginCard: { position: 'absolute', left: 17, right: 17, top: 115, borderRadius: 15, backgroundColor: '#FFFFFF', padding: 19, shadowColor: '#9CA8B8', shadowOpacity: 0.12, shadowRadius: 12, elevation: 3 },
-  authInfo: { color: MUTED, fontSize: 13, textAlign: 'center', marginBottom: 24, lineHeight: 20 },
-  sendOtpButton: { marginTop: 6 },
+  input: { height: 48, backgroundColor: '#F8FAFC', borderRadius: 10, paddingHorizontal: 15, marginBottom: 15, color: TEXT, borderColor: BORDER, borderWidth: 1 },
+  linkButton: { marginTop: 15, alignItems: 'center' },
+  linkText: { color: BLUE, fontSize: 13, fontWeight: '600' },
 });
