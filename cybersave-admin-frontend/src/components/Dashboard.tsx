@@ -2,7 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { useSocket } from '../context/SocketContext';
 import { 
   ArrowLeftRight, Bell, HelpCircle, BarChart3, ShieldCheck, 
-  TrendingUp, TrendingDown, Clock, MapPin, FileText
+  TrendingUp, TrendingDown, Clock, MapPin, FileText, Calendar
 } from 'lucide-react';
 import { 
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip as RechartsTooltip, ResponsiveContainer,

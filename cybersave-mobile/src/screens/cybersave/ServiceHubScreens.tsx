@@ -197,14 +197,15 @@ export const ServicesHubScreen = ({ navigation }: any) => {
 };
 
 export const AadhaarServicesScreen = ({ navigation }: any) => {
-  const cybersaveFeatures = [
-    { id: '1', icon: 'shield-check-outline', title: 'Download Aadhaar', description: 'Fetch official Aadhaar details via OTP', color: '#10B981' },
-  ];
-
-  const uidaiFeatures = [
-    { id: '2', icon: 'home-outline', title: 'Update Aadhaar', description: 'Continue through UIDAI', color: '#2F6BFF' },
-    { id: '3', icon: 'clock-outline', title: 'Track Update', description: 'Continue through UIDAI', color: '#EC4899' },
-    { id: '4', icon: 'calendar-month-outline', title: 'Book Appointment', description: 'Continue through UIDAI', color: '#06B6D4' },
+  const aadhaarServices = [
+    { id: '1', icon: 'home-outline', title: 'Update Address', description: 'Change online with valid proof of address', color: '#2F6BFF' },
+    { id: '2', icon: 'phone-outline', title: 'Update Mobile', description: 'Link your active number with bio verification', color: '#10B981' },
+    { id: '3', icon: 'account-outline', title: 'Update Name', description: 'Correct name spelling errors securely', color: '#F59E0B' },
+    { id: '4', icon: 'download-outline', title: 'Download e-Aadhaar', description: 'Get a secure digitally signed copy', color: '#8B5CF6' },
+    { id: '5', icon: 'clock-outline', title: 'Check Status', description: 'Track biometric or demographic updates', color: '#EC4899' },
+    { id: '6', icon: 'calendar-month-outline', title: 'Book Appointment', description: 'Reserve slot at closest Seva Kendra', color: '#06B6D4' },
+    { id: '7', icon: 'shield-check-outline', title: 'Verify Aadhaar', description: 'Validate any Aadhaar number online', color: '#10B981' },
+    { id: '8', icon: 'link-variant', title: 'Link Bank Account', description: 'Check status of NPCI mapping', color: '#3B82F6' },
   ];
 
   return (
@@ -227,23 +228,9 @@ export const AadhaarServicesScreen = ({ navigation }: any) => {
           </Text>
         </View>
 
-        <Text style={styles.sectionHeading}>Available through Cybersave</Text>
+        <Text style={styles.sectionHeading}>Available Services</Text>
         <View style={styles.gridContainer}>
-          {cybersaveFeatures.map(item => (
-            <FeatureCardItem
-              key={item.id}
-              icon={item.icon}
-              title={item.title}
-              description={item.description}
-              color={item.color}
-              onPress={() => navigation.navigate('AadhaarOkyc')}
-            />
-          ))}
-        </View>
-
-        <Text style={[styles.sectionHeading, { marginTop: 20 }]}>Official UIDAI Services</Text>
-        <View style={styles.gridContainer}>
-          {uidaiFeatures.map(item => (
+          {aadhaarServices.map(item => (
             <FeatureCardItem
               key={item.id}
               icon={item.icon}

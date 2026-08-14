@@ -5,8 +5,12 @@ import { Server } from 'socket.io';
 import { setupSockets } from './socket';
 import { PrismaClient } from '@prisma/client';
 import dotenv from 'dotenv';
+import bcrypt from 'bcrypt';
+import jwt from 'jsonwebtoken';
 
 dotenv.config();
+
+const JWT_SECRET = process.env.JWT_SECRET || 'fallback_admin_secret_key_123';
 
 const app = express();
 const server = http.createServer(app);
@@ -23,6 +27,64 @@ const PORT = process.env.ADMIN_PORT || 3001;
 
 app.use(cors());
 app.use(express.json());
+
+// --- Admin Seeding ---
+async function seedAdmin() {
+  const adminEmail = 'admin@cybersave.com';
+  const existingAdmin = await prisma.user.findFirst({ where: { email: adminEmail, role: 'ADMIN' } });
+  
+  if (!existingAdmin) {
+    const salt = await bcrypt.genSalt(10);
+    const passwordHash = await bcrypt.hash('admin123', salt);
+    await prisma.user.create({
+      data: {
+        email: adminEmail,
+        passwordHash,
+        role: 'ADMIN',
+      }
+    });
+    console.log('Seeded default admin user: admin@cybersave.com / admin123');
+  }
+}
+seedAdmin();
+
+// --- Auth Routes ---
+app.post('/api/auth/login', async (req: any, res: any) => {
+  const { email, password } = req.body;
+  if (!email || !password) return res.status(400).json({ error: 'Email and password required' });
+
+  const user = await prisma.user.findFirst({ where: { email, role: 'ADMIN' } });
+  if (!user || !user.passwordHash) {
+    return res.status(401).json({ error: 'Invalid credentials or not an admin' });
+  }
+
+  const isMatch = await bcrypt.compare(password, user.passwordHash);
+  if (!isMatch) {
+    return res.status(401).json({ error: 'Invalid credentials' });
+  }
+
+  const token = jwt.sign({ id: user.id, email: user.email, role: user.role }, JWT_SECRET, { expiresIn: '24h' });
+  res.json({ token, admin: { id: user.id, email: user.email } });
+});
+
+// --- Auth Middleware ---
+const authenticateAdmin = (req: any, res: any, next: any) => {
+  const authHeader = req.headers.authorization;
+  if (!authHeader?.startsWith('Bearer ')) {
+    return res.status(401).json({ error: 'Unauthorized' });
+  }
+  const token = authHeader.split(' ')[1];
+  try {
+    const decoded = jwt.verify(token, JWT_SECRET);
+    req.user = decoded;
+    next();
+  } catch (err) {
+    return res.status(401).json({ error: 'Invalid or expired token' });
+  }
+};
+
+// Protect all /api/admin/* routes
+app.use('/api/admin', authenticateAdmin);
 
 // Ponytail: Minimum implementation to fetch real data matching the dashboard UI
 app.get('/api/admin/dashboard', async (req, res) => {

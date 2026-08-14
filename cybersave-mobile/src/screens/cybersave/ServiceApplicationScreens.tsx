@@ -170,6 +170,14 @@ const SERVICE_DOCS: Record<string, { label: string; hint: string }[]> = {
   'Caste Certificate':    [{ label: 'Caste Proof of Parent', hint: 'Father/Mother caste cert' }, { label: "Father's Aadhaar", hint: 'Clear scan' }, { label: 'School Certificate (caste field)', hint: 'TC/Marksheet showing caste' }],
   'Income Certificate':   [{ label: 'Income Proof', hint: 'Salary slip / ITR / Bank passbook' }, { label: 'Aadhaar Card', hint: 'Clear scan' }, { label: 'Address Proof', hint: 'Utility bill / Rent deed' }],
   'Domicile Certificate': [{ label: 'Residence Proof', hint: 'Utility bill / Rent deed' }, { label: 'Aadhaar Card', hint: 'Clear scan' }, { label: 'School/College Certificate from state', hint: 'TC with state address' }],
+  'Update Address':       [{ label: 'New Address Proof', hint: 'Utility bill, Rent Agreement, Voter ID' }, { label: 'Aadhaar Card', hint: 'Clear scan of current Aadhaar' }],
+  'Update Mobile':        [{ label: 'Biometric Verification', hint: 'Fingerprint/Iris at center' }, { label: 'Aadhaar Card', hint: 'Clear scan' }],
+  'Update Name':          [{ label: 'Proof of Identity (New Name)', hint: 'Passport, PAN, Voter ID, Driving License' }, { label: 'Aadhaar Card', hint: 'Clear scan of current Aadhaar' }],
+  'Download e-Aadhaar':   [{ label: 'Aadhaar Number / Enrolment ID', hint: 'Required for OTP verification' }],
+  'Check Status':         [],
+  'Book Appointment':     [],
+  'Verify Aadhaar':       [],
+  'Link Bank Account':    [{ label: 'Bank Passbook / Statement', hint: 'Clear scan showing account details' }, { label: 'Aadhaar Card', hint: 'Clear scan' }],
 };
 
 const DEFAULT_DOCS = [
