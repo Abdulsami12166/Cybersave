@@ -92,16 +92,40 @@ export const fetchServicesApi = async (category?: string) => {
 export const createApplicationApi = async (data: {
   userId: string;
   serviceTitle: string;
-  serviceSlug?: string;
   formData: any;
-  documents?: any[];
-  feePaid?: number;
+  documents: any[];
+  feePaid: number;
+  razorpayOrderId?: string;
+  razorpayPaymentId?: string;
+  razorpaySignature?: string;
 }) => {
   try {
     const res = await apiClient.post('/applications', data);
     return res.data;
-  } catch (error) {
-    return null;
+  } catch (error: any) {
+    return { error: error.response?.data?.message || 'Failed to submit application' };
+  }
+};
+
+export const createRazorpayOrderApi = async (amount: number, receipt: string) => {
+  try {
+    const res = await apiClient.post('/payment/create-order', { amount, receipt });
+    return res.data;
+  } catch (error: any) {
+    return { success: false, message: error.response?.data?.message || 'Failed to create payment order' };
+  }
+};
+
+export const verifyRazorpayPaymentApi = async (razorpayOrderId: string, razorpayPaymentId: string, razorpaySignature: string) => {
+  try {
+    const res = await apiClient.post('/payment/verify', {
+      razorpayOrderId,
+      razorpayPaymentId,
+      razorpaySignature
+    });
+    return res.data;
+  } catch (error: any) {
+    return { success: false, message: error.response?.data?.message || 'Failed to verify payment' };
   }
 };
 

@@ -127,6 +127,9 @@ model Application {
   officialOfficer      String?           @default("Officer Sharma (SDM)")
   feePaid              Float             @default(50.0)
   paymentStatus        String            @default("Success")
+  razorpayOrderId      String?
+  razorpayPaymentId    String?
+  razorpaySignature    String?
   formData             Json?             // Form input fields (fullName, dob, state, etc.)
   documents            Json?             // List of uploaded file objects/URLs
   submittedAt          DateTime          @default(now())

@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { useAuth } from '../../context/AuthContext';
-import { createApplicationApi, uploadDocumentApi } from '../../api/client';
+import { createApplicationApi, uploadDocumentApi, createRazorpayOrderApi, verifyRazorpayPaymentApi } from '../../api/client';
 import { launchImageLibrary } from 'react-native-image-picker';
 // @ts-ignore
 import RazorpayCheckout from 'react-native-razorpay';
@@ -820,37 +820,63 @@ export const PaymentPortalScreen = ({ route, navigation }: any) => {
   const [isPaying, setIsPaying] = useState(false);
 
   const handlePay = async () => {
-    // Ponytail: test key for Razorpay, bypassing backend order creation since it's just a test scheme flow
-    var options = {
-      description: serviceTitle,
-      image: 'https://cdn-icons-png.flaticon.com/512/3031/3031293.png',
-      currency: 'INR',
-      key: 'rzp_test_zVwTfVzPZZVvKj', // Dummy public test key
-      amount: '5500',
-      name: 'CyberSave E-Gov',
-      prefill: {
-        email: user?.email || 'test@cybersave.app',
-        contact: user?.phone || '9999999999',
-        name: user?.fullName || 'Citizen'
-      },
-      theme: { color: BLUE_DARK }
-    };
-
     try {
-      const data = await RazorpayCheckout.open(options);
-      // Payment successful
       setIsPaying(true);
+      // 1. Create Order on Backend
+      const orderRes = await createRazorpayOrderApi(55, `CSB${Date.now().toString().slice(-8)}`);
+      
+      if (!orderRes || !orderRes.success) {
+        setIsPaying(false);
+        Alert.alert('Payment Error', orderRes?.message || 'Failed to initialize payment.');
+        return;
+      }
+
+      var options = {
+        description: serviceTitle,
+        image: 'https://cdn-icons-png.flaticon.com/512/3031/3031293.png',
+        currency: orderRes.currency,
+        key: 'rzp_test_zVwTfVzPZZVvKj', // Should match backend Test Key
+        amount: orderRes.amount.toString(),
+        name: 'CyberSave E-Gov',
+        order_id: orderRes.orderId,
+        prefill: {
+          email: user?.email || 'test@cybersave.app',
+          contact: user?.phone || '9999999999',
+          name: user?.fullName || 'Citizen'
+        },
+        theme: { color: BLUE_DARK }
+      };
+
+      const data = await RazorpayCheckout.open(options);
+      
+      // 2. Verify Payment on Backend
+      const verifyRes = await verifyRazorpayPaymentApi(
+        data.razorpay_order_id,
+        data.razorpay_payment_id,
+        data.razorpay_signature
+      );
+
+      if (!verifyRes || !verifyRes.success) {
+        setIsPaying(false);
+        Alert.alert('Verification Failed', 'Payment signature verification failed.');
+        return;
+      }
+
+      // 3. Complete Application Submission
       const result = await createApplicationApi({
         userId: user?.id || 'default-user-id',
         serviceTitle,
         formData,
         documents: uploadedDocs,
         feePaid: 55.0,
+        razorpayOrderId: data.razorpay_order_id,
+        razorpayPaymentId: data.razorpay_payment_id,
+        razorpaySignature: data.razorpay_signature,
       });
       setIsPaying(false);
-      
-      navigation.navigate('PaymentSuccess', { 
-        title: serviceTitle, 
+
+      navigation.navigate('PaymentSuccess', {
+        title: serviceTitle,
         refNumber: data.razorpay_payment_id || result?.refNumber || `CSB${Date.now().toString().slice(-8)}`
       });
     } catch (error: any) {
