@@ -1,5 +1,5 @@
 datasource db {
-  provider = "postgresql"
+  provider = "mongodb"
   url      = env("DATABASE_URL")
 }
 
@@ -13,11 +13,13 @@ enum Role {
 }
 
 enum ApplicationStatus {
+  PENDING
   SUBMITTED
   VERIFYING
   IN_PROGRESS
   APPROVED
   REJECTED
+  COMPLETED
 }
 
 enum TransactionType {
@@ -29,6 +31,10 @@ enum NotificationType {
   APPLICATION_UPDATE
   PAYMENT
   SYSTEM
+  SECURITY
+  WARNING
+  SUCCESS
+  INFO
 }
 
 enum NotificationStatus {
@@ -39,7 +45,7 @@ enum NotificationStatus {
 }
 
 model User {
-  id            String    @id @default(uuid())
+  id            String    @id @default(auto()) @map("_id") @db.ObjectId
   phone         String?   @unique
   email         String?   @unique
   keycloakId    String?   @unique
@@ -59,14 +65,11 @@ model User {
   auditLogs     AuditLog[]
   supportTickets SupportTicket[]
 
-  @@index([phone])
-  @@index([email])
-  @@index([keycloakId])
 }
 
 model Profile {
-  id          String   @id @default(uuid())
-  userId      String   @unique
+  id          String   @id @default(auto()) @map("_id") @db.ObjectId
+  userId      String   @unique @db.ObjectId
   user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
   fullName    String?
   phone       String?
@@ -81,11 +84,10 @@ model Profile {
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 
-  @@index([userId])
 }
 
 model Service {
-  id             String        @id @default(uuid())
+  id             String        @id @default(auto()) @map("_id") @db.ObjectId
   slug           String        @unique // e.g. "birth-certificate", "aadhaar-address"
   title          String
   description    String
@@ -107,15 +109,14 @@ model Service {
   applications   Application[]
 
   @@index([category])
-  @@index([slug])
 }
 
 model Application {
-  id                   String            @id @default(uuid())
+  id                   String            @id @default(auto()) @map("_id") @db.ObjectId
   refNumber            String            @unique // e.g. "CSB2024001234"
-  userId               String
+  userId               String            @db.ObjectId
   user                 User              @relation(fields: [userId], references: [id], onDelete: Cascade)
-  serviceId            String
+  serviceId            String            @db.ObjectId
   service              Service           @relation(fields: [serviceId], references: [id])
   serviceTitle         String
   status               ApplicationStatus @default(SUBMITTED)
@@ -132,13 +133,12 @@ model Application {
   documentUploads      DocumentUpload[]
 
   @@index([userId])
-  @@index([refNumber])
   @@index([status])
 }
 
 model Wallet {
-  id           String              @id @default(uuid())
-  userId       String              @unique
+  id           String              @id @default(auto()) @map("_id") @db.ObjectId
+  userId       String              @unique @db.ObjectId
   user         User                @relation(fields: [userId], references: [id], onDelete: Cascade)
   balance      Float               @default(0.0)
   createdAt    DateTime            @default(now())
@@ -146,14 +146,13 @@ model Wallet {
 
   transactions WalletTransaction[]
 
-  @@index([userId])
 }
 
 model WalletTransaction {
-  id          String          @id @default(uuid())
-  walletId    String
+  id          String          @id @default(auto()) @map("_id") @db.ObjectId
+  walletId    String          @db.ObjectId
   wallet      Wallet          @relation(fields: [walletId], references: [id], onDelete: Cascade)
-  userId      String
+  userId      String          @db.ObjectId
   type        TransactionType @default(CREDIT)
   title       String
   subtitle    String?
@@ -167,10 +166,10 @@ model WalletTransaction {
 }
 
 model DocumentUpload {
-  id            String       @id @default(uuid())
-  userId        String
+  id            String       @id @default(auto()) @map("_id") @db.ObjectId
+  userId        String       @db.ObjectId
   user          User         @relation(fields: [userId], references: [id], onDelete: Cascade)
-  applicationId String?
+  applicationId String?      @db.ObjectId
   application   Application? @relation(fields: [applicationId], references: [id], onDelete: SetNull)
   fileUrl       String       // Cloudinary URL
   fileName      String
@@ -183,8 +182,8 @@ model DocumentUpload {
 }
 
 model Notification {
-  id        String             @id @default(uuid())
-  userId    String
+  id        String             @id @default(auto()) @map("_id") @db.ObjectId
+  userId    String             @db.ObjectId
   user      User               @relation(fields: [userId], references: [id], onDelete: Cascade)
   title     String
   body      String
@@ -198,8 +197,8 @@ model Notification {
 }
 
 model AuditLog {
-  id        String   @id @default(uuid())
-  userId    String?
+  id        String   @id @default(auto()) @map("_id") @db.ObjectId
+  userId    String?  @db.ObjectId
   user      User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
   action    String   // e.g., "USER_LOGIN", "SUBMIT_APPLICATION"
   details   String?
@@ -211,8 +210,8 @@ model AuditLog {
 }
 
 model AadhaarDocument {
-  id                 String   @id @default(uuid())
-  userId             String
+  id                 String   @id @default(auto()) @map("_id") @db.ObjectId
+  userId             String   @db.ObjectId
   user               User     @relation(fields: [userId], references: [id], onDelete: Cascade)
   documentType       String   @default("OFFLINE_EKYC")
   referenceId        String?
@@ -234,9 +233,9 @@ model AadhaarDocument {
 }
 
 model SupportTicket {
-  id          String   @id @default(uuid())
+  id          String   @id @default(auto()) @map("_id") @db.ObjectId
   refNumber   String   @unique // e.g. TKT-2024-001
-  userId      String?
+  userId      String?  @db.ObjectId
   user        User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
   title       String
   category    String   @default("Technical")

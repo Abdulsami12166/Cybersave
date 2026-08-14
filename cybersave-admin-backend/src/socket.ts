@@ -166,7 +166,7 @@ export function setupSockets(io: Server) {
 
         socket.emit('response_services_data', {
           stats: { totalServices, active: 41, offline: 2, drafts: 5 },
-          services: formattedServices
+          services: grouped
         });
       } catch (e) { console.error(e); }
     });

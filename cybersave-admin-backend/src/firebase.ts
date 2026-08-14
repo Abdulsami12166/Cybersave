@@ -1,4 +1,4 @@
-import * as admin from 'firebase-admin';
+const admin = require('firebase-admin');
 import path from 'path';
 
 // Using the provided service account JSON from the root
