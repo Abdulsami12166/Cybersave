@@ -8,6 +8,8 @@ export default function UserManagement() {
   const [data, setData] = useState<any>(null);
   const [loading, setLoading] = useState(true);
 
+  const [filterStatus, setFilterStatus] = useState<string>('All');
+  
   useEffect(() => {
     if (socket && connected) {
       socket.emit('request_users_data');
@@ -15,15 +17,49 @@ export default function UserManagement() {
         setData(resData);
         setLoading(false);
       });
+      socket.on('add_citizen_success', () => {
+        alert('Citizen added successfully!');
+        socket.emit('request_users_data'); // refresh
+      });
+      socket.on('block_citizen_success', () => {
+        alert('Citizen status updated.');
+        socket.emit('request_users_data');
+      });
     }
     return () => {
-      if (socket) socket.off('response_users_data');
+      if (socket) {
+        socket.off('response_users_data');
+        socket.off('add_citizen_success');
+        socket.off('block_citizen_success');
+      }
     };
   }, [socket, connected]);
 
   if (loading) return <div>Loading users...</div>;
 
+  const handleAddCitizen = () => {
+    const name = window.prompt("Enter citizen's full name:");
+    if (!name) return;
+    const email = window.prompt("Enter citizen's email address:");
+    if (!email) return;
+    if (socket) socket.emit('add_citizen', { name, email });
+  };
+
+  const handleBlock = (id: string, currentStatus: string) => {
+    const newStatus = currentStatus === 'BLOCKED' ? 'Verified' : 'BLOCKED';
+    if (socket) socket.emit('block_citizen', { id, status: newStatus });
+  };
+
   const { stats, users } = data || {};
+  
+  // Local filtering
+  const filteredUsers = (users || []).filter((u: any) => {
+    if (filterStatus === 'All') return true;
+    if (filterStatus === 'Verified' && u.status === 'Verified') return true;
+    if (filterStatus === 'Unverified' && u.status === 'Pending') return true;
+    if (filterStatus === 'Blocked' && u.status === 'BLOCKED') return true;
+    return false;
+  });
 
   return (
     <>
@@ -34,9 +70,9 @@ export default function UserManagement() {
           <p>Manage and monitor all registered citizens across service centres</p>
         </div>
         <div style={{display: 'flex', gap: 12}}>
-          <button className="date-picker-btn">Import</button>
-          <button className="date-picker-btn">Export</button>
-          <button className="action-btn">+ Add Citizen</button>
+          <button className="date-picker-btn" onClick={() => alert('Exporting data to CSV...')}>Import</button>
+          <button className="date-picker-btn" onClick={() => alert('Exporting data to CSV...')}>Export</button>
+          <button className="action-btn" onClick={handleAddCitizen}>+ Add Citizen</button>
         </div>
       </div>
 
@@ -66,10 +102,10 @@ export default function UserManagement() {
       <div className="table-card" style={{marginTop: 24, padding: 0}}>
         <div style={{display: 'flex', justifyContent: 'space-between', padding: 16, borderBottom: '1px solid var(--border-color)'}}>
           <div style={{display: 'flex', gap: 16}}>
-            <button className="date-picker-btn" style={{borderColor: 'var(--primary-blue)', color: 'var(--primary-blue)'}}>All Citizens</button>
-            <button className="date-picker-btn" style={{border: 'none'}}>Verified</button>
-            <button className="date-picker-btn" style={{border: 'none'}}>Unverified</button>
-            <button className="date-picker-btn" style={{border: 'none'}}>Blocked</button>
+            <button className="date-picker-btn" style={{borderColor: filterStatus === 'All' ? 'var(--primary-blue)' : '#e5e7eb', color: filterStatus === 'All' ? 'var(--primary-blue)' : '#374151'}} onClick={() => setFilterStatus('All')}>All Citizens</button>
+            <button className="date-picker-btn" style={{borderColor: filterStatus === 'Verified' ? 'var(--primary-blue)' : 'transparent', color: filterStatus === 'Verified' ? 'var(--primary-blue)' : '#374151', border: filterStatus === 'Verified' ? '1px solid' : 'none'}} onClick={() => setFilterStatus('Verified')}>Verified</button>
+            <button className="date-picker-btn" style={{borderColor: filterStatus === 'Unverified' ? 'var(--primary-blue)' : 'transparent', color: filterStatus === 'Unverified' ? 'var(--primary-blue)' : '#374151', border: filterStatus === 'Unverified' ? '1px solid' : 'none'}} onClick={() => setFilterStatus('Unverified')}>Unverified</button>
+            <button className="date-picker-btn" style={{borderColor: filterStatus === 'Blocked' ? 'var(--primary-blue)' : 'transparent', color: filterStatus === 'Blocked' ? 'var(--primary-blue)' : '#374151', border: filterStatus === 'Blocked' ? '1px solid' : 'none'}} onClick={() => setFilterStatus('Blocked')}>Blocked</button>
           </div>
           <div style={{display: 'flex', gap: 12}}>
             <button className="date-picker-btn">Last 30 Days</button>
@@ -93,30 +129,42 @@ export default function UserManagement() {
             </tr>
           </thead>
           <tbody>
-            {(users || []).map((user: any, i: number) => (
+            {filteredUsers.map((user: any, i: number) => (
               <tr key={i}>
                 <td style={{fontWeight: 600, display: 'flex', alignItems: 'center', gap: 12}}>
                   <input type="checkbox" /> {user.id}
                 </td>
-                <td style={{fontWeight: 500, color: '#111827'}}>{user.fullName}</td>
+                <td style={{fontWeight: 500}}>
+                  <div style={{display: 'flex', alignItems: 'center', gap: 8}}>
+                    <img src={`https://i.pravatar.cc/150?img=${i+20}`} alt={user.fullName} style={{width: 24, height: 24, borderRadius: '50%'}} />
+                    {user.fullName}
+                  </div>
+                </td>
                 <td style={{color: '#6b7280'}}>{user.aadhaar}</td>
                 <td style={{color: '#6b7280'}}>{user.mobile}</td>
                 <td style={{color: '#6b7280'}}>{user.district}</td>
-                <td style={{fontWeight: 600}}>{user.servicesUsed} services</td>
+                <td style={{fontWeight: 600}}>{user.servicesUsed} <span style={{color: '#6b7280', fontWeight: 400}}>services</span></td>
                 <td>
-                  <span className={`badge ${user.status.toLowerCase().replace(' ', '')}`}>
+                  <span className={`badge ${user.status === 'Verified' ? 'completed' : user.status === 'BLOCKED' ? 'rejected' : 'pending'}`}>
                     {user.status}
                   </span>
                 </td>
-                <td style={{color: '#6b7280'}}>{user.lastActive}</td>
-                <td style={{color: '#6b7280', cursor: 'pointer'}}>•••</td>
+                <td style={{color: '#6b7280', fontSize: 13}}>{user.lastActive}</td>
+                <td>
+                  <div style={{display: 'flex', gap: 8}}>
+                    <button className="date-picker-btn" style={{padding: '4px 12px'}}>View</button>
+                    <button className="date-picker-btn" style={{padding: '4px 12px', color: user.status === 'BLOCKED' ? '#10b981' : '#ef4444'}} onClick={() => handleBlock(user.id, user.status)}>
+                      {user.status === 'BLOCKED' ? 'Unblock' : 'Block'}
+                    </button>
+                  </div>
+                </td>
               </tr>
             ))}
           </tbody>
         </table>
-
-        <div style={{padding: 16, display: 'flex', justifyContent: 'space-between', alignItems: 'center'}}>
-          <div style={{fontSize: 13, color: '#6b7280'}}>Showing 1-10 of {stats?.totalCitizens} citizens</div>
+        
+        <div style={{padding: 16, display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderTop: '1px solid var(--border-color)'}}>
+          <div style={{fontSize: 13, color: '#6b7280'}}>Showing {filteredUsers.length} active citizens</div>
           <div style={{display: 'flex', gap: 8}}>
             <button className="date-picker-btn">Previous</button>
             <button className="action-btn" style={{padding: '4px 12px'}}>1</button>

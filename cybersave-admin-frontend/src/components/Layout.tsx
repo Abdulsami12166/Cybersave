@@ -16,10 +16,21 @@ export default function Layout() {
     { icon: <ArrowLeftRight size={20} />, label: 'Transactions', path: '/transactions' },
     { icon: <Bell size={20} />, label: 'Notifications', path: '/notifications' },
     { icon: <HelpCircle size={20} />, label: 'Support Tickets', path: '/support' },
-    { icon: <BarChart3 size={20} />, label: 'Analytics', path: '/analytics' },
-    { icon: <ShieldCheck size={20} />, label: 'Audit Logs', path: '/audit' },
-    { icon: <Settings size={20} />, label: 'Settings', path: '/settings' },
+    { icon: <BarChart3 size={20} />, label: 'Analytics', path: '/analytics', requiredPermission: 'REPORTS' },
+    { icon: <ShieldCheck size={20} />, label: 'Audit Logs', path: '/audit', requiredPermission: 'SETTINGS' },
+    { icon: <Settings size={20} />, label: 'Settings', path: '/settings', requiredPermission: 'SETTINGS' },
   ];
+
+  // Ponytail Least Privilege: In a real app this comes from AuthContext
+  const adminPermissions = ['DASHBOARD', 'USERS', 'APPLICATIONS', 'OPERATORS', 'SETTINGS', 'REPORTS']; 
+  const filteredNavItems = navItems.filter(item => !item.requiredPermission || adminPermissions.includes(item.requiredPermission));
+
+  const toggleDarkMode = () => {
+    // Ponytail minimal dark mode implementation
+    const isDark = document.body.style.filter.includes('invert');
+    document.body.style.filter = isDark ? '' : 'invert(1) hue-rotate(180deg)';
+    document.body.style.transition = 'filter 0.3s ease';
+  };
 
   return (
     <div className="app-container">
@@ -28,7 +39,7 @@ export default function Layout() {
           <span style={{color: '#2563eb'}}>Cyber</span><span style={{color: '#111827'}}>save</span>
         </div>
         
-        {navItems.map((item, index) => (
+        {filteredNavItems.map((item, index) => (
           <NavLink key={index} to={item.path} className={({isActive}) => isActive ? "nav-item active" : "nav-item"} end={item.path === '/'}>
             {item.icon} {item.label}
           </NavLink>
@@ -48,7 +59,7 @@ export default function Layout() {
           </div>
           <div className="header-right">
             <div style={{fontSize: '14px', fontWeight: 500, color: '#6b7280'}}>EN</div>
-            <Sun size={20} color="#6b7280" />
+            <Sun size={20} color="#6b7280" onClick={toggleDarkMode} style={{cursor: 'pointer'}} />
             <div style={{position: 'relative'}}>
               <Bell size={20} color="#6b7280" />
               <div style={{position: 'absolute', top: -4, right: -4, background: '#ef4444', color: 'white', fontSize: '10px', borderRadius: '50%', width: 14, height: 14, display: 'flex', justifyContent: 'center', alignItems: 'center'}}>12</div>

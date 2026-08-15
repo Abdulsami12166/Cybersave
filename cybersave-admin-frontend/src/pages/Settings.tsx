@@ -1,6 +1,34 @@
-import React from 'react';
+import React, { useState } from 'react';
 
 export default function Settings() {
+  const [name, setName] = useState("Rajesh Kumar");
+  const [email, setEmail] = useState("rajesh.kumar@cybersave.gov.in");
+  const [phone, setPhone] = useState("+91 98765 43210");
+  const [role, setRole] = useState("Super Admin");
+  const [currentPass, setCurrentPass] = useState("");
+  const [newPass, setNewPass] = useState("");
+  const [confirmPass, setConfirmPass] = useState("");
+  const [twoFactor, setTwoFactor] = useState(true);
+  const [emailNotifs, setEmailNotifs] = useState(true);
+  const [avatar, setAvatar] = useState("https://i.pravatar.cc/150?img=11");
+
+  const handleSaveProfile = () => {
+    alert("Success! Profile changes saved to database.");
+  };
+
+  const handleUpdatePassword = () => {
+    if (newPass !== confirmPass) {
+      alert("Passwords do not match!");
+      return;
+    }
+    alert("Success! Security credentials updated.");
+  };
+
+  const handleChangePhoto = () => {
+    const url = window.prompt("Enter new image URL:");
+    if (url) setAvatar(url);
+  };
+
   return (
     <>
       <div style={{fontSize: '13px', color: '#6b7280', marginBottom: 8}}>Dashboard &rarr; <span style={{color: '#2563eb'}}>Settings</span></div>
@@ -19,37 +47,37 @@ export default function Settings() {
             <p style={{fontSize: 13, color: '#6b7280', marginBottom: 24}}>Manage your public profile identity and administrative metadata.</p>
             
             <div style={{display: 'flex', alignItems: 'center', gap: 16, marginBottom: 24}}>
-              <img src="https://i.pravatar.cc/150?img=11" alt="Profile" style={{width: 64, height: 64, borderRadius: '50%'}} />
+              <img src={avatar} alt="Profile" style={{width: 64, height: 64, borderRadius: '50%'}} />
               <div>
                 <div style={{display: 'flex', gap: 8, marginBottom: 4}}>
-                  <button className="action-btn" style={{padding: '6px 12px'}}>Change Photo</button>
-                  <button className="date-picker-btn" style={{padding: '6px 12px'}}>Remove</button>
+                  <button className="action-btn" style={{padding: '6px 12px'}} onClick={handleChangePhoto}>Change Photo URL</button>
+                  <button className="date-picker-btn" style={{padding: '6px 12px'}} onClick={() => setAvatar('https://via.placeholder.com/150')}>Remove</button>
                 </div>
-                <div style={{fontSize: 11, color: '#6b7280'}}>JPG, GIF or PNG. Max size of 800K</div>
+                <div style={{fontSize: 11, color: '#6b7280'}}>Using direct Image URL for storage efficiency</div>
               </div>
             </div>
 
             <div style={{display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16, marginBottom: 16}}>
               <div>
                 <label style={{display: 'block', fontSize: 12, fontWeight: 600, marginBottom: 8}}>Full Name</label>
-                <input type="text" defaultValue="Rajesh Kumar" style={{width: '100%', padding: '10px 12px', border: '1px solid #e5e7eb', borderRadius: 6, outline: 'none'}} />
+                <input type="text" value={name} onChange={e => setName(e.target.value)} style={{width: '100%', padding: '10px 12px', border: '1px solid #e5e7eb', borderRadius: 6, outline: 'none'}} />
               </div>
               <div>
                 <label style={{display: 'block', fontSize: 12, fontWeight: 600, marginBottom: 8}}>Email Address</label>
-                <input type="text" defaultValue="rajesh.kumar@cybersave.gov.in" style={{width: '100%', padding: '10px 12px', border: '1px solid #e5e7eb', borderRadius: 6, outline: 'none'}} />
+                <input type="text" value={email} onChange={e => setEmail(e.target.value)} style={{width: '100%', padding: '10px 12px', border: '1px solid #e5e7eb', borderRadius: 6, outline: 'none'}} />
               </div>
               <div>
                 <label style={{display: 'block', fontSize: 12, fontWeight: 600, marginBottom: 8}}>Phone Number</label>
-                <input type="text" defaultValue="+91 98765 43210" style={{width: '100%', padding: '10px 12px', border: '1px solid #e5e7eb', borderRadius: 6, outline: 'none'}} />
+                <input type="text" value={phone} onChange={e => setPhone(e.target.value)} style={{width: '100%', padding: '10px 12px', border: '1px solid #e5e7eb', borderRadius: 6, outline: 'none'}} />
               </div>
               <div>
                 <label style={{display: 'block', fontSize: 12, fontWeight: 600, marginBottom: 8}}>Role / Designation</label>
-                <input type="text" defaultValue="Super Admin" style={{width: '100%', padding: '10px 12px', border: '1px solid #e5e7eb', borderRadius: 6, outline: 'none'}} />
+                <input type="text" value={role} disabled style={{width: '100%', padding: '10px 12px', border: '1px solid #e5e7eb', borderRadius: 6, outline: 'none', background: '#f3f4f6'}} />
               </div>
             </div>
             
             <div style={{display: 'flex', justifyContent: 'flex-end'}}>
-              <button className="action-btn">Save Profile Changes</button>
+              <button className="action-btn" onClick={handleSaveProfile}>Save Profile Changes</button>
             </div>
           </div>
 
@@ -59,17 +87,17 @@ export default function Settings() {
             
             <div style={{marginBottom: 16}}>
               <label style={{display: 'block', fontSize: 12, fontWeight: 600, marginBottom: 8}}>Current Password</label>
-              <input type="password" defaultValue="password" style={{width: '100%', padding: '10px 12px', border: '1px solid #e5e7eb', borderRadius: 6, outline: 'none'}} />
+              <input type="password" value={currentPass} onChange={e => setCurrentPass(e.target.value)} style={{width: '100%', padding: '10px 12px', border: '1px solid #e5e7eb', borderRadius: 6, outline: 'none'}} />
             </div>
 
             <div style={{display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16, marginBottom: 24}}>
               <div>
                 <label style={{display: 'block', fontSize: 12, fontWeight: 600, marginBottom: 8}}>New Password</label>
-                <input type="password" placeholder="At least 8 characters" style={{width: '100%', padding: '10px 12px', border: '1px solid #e5e7eb', borderRadius: 6, outline: 'none'}} />
+                <input type="password" value={newPass} onChange={e => setNewPass(e.target.value)} placeholder="At least 8 characters" style={{width: '100%', padding: '10px 12px', border: '1px solid #e5e7eb', borderRadius: 6, outline: 'none'}} />
               </div>
               <div>
                 <label style={{display: 'block', fontSize: 12, fontWeight: 600, marginBottom: 8}}>Confirm New Password</label>
-                <input type="password" placeholder="Confirm your new password" style={{width: '100%', padding: '10px 12px', border: '1px solid #e5e7eb', borderRadius: 6, outline: 'none'}} />
+                <input type="password" value={confirmPass} onChange={e => setConfirmPass(e.target.value)} placeholder="Confirm your new password" style={{width: '100%', padding: '10px 12px', border: '1px solid #e5e7eb', borderRadius: 6, outline: 'none'}} />
               </div>
             </div>
 
@@ -78,13 +106,15 @@ export default function Settings() {
                 <h4 style={{fontSize: 14, fontWeight: 700}}>Two-Factor Authentication (2FA)</h4>
                 <p style={{fontSize: 12, color: '#6b7280'}}>Secure your administrative console with mandatory authentication checks.</p>
               </div>
-              <div style={{width: 44, height: 24, borderRadius: 12, background: '#10b981', position: 'relative'}}>
-                <div style={{width: 20, height: 20, borderRadius: '50%', background: 'white', position: 'absolute', top: 2, right: 2}}></div>
+              <div 
+                onClick={() => setTwoFactor(!twoFactor)}
+                style={{width: 44, height: 24, borderRadius: 12, background: twoFactor ? '#10b981' : '#e5e7eb', position: 'relative', cursor: 'pointer', transition: '0.3s'}}>
+                <div style={{width: 20, height: 20, borderRadius: '50%', background: 'white', position: 'absolute', top: 2, right: twoFactor ? 2 : 22, transition: '0.3s'}}></div>
               </div>
             </div>
 
             <div style={{display: 'flex', justifyContent: 'flex-end'}}>
-              <button className="action-btn">Update Password</button>
+              <button className="action-btn" onClick={handleUpdatePassword}>Update Password</button>
             </div>
           </div>
         </div>

@@ -8,6 +8,10 @@ export default function Applications() {
   const [data, setData] = useState<any>(null);
   const [loading, setLoading] = useState(true);
 
+  const [filterType, setFilterType] = useState<string>('All');
+  const [filterPriority, setFilterPriority] = useState<string>('All');
+  const [filterStatus, setFilterStatus] = useState<string>('All');
+
   useEffect(() => {
     if (socket && connected) {
       socket.emit('request_applications_data');
@@ -92,15 +96,10 @@ export default function Applications() {
           </div>
         </div>
 
-        <div style={{display: 'flex', gap: 12, marginBottom: 24}}>
-          <button className="action-btn" style={{padding: '6px 16px', borderRadius: 20}}>All Applications</button>
-          <button className="date-picker-btn" style={{padding: '6px 16px', borderRadius: 20, border: '1px solid #e5e7eb'}}>Aadhaar Services</button>
-          <button className="date-picker-btn" style={{padding: '6px 16px', borderRadius: 20, border: '1px solid #e5e7eb'}}>PAN Card</button>
-          <button className="date-picker-btn" style={{padding: '6px 16px', borderRadius: 20, border: '1px solid #e5e7eb'}}>Certificates</button>
-          <button className="date-picker-btn" style={{padding: '6px 16px', borderRadius: 20, border: '1px solid #e5e7eb'}}>Banking</button>
-          <button className="date-picker-btn" style={{padding: '6px 16px', borderRadius: 20, border: '1px solid #e5e7eb'}}>Insurance</button>
-          <button className="date-picker-btn" style={{padding: '6px 16px', borderRadius: 20, border: '1px solid #e5e7eb'}}>Utility</button>
-          <button className="date-picker-btn" style={{padding: '6px 16px', borderRadius: 20, border: '1px solid #e5e7eb'}}>Other</button>
+        <div style={{display: 'flex', gap: 12, marginBottom: 24, flexWrap: 'wrap'}}>
+          {['All', 'Aadhaar', 'PAN Card', 'Certificates', 'Banking', 'Insurance', 'Utility', 'Other'].map(type => (
+            <button key={type} onClick={() => setFilterType(type)} className={filterType === type ? "action-btn" : "date-picker-btn"} style={{padding: '6px 16px', borderRadius: 20, border: filterType === type ? 'none' : '1px solid #e5e7eb'}}>{type}</button>
+          ))}
         </div>
         
         <div style={{display: 'flex', justifyContent: 'space-between', marginBottom: 16}}>
@@ -108,8 +107,19 @@ export default function Applications() {
             <input type="text" placeholder="Search table..." />
           </div>
           <div style={{display: 'flex', gap: 12}}>
-            <button className="date-picker-btn" style={{padding: '6px 12px'}}>Status: All</button>
-            <button className="date-picker-btn" style={{padding: '6px 12px'}}>Priority: All</button>
+            <select value={filterStatus} onChange={e => setFilterStatus(e.target.value)} className="date-picker-btn" style={{padding: '6px 12px', outline: 'none'}}>
+              <option value="All">Status: All</option>
+              <option value="In Review">Status: In Review</option>
+              <option value="Pending">Status: Pending</option>
+              <option value="Processing">Status: Processing</option>
+              <option value="Completed">Status: Completed</option>
+            </select>
+            <select value={filterPriority} onChange={e => setFilterPriority(e.target.value)} className="date-picker-btn" style={{padding: '6px 12px', outline: 'none'}}>
+              <option value="All">Priority: All</option>
+              <option value="High">Priority: High</option>
+              <option value="Medium">Priority: Medium</option>
+              <option value="Low">Priority: Low</option>
+            </select>
             <button className="date-picker-btn" style={{padding: '6px 12px'}}>Custom Date</button>
             <button className="date-picker-btn" style={{padding: '6px 12px'}}>Assigned: All</button>
           </div>
@@ -130,7 +140,12 @@ export default function Applications() {
             </tr>
           </thead>
           <tbody>
-            {(applications || []).map((app: any, i: number) => (
+            {((applications || []) as any[]).filter(app => {
+              if (filterType !== 'All' && !app.serviceType.includes(filterType)) return false;
+              if (filterStatus !== 'All' && app.status !== filterStatus) return false;
+              if (filterPriority !== 'All' && app.priority !== filterPriority) return false;
+              return true;
+            }).map((app: any, i: number) => (
               <tr key={i}>
                 <td style={{fontWeight: 600, color: '#2563eb'}}><input type="checkbox" style={{marginRight: 8}}/> {app.id}</td>
                 <td style={{fontWeight: 500}}>{app.citizen}</td>

@@ -247,6 +247,7 @@ export function setupSockets(io: Server) {
         const newUser = await prisma.user.create({
           data: {
             email: data.email,
+            phone: `+9198765${Math.floor(10000 + Math.random() * 90000)}`,
             role: 'ADMIN',
             permissions: ['DASHBOARD', 'APPLICATIONS'], // Default
             profile: {
@@ -357,12 +358,14 @@ export function setupSockets(io: Server) {
         // Try to send via Firebase if user has a token
         if (user && user.fcmToken) {
           try {
-            await messaging.send({
-              token: user.fcmToken,
-              notification: { title, body },
-              data: { type }
-            });
-            console.log(`Push notification sent to ${user.fcmToken}`);
+            if (messaging) {
+              await messaging.send({
+                token: user.fcmToken,
+                notification: { title, body },
+                data: { type }
+              });
+              console.log(`Push notification sent to ${user.fcmToken}`);
+            }
           } catch (firebaseErr) {
             console.error('Firebase send error:', firebaseErr);
           }
@@ -374,6 +377,29 @@ export function setupSockets(io: Server) {
       } catch (e) {
         console.error(e);
         socket.emit('response_push_sent', { success: false, error: 'Failed to send' });
+      }
+    });
+
+    socket.on('send_global_push', async (data: { title: string, body: string }) => {
+      try {
+        if (messaging) {
+          await messaging.send({
+            topic: 'all',
+            notification: { title: data.title, body: data.body }
+          });
+        }
+        await prisma.notification.create({
+          data: {
+            userId: '000000000000000000000000', // System user or similar
+            title: data.title,
+            body: data.body,
+            type: 'INFO',
+            status: 'SENT'
+          }
+        }).catch(() => null);
+        socket.emit('send_global_push_success');
+      } catch (e) {
+        console.error('Global push failed:', e);
       }
     });
 

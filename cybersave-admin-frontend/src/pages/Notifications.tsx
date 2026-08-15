@@ -11,11 +11,23 @@ export default function Notifications() {
     if (socket && connected) {
       socket.emit('request_notifications');
       socket.on('response_notifications', (resData) => setData(resData));
+      socket.on('send_global_push_success', () => alert('Global Push Notification Sent!'));
     }
     return () => {
-      if (socket) socket.off('response_notifications');
+      if (socket) {
+        socket.off('response_notifications');
+        socket.off('send_global_push_success');
+      }
     };
   }, [socket, connected]);
+
+  const handleSendPush = () => {
+    const title = window.prompt("Enter notification title:");
+    if (!title) return;
+    const body = window.prompt("Enter notification body message:");
+    if (!body) return;
+    if (socket) socket.emit('send_global_push', { title, body });
+  };
 
   if (!data) return <div>Connecting to live notifications...</div>;
 
@@ -29,7 +41,8 @@ export default function Notifications() {
           <h1>Notification Center</h1>
           <p>Monitor system activity, security alerts, driver updates, and real-time operations.</p>
         </div>
-        <div style={{display: 'flex'}}>
+        <div style={{display: 'flex', gap: 12}}>
+          <button className="action-btn" onClick={handleSendPush}>+ Send Global Push</button>
           <button className="date-picker-btn">Preferences Settings</button>
         </div>
       </div>
