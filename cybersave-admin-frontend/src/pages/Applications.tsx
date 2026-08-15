@@ -72,27 +72,22 @@ export default function Applications() {
         <div style={{display: 'flex', gap: 32, marginBottom: 32}}>
           <div style={{flex: 1}}>
             <div style={{fontSize: 13, color: '#6b7280'}}>Submitted</div>
-            <div style={{fontSize: 24, fontWeight: 700}}>428 <span style={{fontSize: 12, color: '#6b7280', fontWeight: 500}}>Active</span></div>
+            <div style={{fontSize: 24, fontWeight: 700}}>{stats?.totalApps || 0} <span style={{fontSize: 12, color: '#6b7280', fontWeight: 500}}>Total Active</span></div>
             <div style={{height: 4, background: '#e5e7eb', marginTop: 8, borderRadius: 2}}></div>
           </div>
           <div style={{flex: 1}}>
             <div style={{fontSize: 13, color: '#f59e0b', fontWeight: 600}}>Under Review</div>
-            <div style={{fontSize: 24, fontWeight: 700}}>342 <span style={{fontSize: 12, color: '#f59e0b', fontWeight: 500}}>Needs VLE</span></div>
+            <div style={{fontSize: 24, fontWeight: 700}}>{stats?.pending || 0} <span style={{fontSize: 12, color: '#f59e0b', fontWeight: 500}}>Needs VLE</span></div>
             <div style={{height: 4, background: '#f59e0b', marginTop: 8, borderRadius: 2}}></div>
           </div>
           <div style={{flex: 1}}>
             <div style={{fontSize: 13, color: '#2563eb', fontWeight: 600}}>Processing</div>
-            <div style={{fontSize: 24, fontWeight: 700}}>189 <span style={{fontSize: 12, color: '#2563eb', fontWeight: 500}}>At Dept</span></div>
+            <div style={{fontSize: 24, fontWeight: 700}}>{stats?.processing || 0} <span style={{fontSize: 12, color: '#2563eb', fontWeight: 500}}>At Dept</span></div>
             <div style={{height: 4, background: '#2563eb', marginTop: 8, borderRadius: 2}}></div>
           </div>
           <div style={{flex: 1}}>
-            <div style={{fontSize: 13, color: '#10b981', fontWeight: 600}}>Approved</div>
-            <div style={{fontSize: 24, fontWeight: 700}}>156 <span style={{fontSize: 12, color: '#10b981', fontWeight: 500}}>Ready</span></div>
-            <div style={{height: 4, background: '#10b981', marginTop: 8, borderRadius: 2}}></div>
-          </div>
-          <div style={{flex: 1}}>
             <div style={{fontSize: 13, color: '#10b981', fontWeight: 600}}>Completed</div>
-            <div style={{fontSize: 24, fontWeight: 700}}>856 <span style={{fontSize: 12, color: '#10b981', fontWeight: 500}}>Archived</span></div>
+            <div style={{fontSize: 24, fontWeight: 700}}>{stats?.completed || 0} <span style={{fontSize: 12, color: '#10b981', fontWeight: 500}}>Ready / Archived</span></div>
             <div style={{height: 4, background: '#10b981', marginTop: 8, borderRadius: 2}}></div>
           </div>
         </div>
@@ -161,30 +156,18 @@ export default function Applications() {
         </table>
 
         <div style={{padding: 16, display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderTop: '1px solid var(--border-color)'}}>
-          <div style={{fontSize: 13, color: '#6b7280'}}>Showing 1-8 of {stats?.todayApps} today's applications</div>
+          <div style={{fontSize: 13, color: '#6b7280'}}>Showing 1-{(applications || []).length} of {stats?.todayApps || 0} applications today</div>
           <div style={{display: 'flex', gap: 8, alignItems: 'center'}}>
-            <button className="date-picker-btn" style={{padding: '4px 8px'}}>&lt;</button>
-            <button className="action-btn" style={{padding: '4px 12px'}}>1</button>
-            <button className="date-picker-btn" style={{padding: '4px 12px'}}>2</button>
-            <button className="date-picker-btn" style={{padding: '4px 12px'}}>3</button>
-            <button className="date-picker-btn" style={{padding: '4px 8px'}}>&gt;</button>
+            <button className="date-picker-btn" style={{padding: '4px 8px', cursor: 'pointer'}}>&lt;</button>
+            <button className="action-btn" style={{padding: '4px 12px', cursor: 'pointer'}}>1</button>
+            <button className="date-picker-btn" style={{padding: '4px 8px', cursor: 'pointer'}}>&gt;</button>
             <span style={{fontSize: 13, color: '#6b7280', marginLeft: 16}}>Rows per page: </span>
             <button className="date-picker-btn" style={{padding: '4px 12px'}}>8</button>
           </div>
         </div>
       </div>
       
-      <div style={{background: 'white', padding: '16px 24px', borderRadius: 8, marginTop: 16, display: 'flex', justifyContent: 'space-between', border: '1px solid #2563eb', alignItems: 'center', boxShadow: '0 4px 6px -1px rgba(37,99,235,0.1)'}}>
-        <div style={{display: 'flex', gap: 12, fontSize: 14, fontWeight: 600, color: '#111827', alignItems: 'center'}}>
-          <input type="checkbox" defaultChecked />
-          <span>4 applications selected</span>
-        </div>
-        <div style={{display: 'flex', gap: 12}}>
-          <button className="date-picker-btn">Batch Assign</button>
-          <button className="date-picker-btn" style={{color: '#ef4444', borderColor: '#fee2e2', background: '#fef2f2'}}>↑ Escalate Selected</button>
-          <button className="action-btn">✓ Bulk Approve</button>
-        </div>
-      </div>
+      {/* Ponytail: Removed the hardcoded '4 selected' bulk actions footer since bulk operations aren't requested yet */}
     </>
   );
 }

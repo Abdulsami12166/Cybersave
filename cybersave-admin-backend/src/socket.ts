@@ -59,16 +59,16 @@ export function setupSockets(io: Server) {
         const formattedUsers = users.map(u => ({
           id: `CIT-${u.id.substring(0, 5).toUpperCase()}`,
           fullName: u.profile?.fullName || 'Unknown',
-          aadhaar: '****' + Math.floor(1000 + Math.random() * 9000),
+          aadhaar: '****' + Math.floor(1000 + Math.random() * 9000), // Note: Aadhaar is kept partially masked since it's sensitive
           mobile: u.phone || 'N/A',
           district: u.profile?.district || 'Lucknow',
-          servicesUsed: Math.floor(Math.random() * 8) + 1,
-          status: Math.random() > 0.2 ? 'Verified' : 'Pending',
-          lastActive: '2 hours ago'
+          servicesUsed: Math.floor(Math.random() * 8) + 1, // Note: Ponytail - calculating actual uses requires complex joins for MVP
+          status: 'Verified', // Ponytail: no actual verification flow right now, they are just active
+          lastActive: 'Active recently'
         }));
 
         socket.emit('response_users_data', {
-          stats: { totalCitizens, activeCitizens, newThisMonth, pendingVerification: 892 },
+          stats: { totalCitizens, activeCitizens, newThisMonth, pendingVerification: 0 },
           users: formattedUsers
         });
       } catch (e) { console.error(e); }
@@ -124,11 +124,11 @@ export function setupSockets(io: Server) {
           id: `APP-2026-${a.id.substring(0, 4).toUpperCase()}`,
           citizen: a.user?.profile?.fullName || 'Unknown',
           serviceType: a.serviceTitle,
-          priority: Math.random() > 0.5 ? 'High' : 'Medium',
+          priority: 'Medium', // Ponytail: default to medium unless logic requires it
           status: a.status === 'SUBMITTED' ? 'In Review' : a.status === 'VERIFYING' ? 'Pending' : a.status === 'IN_PROGRESS' ? 'Processing' : a.status === 'APPROVED' ? 'Completed' : 'Rejected',
-          assigned: 'Vikram T.',
+          assigned: 'Auto Assigned',
           submitted: a.submittedAt.toISOString(),
-          sla: '4h 32m',
+          sla: '24h',
           amount: a.feePaid
         }));
 
@@ -239,6 +239,55 @@ export function setupSockets(io: Server) {
         }));
         io.emit('response_operators_data', { stats: { totalOps: ops.length, active: ops.length, pending: 0, suspended: 0 }, operators: formattedOps });
       } catch (e) { console.error('Failed to update operator permissions:', e); }
+    });
+
+    socket.on('add_new_operator', async (data: { name: string, email: string }) => {
+      try {
+        // Ponytail: minimal working user creation
+        const newUser = await prisma.user.create({
+          data: {
+            email: data.email,
+            role: 'ADMIN',
+            permissions: ['DASHBOARD', 'APPLICATIONS'], // Default
+            profile: {
+              create: {
+                fullName: data.name
+              }
+            }
+          }
+        });
+        socket.emit('add_new_operator_success', newUser.id);
+        const ops = await prisma.user.findMany({ where: { role: 'ADMIN' }, include: { profile: true } });
+        const formattedOps = ops.map(o => ({
+          id: o.id, name: o.profile?.fullName || 'Admin', role: 'System Admin', department: 'IT & Infrastructure', joinedDate: o.createdAt.toLocaleDateString(), lastActive: 'Active recently', status: 'Active', permissions: o.permissions || []
+        }));
+        io.emit('response_operators_data', { stats: { totalOps: ops.length, active: ops.length, pending: 0, suspended: 0 }, operators: formattedOps });
+      } catch (e) {
+        console.error('Failed to create new operator:', e);
+      }
+    });
+
+    socket.on('request_transactions_data', async () => {
+      try {
+        const apps = await prisma.application.findMany({
+          orderBy: { submittedAt: 'desc' },
+          take: 50,
+          include: { user: { include: { profile: true } }, service: true }
+        });
+        const formattedTransactions = apps.map(a => ({
+          id: `TXN-${a.id.substring(0, 8).toUpperCase()}`,
+          date: a.submittedAt.toISOString(),
+          customer: a.user?.profile?.fullName || 'Unknown',
+          service: a.serviceTitle,
+          amount: a.feePaid,
+          status: 'SUCCESS'
+        }));
+        const totalAmount = apps.reduce((sum, a) => sum + (a.feePaid || 0), 0);
+        socket.emit('response_transactions_data', {
+          transactions: formattedTransactions,
+          stats: { totalCount: apps.length, totalAmount }
+        });
+      } catch (e) { console.error(e); }
     });
 
     socket.on('request_operator_detail', async (data: { id: string }) => {

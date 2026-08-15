@@ -27,9 +27,22 @@ export default function Operators() {
       if (socket) {
         socket.off('response_operators_data');
         socket.off('update_operator_access_success');
+        socket.off('add_new_operator_success');
       }
     };
   }, [socket, connected]);
+
+  const handleAddOperator = () => {
+    // Ponytail: minimal working input without complex form libraries
+    const name = window.prompt("Enter new operator's full name:");
+    if (!name) return;
+    const email = window.prompt("Enter new operator's email address:");
+    if (!email) return;
+    
+    if (socket) {
+      socket.emit('add_new_operator', { name, email });
+    }
+  };
 
   const handleSaveAccess = () => {
     if (socket && managingOp) {
@@ -59,7 +72,7 @@ export default function Operators() {
         </div>
         <div style={{display: 'flex', gap: 12}}>
           <button className="date-picker-btn">Export Report</button>
-          <button className="action-btn">+ Add New Operator</button>
+          <button className="action-btn" onClick={handleAddOperator}>+ Add New Operator</button>
         </div>
       </div>
 
