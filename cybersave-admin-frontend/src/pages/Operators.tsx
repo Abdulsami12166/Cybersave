@@ -12,6 +12,7 @@ export default function Operators() {
   
   const FEATURES = ['DASHBOARD', 'APPLICATIONS', 'OPERATORS', 'SETTINGS', 'USERS', 'REPORTS'];
 
+  useEffect(() => {
     if (socket && connected) {
       socket.emit('request_operators_data');
       socket.on('response_operators_data', (resData) => {
