@@ -7,19 +7,42 @@ export default function Operators() {
   const { socket, connected } = useSocket();
   const [data, setData] = useState<any>(null);
   const [loading, setLoading] = useState(true);
+  const [managingOp, setManagingOp] = useState<any>(null);
+  const [opPermissions, setOpPermissions] = useState<string[]>([]);
+  
+  const FEATURES = ['DASHBOARD', 'APPLICATIONS', 'OPERATORS', 'SETTINGS', 'USERS', 'REPORTS'];
 
-  useEffect(() => {
     if (socket && connected) {
       socket.emit('request_operators_data');
       socket.on('response_operators_data', (resData) => {
         setData(resData);
         setLoading(false);
       });
+      socket.on('update_operator_access_success', () => {
+        setManagingOp(null);
+      });
     }
     return () => {
-      if (socket) socket.off('response_operators_data');
+      if (socket) {
+        socket.off('response_operators_data');
+        socket.off('update_operator_access_success');
+      }
     };
   }, [socket, connected]);
+
+  const handleSaveAccess = () => {
+    if (socket && managingOp) {
+      socket.emit('update_operator_access', { id: managingOp.id, permissions: opPermissions });
+    }
+  };
+
+  const togglePermission = (feat: string) => {
+    if (opPermissions.includes(feat)) {
+      setOpPermissions(opPermissions.filter(p => p !== feat));
+    } else {
+      setOpPermissions([...opPermissions, feat]);
+    }
+  };
 
   if (loading) return <div>Loading operators...</div>;
 
@@ -103,12 +126,47 @@ export default function Operators() {
 
               <div style={{display: 'flex', gap: 12, marginTop: 'auto'}}>
                 <button className="date-picker-btn" style={{flex: 1, justifyContent: 'center'}}>View Profile</button>
-                <button className="action-btn" style={{flex: 1, justifyContent: 'center'}}>Manage Access</button>
+                <button 
+                  className="action-btn" 
+                  style={{flex: 1, justifyContent: 'center'}}
+                  onClick={() => { setManagingOp(op); setOpPermissions(op.permissions || []); }}
+                >
+                  Manage Access
+                </button>
               </div>
             </div>
           ))}
         </div>
         
+        {/* Ponytail: Simple inline modal for managing access */}
+        {managingOp && (
+          <div style={{position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, background: 'rgba(0,0,0,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 100}}>
+            <div style={{background: 'white', padding: 32, borderRadius: 12, width: 400}}>
+              <h3 style={{marginBottom: 8, fontSize: 18}}>Manage Access</h3>
+              <p style={{marginBottom: 24, fontSize: 14, color: '#6b7280'}}>Editing permissions for {managingOp.name}</p>
+              
+              <div style={{display: 'flex', flexDirection: 'column', gap: 12, marginBottom: 24}}>
+                {FEATURES.map(feat => (
+                  <label key={feat} style={{display: 'flex', alignItems: 'center', gap: 12, fontSize: 14}}>
+                    <input 
+                      type="checkbox" 
+                      checked={opPermissions.includes(feat)} 
+                      onChange={() => togglePermission(feat)}
+                      style={{width: 16, height: 16}}
+                    />
+                    {feat}
+                  </label>
+                ))}
+              </div>
+
+              <div style={{display: 'flex', gap: 12, justifyContent: 'flex-end'}}>
+                <button className="date-picker-btn" onClick={() => setManagingOp(null)}>Cancel</button>
+                <button className="action-btn" onClick={handleSaveAccess}>Save Access</button>
+              </div>
+            </div>
+          </div>
+        )}
+
         <div style={{padding: '24px 0', display: 'flex', justifyContent: 'space-between', alignItems: 'center'}}>
           <div style={{fontSize: 13, color: '#6b7280'}}>Showing {operators?.length} active operators</div>
           <div style={{display: 'flex', gap: 8, alignItems: 'center'}}>

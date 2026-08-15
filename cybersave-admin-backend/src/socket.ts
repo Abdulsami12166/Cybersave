@@ -18,10 +18,15 @@ export function setupSockets(io: Server) {
         const completedAppsToday = await prisma.application.count({ where: { status: 'COMPLETED', updatedAt: { gte: today } } });
         const rejectedAppsToday = await prisma.application.count({ where: { status: 'REJECTED', updatedAt: { gte: today } } });
         
-        const activeCentres = await prisma.user.count({ where: { role: 'ADMIN' } }) || 2847;
+        const activeCentres = await prisma.user.count({ where: { role: 'ADMIN' } });
+
+        // ponytail: Real revenue from apps today instead of hardcoded
+        const todayAppsList = await prisma.application.findMany({ where: { submittedAt: { gte: today } }, select: { feePaid: true } });
+        const revenueToday = todayAppsList.reduce((sum, app) => sum + (app.feePaid || 0), 0);
 
         socket.emit('response_dashboard_data', {
-          stats: { revenueToday: 124000, appsToday, pendingApps, completedAppsToday, rejectedAppsToday, activeCentres },
+          stats: { revenueToday, appsToday, pendingApps, completedAppsToday, rejectedAppsToday, activeCentres },
+          // ponytail: Keeping complex static charts to avoid unrequested abstractions (YAGNI)
           collections: { totalCollections: 1240000, onlinePayments: 820000, cashCollections: 420000 },
           serviceShare: [
             { name: 'Aadhaar', percentage: 35 },
@@ -200,24 +205,40 @@ export function setupSockets(io: Server) {
     socket.on('request_operators_data', async () => {
       try {
         const totalOps = await prisma.user.count({ where: { role: 'ADMIN' } });
-        const ops = await prisma.user.findMany({ where: { role: 'ADMIN' }, include: { profile: true }, take: 9 });
+        const ops = await prisma.user.findMany({ where: { role: 'ADMIN' }, include: { profile: true } });
 
-        let formattedOps = ops.map(o => ({
-          id: o.id, name: o.profile?.fullName || 'Admin', role: 'System Admin', department: 'IT & Infrastructure', joinedDate: o.createdAt.toLocaleDateString(), lastActive: '2 mins ago', status: 'Active'
+        const formattedOps = ops.map(o => ({
+          id: o.id, 
+          name: o.profile?.fullName || 'Admin', 
+          role: 'System Admin', 
+          department: 'IT & Infrastructure', 
+          joinedDate: o.createdAt.toLocaleDateString(), 
+          lastActive: 'Active recently', 
+          status: 'Active',
+          permissions: o.permissions || []
         }));
 
-        if (formattedOps.length === 0) {
-          formattedOps = [
-            { id: '1', name: 'Arjun Mehta', role: 'System Admin', department: 'IT & Infrastructure', joinedDate: '12/01/2024', lastActive: '2 mins ago', status: 'Active' },
-            { id: '2', name: 'Elena Rostova', role: 'Senior Analyst', department: 'Threat Intelligence', joinedDate: '15/01/2024', lastActive: '1 hour ago', status: 'Active' },
-          ];
-        }
-
         socket.emit('response_operators_data', {
-          stats: { totalOps: 84, active: 67, pending: 12, suspended: 5 },
+          stats: { totalOps: totalOps, active: totalOps, pending: 0, suspended: 0 },
           operators: formattedOps
         });
       } catch (e) { console.error(e); }
+    });
+
+    socket.on('update_operator_access', async (data: { id: string, permissions: string[] }) => {
+      try {
+        await prisma.user.update({
+          where: { id: data.id },
+          data: { permissions: data.permissions }
+        });
+        socket.emit('update_operator_access_success', { id: data.id, permissions: data.permissions });
+        // Broadcast the update so all clients refresh
+        const ops = await prisma.user.findMany({ where: { role: 'ADMIN' }, include: { profile: true } });
+        const formattedOps = ops.map(o => ({
+          id: o.id, name: o.profile?.fullName || 'Admin', role: 'System Admin', department: 'IT & Infrastructure', joinedDate: o.createdAt.toLocaleDateString(), lastActive: 'Active recently', status: 'Active', permissions: o.permissions || []
+        }));
+        io.emit('response_operators_data', { stats: { totalOps: ops.length, active: ops.length, pending: 0, suspended: 0 }, operators: formattedOps });
+      } catch (e) { console.error('Failed to update operator permissions:', e); }
     });
 
     socket.on('request_operator_detail', async (data: { id: string }) => {

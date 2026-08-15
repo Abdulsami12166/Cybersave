@@ -57,6 +57,7 @@ model User {
   createdAt     DateTime  @default(now())
   updatedAt     DateTime  @updatedAt
   deletedAt     DateTime?
+  permissions   String[]  @default([]) // ponytail: dynamic access control array
 
   profile       Profile?
   wallet        Wallet?
