@@ -79,7 +79,7 @@ export class AuthService {
 
     if (!user) {
       const userEmail =
-        email || `user_${cleanPhone.slice(-4)}@cybersave.gov.in`;
+        email || `user_${cleanPhone.slice(-4)}_${Date.now()}@cybersave.gov.in`;
       const userName = fullName || 'Citizen User';
 
       user = await this.prisma.user.create({
@@ -87,34 +87,19 @@ export class AuthService {
           phone: cleanPhone,
           email: userEmail,
           profile: {
-            create: {
-              fullName: userName,
-              phone: cleanPhone,
-              email: userEmail,
-            },
+            create: { fullName: userName, phone: cleanPhone, email: userEmail },
           },
-          wallet: {
-            create: {
-              balance: 100.0, // Welcome signup bonus
-            },
-          },
+          wallet: { create: { balance: 100.0 } },
           auditLogs: {
-            create: {
-              action: 'USER_REGISTER',
-              details: 'User registered via Mobile Phone OTP',
-            },
+            create: { action: 'USER_REGISTER', details: 'Registered via OTP' },
           },
         },
         include: { profile: true },
       });
-      this.logger.log(`Created new Cybersave user account via OTP: ${user.id}`);
+      this.logger.log(`OTP user created: ${user.id}`);
     } else {
       await this.prisma.auditLog.create({
-        data: {
-          userId: user.id,
-          action: 'USER_LOGIN',
-          details: 'User logged in via Mobile Phone OTP',
-        },
+        data: { userId: user.id, action: 'USER_LOGIN', details: 'Logged in via Mobile Phone OTP' },
       });
     }
 
