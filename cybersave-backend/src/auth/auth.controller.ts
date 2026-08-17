@@ -18,19 +18,19 @@ export class AuthController {
   @Post('login')
   @ApiOperation({ summary: 'Login with Email and Password to get OTP' })
   async login(@Body() body: any) {
-    return this.authService.login(body.email, body.password);
+    return this.authService.login(body.email || body.emailOrPhone, body.password);
   }
 
   @Post('verify-otp')
   @ApiOperation({ summary: 'Verify OTP and get JWT Token' })
   async verifyOtp(@Body() body: any) {
-    return this.authService.verifyOtp(body.email, body.otp);
+    return this.authService.verifyOtp(body.email || body.emailOrPhone || body.phone, body.otp);
   }
 
   @Post('resend-otp')
   @ApiOperation({ summary: 'Resend OTP to Email' })
   async resendOtp(@Body() body: any) {
-    return this.authService.resendOtp(body.email);
+    return this.authService.resendOtp(body.email || body.emailOrPhone || body.phone);
   }
 
   @Get('me')
