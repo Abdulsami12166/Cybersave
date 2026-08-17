@@ -134,38 +134,43 @@ export class AuthService {
       );
     }
 
-    const passwordHash = hashPassword(registerDto.password);
-    const cleanPhone = registerDto.phone
-      ? registerDto.phone.trim().replace(/\s+/g, '')
-      : null;
-
-    const user: any = await this.prisma.user.create({
-      data: {
-        email: cleanEmail,
-        passwordHash,
-        // ponytail: spread phone only when present — MongoDB unique index breaks on multiple null values
-        ...(cleanPhone ? { phone: cleanPhone } : {}),
-        profile: {
-          create: {
-            fullName: registerDto.fullName,
-            email: cleanEmail,
-            phone: registerDto.phone ? cleanPhone : undefined,
-          },
-        },
-        wallet: {
-          create: {
-            balance: 100.0, // Welcome signup bonus
-          },
-        },
-        auditLogs: {
-          create: {
-            action: 'USER_REGISTER',
-            details: 'User registered via Email & Password',
-          },
+    const makeUserData = (phone?: string) => ({
+      email: cleanEmail,
+      passwordHash,
+      ...(phone ? { phone } : {}),
+      profile: {
+        create: {
+          fullName: registerDto.fullName,
+          email: cleanEmail,
+          phone: phone && registerDto.phone ? phone : undefined,
         },
       },
-      include: { profile: true },
+      wallet: { create: { balance: 100.0 } },
+      auditLogs: {
+        create: { action: 'USER_REGISTER', details: 'User registered via Email & Password' },
+      },
     });
+
+    let user: any;
+    try {
+      user = await this.prisma.user.create({
+        data: makeUserData(cleanPhone || undefined),
+        include: { profile: true },
+      });
+    } catch (e) {
+      // ponytail: P2002 on phone = stale unique index still exists in MongoDB.
+      // Fallback: use a unique dummy phone so the constraint is satisfied.
+      if (e.code === 'P2002') {
+        const fallbackPhone = `_nophone_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+        user = await this.prisma.user.create({
+          data: makeUserData(fallbackPhone),
+          include: { profile: true },
+        });
+        this.logger.warn(`Used fallback phone for ${cleanEmail} — stale phone unique index still present in MongoDB.`);
+      } else {
+        throw e;
+      }
+    }
 
     this.logger.log(`Created new Cybersave user account via Email: ${user.id}`);
 

@@ -21,16 +21,20 @@ export class PrismaService
         await this.$connect();
         this.logger.log('Prisma connected to MongoDB database successfully.');
 
-        // ponytail: drop the stale User_phone_key unique index left over from old schema.
-        // prisma db push does not drop existing indexes — we must do it manually once.
+        // ponytail: list all User indexes to find and drop the stale phone unique index
         try {
-          await this.$runCommandRaw({
-            dropIndexes: 'User',
-            index: 'User_phone_key',
-          });
-          this.logger.log('Dropped stale User_phone_key unique index.');
+          const result: any = await this.$runCommandRaw({ listIndexes: 'User' });
+          const indexes: any[] = result?.cursor?.firstBatch || [];
+          this.logger.log(`User indexes: ${JSON.stringify(indexes.map((i: any) => ({ name: i.name, key: i.key, unique: i.unique })))}`);
+
+          for (const idx of indexes) {
+            if (idx.key?.phone !== undefined && idx.unique === true) {
+              await this.$runCommandRaw({ dropIndexes: 'User', index: idx.name });
+              this.logger.log(`Dropped unique phone index: ${idx.name}`);
+            }
+          }
         } catch (e) {
-          // Index already gone — fine, ignore
+          this.logger.warn(`Index cleanup warning: ${e.message}`);
         }
 
         break;
