@@ -30,13 +30,13 @@ export class AuthController {
   @Post('verify-otp')
   @ApiOperation({ summary: 'Verify OTP and get JWT Token' })
   async verifyOtp(@Body() body: any) {
-    return this.authService.verifyOtp(body.email || body.emailOrPhone || body.phone, body.otp);
+    return this.authService.verifyOtp(body.identifier || body.email || body.emailOrPhone || body.phone, body.otp);
   }
 
   @Post('resend-otp')
   @ApiOperation({ summary: 'Resend OTP to Email' })
   async resendOtp(@Body() body: any) {
-    return this.authService.resendOtp(body.email || body.emailOrPhone || body.phone);
+    return this.authService.resendOtp(body.identifier || body.email || body.emailOrPhone || body.phone);
   }
 
   @Get('me')
