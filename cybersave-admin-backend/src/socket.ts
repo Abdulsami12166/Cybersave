@@ -1,6 +1,7 @@
 import { Server, Socket } from 'socket.io';
 import { PrismaClient } from '@prisma/client';
 import { messaging } from './firebase';
+import bcrypt from 'bcrypt';
 
 const prisma = new PrismaClient();
 
@@ -159,21 +160,61 @@ export function setupSockets(io: Server) {
       try {
         const totalServices = await prisma.service.count();
         const activeServices = await prisma.service.count({ where: { isActive: true } });
-        const services = await prisma.service.findMany({ take: 10 });
+        const services = await prisma.service.findMany({ take: 50 });
         
-        const grouped = [{
-          category: 'Aadhaar Services',
-          department: 'Ministry of Electronics & IT',
-          subServices: services.map(s => ({
-            name: s.title, category: s.category, sla: s.processingTime, fee: s.fee, status: s.isActive ? 'Active' : 'Inactive'
-          }))
-        }];
+        // Group services by category
+        const groups: Record<string, any> = {};
+        services.forEach(s => {
+          if (!groups[s.category]) {
+            groups[s.category] = {
+              category: s.category,
+              department: s.department,
+              subServices: []
+            };
+          }
+          groups[s.category].subServices.push({
+            id: s.id, name: s.title, category: s.category, sla: s.processingTime, fee: s.fee, status: s.isActive ? 'Active' : 'Inactive'
+          });
+        });
 
         socket.emit('response_services_data', {
-          stats: { totalServices, active: 41, offline: 2, drafts: 5 },
-          services: grouped
+          stats: { totalServices, active: activeServices, offline: 0, drafts: 0 },
+          services: Object.values(groups)
         });
       } catch (e) { console.error(e); }
+    });
+
+    socket.on('edit_service', async (data: { id: string, name: string }) => {
+      try {
+        await prisma.service.update({
+          where: { id: data.id },
+          data: { title: data.name }
+        });
+        socket.emit('edit_service_success');
+      } catch (e) { console.error(e); }
+    });
+
+    socket.on('create_application', async (data: { title: string, description: string }) => {
+      try {
+        await prisma.service.create({
+          data: {
+            slug: data.title.toLowerCase().replace(/\s+/g, '-'),
+            title: data.title,
+            description: data.description,
+            category: 'Government',
+            department: 'General Administration',
+            fee: 50.0,
+            processingTime: '3-5 working days',
+            isActive: true,
+            iconName: 'file-text',
+            colorHex: '#3b82f6'
+          }
+        });
+        socket.emit('create_application_success');
+        io.emit('applications_updated'); // Optional: tell clients to refresh
+      } catch (e) {
+        console.error('Failed to create application workflow:', e);
+      }
     });
 
     socket.on('save_service_config', async (data: any) => {
@@ -241,15 +282,19 @@ export function setupSockets(io: Server) {
       } catch (e) { console.error('Failed to update operator permissions:', e); }
     });
 
-    socket.on('add_new_operator', async (data: { name: string, email: string }) => {
+    socket.on('add_new_operator', async (data: { name: string, email: string, password?: string, permissions?: string[] }) => {
       try {
-        // Ponytail: minimal working user creation
+        const salt = await bcrypt.genSalt(10);
+        const passwordHash = await bcrypt.hash(data.password || 'admin123', salt);
+        
         const newUser = await prisma.user.create({
           data: {
             email: data.email,
             phone: `+9198765${Math.floor(10000 + Math.random() * 90000)}`,
+            keycloakId: `op-${Date.now()}-${Math.floor(Math.random()*1000)}`,
             role: 'ADMIN',
-            permissions: ['DASHBOARD', 'APPLICATIONS'], // Default
+            passwordHash,
+            permissions: data.permissions || ['DASHBOARD', 'APPLICATIONS'],
             profile: {
               create: {
                 fullName: data.name
@@ -311,7 +356,6 @@ export function setupSockets(io: Server) {
           take: 8
         });
 
-        // Mock some for UI testing if none
         let formatted = notifications.map(n => ({
           id: n.id,
           type: n.type,
@@ -321,17 +365,8 @@ export function setupSockets(io: Server) {
           status: n.status
         }));
 
-        if (formatted.length === 0) {
-          formatted = [
-            { id: '1', type: 'SECURITY', title: 'New suspicious login detected', message: 'A login was flagged from an unverified IP.', time: '2 mins ago', status: 'PENDING' },
-            { id: '2', type: 'WARNING', title: 'Driving License document expiring soon', message: 'Operator driving license expiring in 15 days.', time: '45 mins ago', status: 'PENDING' },
-            { id: '3', type: 'SUCCESS', title: 'Birth Certificate successfully verified', message: 'Document DOC-BIRTH-05 has been validated.', time: '2 hours ago', status: 'READ' },
-            { id: '4', type: 'INFO', title: 'New document uploaded by Operator #09', message: 'Aadhaar Card uploaded by Amit Patel.', time: '3 hours ago', status: 'READ' }
-          ];
-        }
-
         socket.emit('response_notifications', {
-          stats: { totalHistory: total || 156, unreadAlerts: unread || 12, successLogs: 118, pendingChecks: 26 },
+          stats: { totalHistory: total, unreadAlerts: unread, successLogs: total - unread, pendingChecks: unread },
           notifications: formatted
         });
       } catch (e) { console.error(e); }
@@ -397,7 +432,13 @@ export function setupSockets(io: Server) {
             status: 'SENT'
           }
         }).catch(() => null);
-        socket.emit('send_global_push_success');
+        io.emit('receive_global_push', { title: data.title, body: data.body }); // Emit to mobile apps
+        
+        const totalUsers = await prisma.user.count();
+        socket.emit('send_global_push_success', { count: totalUsers });
+        
+        // Tell UI to refresh notifications
+        socket.emit('request_notifications');
       } catch (e) {
         console.error('Global push failed:', e);
       }
@@ -409,14 +450,14 @@ export function setupSockets(io: Server) {
         const open = await prisma.supportTicket.count({ where: { status: 'OPEN' } });
         const inProgress = await prisma.supportTicket.count({ where: { status: 'IN_PROGRESS' } });
         const resolved = await prisma.supportTicket.count({ where: { status: 'RESOLVED' } });
-
+        
         const tickets = await prisma.supportTicket.findMany({
-          orderBy: { createdAt: 'desc' },
-          take: 9
+          take: 50,
+          orderBy: { createdAt: 'desc' }
         });
 
-        let formatted = tickets.map(t => ({
-          id: t.refNumber,
+        const formatted = tickets.map(t => ({
+          id: `TKT-${t.id.substring(0, 8).toUpperCase()}`,
           title: t.title,
           category: t.category,
           priority: t.priority,
@@ -426,52 +467,55 @@ export function setupSockets(io: Server) {
           status: t.status
         }));
 
-        if (formatted.length === 0) {
-          formatted = [
-            { id: 'TKT-2024-001', title: 'Login Authentication Issue', category: 'Technical', priority: 'High', createdOn: '10/01/2024', lastUpdated: '10/03/2024', assignedTo: 'Amit S.', status: 'OPEN' },
-            { id: 'TKT-2024-002', title: 'Payment Gateway Error', category: 'Billing', priority: 'Critical', createdOn: '09/28/2024', lastUpdated: '10/02/2024', assignedTo: 'Priya M.', status: 'IN_PROGRESS' },
-            { id: 'TKT-2024-003', title: 'Profile Update Not Saving', category: 'Account', priority: 'Medium', createdOn: '09/25/2024', lastUpdated: '09/30/2024', assignedTo: 'Rahul K.', status: 'RESOLVED' }
-          ];
-        }
-
         socket.emit('response_support_tickets', {
-          stats: { totalTickets: total || 234, openTickets: open || 45, inProgress: inProgress || 67, resolved: resolved || 122 },
+          stats: { totalTickets: total, openTickets: open, inProgress: inProgress, resolved: resolved },
           tickets: formatted
         });
       } catch (e) { console.error(e); }
+    });
+
+    socket.on('create_support_ticket', async (data: { title: string, category: string, priority: string, description: string }) => {
+      try {
+        await prisma.supportTicket.create({
+          data: {
+            refNumber: `TKT-${Date.now()}`,
+            title: `${data.title} - ${data.description}`.substring(0, 100),
+            category: data.category,
+            priority: data.priority,
+            status: 'OPEN',
+            userId: (await prisma.user.findFirst({ where: { role: 'ADMIN' } }))?.id || ''
+          }
+        });
+        socket.emit('create_support_ticket_success');
+      } catch (e) {
+        console.error('Failed to create ticket', e);
+      }
     });
 
     socket.on('request_analytics', async () => {
       try {
         const totalDocs = await prisma.documentUpload.count();
         
+        const recentLogs = await prisma.documentUpload.findMany({ take: 4, orderBy: { uploadedAt: 'desc' }, include: { user: { include: { profile: true } } } });
+        
         socket.emit('response_analytics', {
-          stats: { totalUploads: totalDocs || 156, verified: 98, pendingReview: 23, expired: 12 },
+          stats: { totalUploads: totalDocs, verified: 0, pendingReview: totalDocs, expired: 0 },
           trends: [
             { month: 'Jan', uploads: 30, verifications: 20 },
             { month: 'Feb', uploads: 45, verifications: 40 },
-            { month: 'Mar', uploads: 35, verifications: 35 },
-            { month: 'Apr', uploads: 60, verifications: 55 },
-            { month: 'May', uploads: 40, verifications: 38 },
-            { month: 'Jun', uploads: 70, verifications: 65 },
-            { month: 'Jul', uploads: 55, verifications: 50 },
-            { month: 'Aug', uploads: 80, verifications: 75 },
-            { month: 'Sep', uploads: 65, verifications: 60 },
           ],
           categories: [
-            { name: 'Identity', count: 64 },
-            { name: 'Taxation', count: 42 },
-            { name: 'Transport', count: 28 },
-            { name: 'Travel', count: 18 },
-            { name: 'Residence', count: 12 },
+            { name: 'Identity', count: totalDocs },
           ],
-          statusDistribution: { verified: 156, pending: 23, expired: 12 },
-          recentLogs: [
-            { id: 'DOC-AADHAAR-01', name: 'Aadhaar Card', category: 'Identity', user: 'Rajesh Kumar', uploaded: '12/01/2024', status: 'Verified' },
-            { id: 'DOC-VOTER-06', name: 'Voter ID Card', category: 'Identity', user: 'Sarah Chen', uploaded: '20/03/2024', status: 'Pending' },
-            { id: 'DOC-RATION-09', name: 'Ration Card', category: 'Social Welfare', user: 'Michael Torres', uploaded: '22/04/2024', status: 'Expired' },
-            { id: 'DOC-DRIVING-04', name: 'Driving License', category: 'Transport', user: 'James Park', uploaded: '05/03/2024', status: 'Verified' },
-          ]
+          statusDistribution: { verified: 0, pending: totalDocs, expired: 0 },
+          recentLogs: recentLogs.map(l => ({
+            id: `DOC-${l.id.substring(0, 8).toUpperCase()}`,
+            name: l.fileType,
+            category: 'Identity',
+            user: l.user?.profile?.fullName || 'Unknown',
+            uploaded: l.uploadedAt.toLocaleDateString(),
+            status: 'Pending'
+          }))
         });
       } catch (e) { console.error(e); }
     });
@@ -485,7 +529,7 @@ export function setupSockets(io: Server) {
           include: { user: { include: { profile: true } } }
         });
 
-        let formatted = logs.map(l => ({
+        const formatted = logs.map(l => ({
           timestamp: l.createdAt.toISOString().replace('T', ' ').substring(0, 19),
           user: l.user?.profile?.fullName || 'System',
           action: l.action,
@@ -494,17 +538,8 @@ export function setupSockets(io: Server) {
           status: 'Success'
         }));
 
-        if (formatted.length === 0) {
-          formatted = [
-            { timestamp: '2024-04-24 10:42:15', user: 'Rajesh Kumar (Admin)', action: 'Document Uploaded', resource: 'DOC-DRIVING-04.pdf', ipAddress: '192.168.1.45', status: 'Success' },
-            { timestamp: '2024-04-24 10:38:02', user: 'Rajesh Kumar (Admin)', action: 'User Login', resource: 'System Portal', ipAddress: '192.168.1.45', status: 'Success' },
-            { timestamp: '2024-04-24 09:15:33', user: 'Ananya Sharma (Operator)', action: 'Document Download', resource: 'DOC-AADHAAR-01.pdf', ipAddress: '103.45.201.12', status: 'Success' },
-            { timestamp: '2024-04-24 08:55:10', user: 'Ananya Sharma (Operator)', action: 'User Login Attempt', resource: 'System Portal', ipAddress: '103.45.201.12', status: 'Failed' },
-          ];
-        }
-
         socket.emit('response_audit_logs', {
-          stats: { totalEvents: total || 24582, loginActivities: 3124, documentActions: 18945, systemChanges: 513 },
+          stats: { totalEvents: total, loginActivities: 0, documentActions: total, systemChanges: 0 },
           logs: formatted
         });
       } catch (e) { console.error(e); }

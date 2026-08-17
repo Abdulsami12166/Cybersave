@@ -83,6 +83,19 @@ const authenticateAdmin = (req: any, res: any, next: any) => {
   }
 };
 
+// --- Public API for Mobile App ---
+app.get('/api/services', async (req, res) => {
+  try {
+    const services = await prisma.service.findMany({
+      where: { isActive: true },
+      select: { id: true, slug: true, title: true, description: true, category: true, fee: true }
+    });
+    res.json({ services });
+  } catch (e) {
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
 // Protect all /api/admin/* routes
 app.use('/api/admin', authenticateAdmin);
 
