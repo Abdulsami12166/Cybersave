@@ -23,17 +23,20 @@ export class PrismaService
           'Prisma connected to MongoDB database successfully.',
         );
 
-        // ponytail: stale User_phone_key unique index blocks registration when phone is null.
-        // We drop the index if it exists in MongoDB.
-        const candidates = ['User_phone_key', 'phone_1', 'phone'];
-        for (const name of candidates) {
-          try {
-            await this.$runCommandRaw({ dropIndexes: 'User', index: name });
-            this.logger.log(`Dropped index ${name} from User collection`);
-          } catch (e) {
-            // ignore if index doesn't exist
-          }
-        }
+    // ponytail: stale User_phone_key and User_keycloakId_key unique indexes block registration.
+    // We drop them if they exist in MongoDB.
+    const candidates = [
+      'User_phone_key', 'phone_1', 'phone',
+      'User_keycloakId_key', 'keycloakId_1', 'keycloakId'
+    ];
+    for (const name of candidates) {
+      try {
+        await this.$runCommandRaw({ dropIndexes: 'User', index: name });
+        this.logger.log(`Dropped index ${name} from User collection`);
+      } catch (e) {
+        // ignore if index doesn't exist
+      }
+    }
 
         break;
       } catch (error) {

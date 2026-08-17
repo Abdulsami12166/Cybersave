@@ -48,7 +48,7 @@ model User {
   id            String    @id @default(auto()) @map("_id") @db.ObjectId
   phone         String?
   email         String?   @unique
-  keycloakId    String?   @unique
+  keycloakId    String?
   passwordHash  String?
   fcmToken      String?
   role          Role      @default(USER)
