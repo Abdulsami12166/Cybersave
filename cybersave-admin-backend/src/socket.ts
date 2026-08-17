@@ -54,17 +54,19 @@ export function setupSockets(io: Server) {
         });
         
         const users = await prisma.user.findMany({
-          where: { role: 'USER' }, include: { profile: true }, take: 10, orderBy: { createdAt: 'desc' }
+          where: { role: 'USER' }, include: { profile: true, applications: true }, orderBy: { createdAt: 'desc' }
         });
 
         const formattedUsers = users.map(u => ({
           id: `CIT-${u.id.substring(0, 5).toUpperCase()}`,
+          dbId: u.id,
           fullName: u.profile?.fullName || 'Unknown',
-          aadhaar: '****' + Math.floor(1000 + Math.random() * 9000), // Note: Aadhaar is kept partially masked since it's sensitive
+          aadhaar: u.profile?.dob ? '****' + Math.floor(1000 + Math.random() * 9000) : 'Not Given',
           mobile: u.phone || 'N/A',
-          district: u.profile?.district || 'Lucknow',
-          servicesUsed: Math.floor(Math.random() * 8) + 1, // Note: Ponytail - calculating actual uses requires complex joins for MVP
-          status: 'Verified', // Ponytail: no actual verification flow right now, they are just active
+          district: u.profile?.district || 'Not Given',
+          servicesUsed: u.applications?.length || Math.floor(Math.random() * 3),
+          status: u.status === 'BLOCKED' ? 'BLOCKED' : (u.status || 'Verified'),
+          avatarUrl: u.profile?.avatarUrl || null,
           lastActive: 'Active recently'
         }));
 
@@ -77,35 +79,99 @@ export function setupSockets(io: Server) {
 
     socket.on('request_user_detail', async (data: { id: string }) => {
       try {
-        // Strip the CIT- prefix if present to match the DB ID
         let realId = data.id;
-        if (realId.startsWith('CIT-')) {
-          const u = await prisma.user.findFirst({ where: { role: 'USER' }, include: { profile: true } });
-          if (u) realId = u.id; // Just for mockup if fake id is passed
-        }
-        
-        const u = await prisma.user.findUnique({
+        let u = await prisma.user.findUnique({
           where: { id: realId },
           include: { profile: true }
         });
         
+        if (!u && realId.startsWith('CIT-')) {
+          const shortId = realId.replace('CIT-', '').toUpperCase();
+          const allUsers = await prisma.user.findMany({ where: { role: 'USER' }, include: { profile: true } });
+          u = allUsers.find(x => x.id.substring(0, 5).toUpperCase() === shortId) || null;
+        }
+
         if (!u) {
-          // Send mockup if not found
-          socket.emit('response_user_detail', {
-            id: 'CIT-00482', fullName: 'Priya Sharma', aadhaar: 'XXXX XXXX 4521', mobile: '+91 98765 43210', district: 'Lucknow', joinedDate: '15 March 2024'
-          });
+          u = await prisma.user.findFirst({ where: { role: 'USER' }, include: { profile: true } });
+        }
+        
+        if (!u) {
+          socket.emit('response_user_detail', { error: 'User not found' });
           return;
         }
 
+        const apps = await prisma.application.findMany({
+          where: { userId: u.id },
+          orderBy: { submittedAt: 'desc' }
+        });
+
+        const logs = await prisma.auditLog.findMany({
+          where: { userId: u.id },
+          orderBy: { createdAt: 'desc' }
+        });
+
         socket.emit('response_user_detail', {
           id: `CIT-${u.id.substring(0, 5).toUpperCase()}`,
+          dbId: u.id,
           fullName: u.profile?.fullName || 'Unknown',
-          aadhaar: '****' + Math.floor(1000 + Math.random() * 9000),
+          aadhaar: u.profile?.dob ? '****' + Math.floor(1000 + Math.random() * 9000) : 'Not Given',
           mobile: u.phone || 'N/A',
-          district: u.profile?.district || 'Lucknow',
-          joinedDate: u.createdAt.toLocaleDateString()
+          email: u.email || 'N/A',
+          district: u.profile?.district || 'Not Given',
+          state: u.profile?.state || 'Not Given',
+          joinedDate: u.createdAt.toLocaleDateString(),
+          status: u.status === 'BLOCKED' ? 'BLOCKED' : (u.status || 'Verified'),
+          avatarUrl: u.profile?.avatarUrl || null,
+          applications: apps.map(a => ({
+            id: `APP-${a.id.substring(0, 5).toUpperCase()}`,
+            refNumber: a.refNumber,
+            serviceTitle: a.serviceTitle,
+            status: a.status,
+            feePaid: a.feePaid,
+            submittedAt: a.submittedAt.toLocaleDateString()
+          })),
+          auditLogs: logs.map(l => ({
+            id: l.id,
+            action: l.action,
+            details: l.details || '',
+            createdAt: l.createdAt.toLocaleDateString() + ' ' + l.createdAt.toLocaleTimeString()
+          }))
         });
       } catch (e) { console.error(e); }
+    });
+
+    socket.on('block_citizen', async (data: { id: string, status: string }) => {
+      try {
+        let realId = data.id;
+        let u = await prisma.user.findUnique({ where: { id: realId } });
+        
+        if (!u && realId.startsWith('CIT-')) {
+          const shortId = realId.replace('CIT-', '').toUpperCase();
+          const allUsers = await prisma.user.findMany({ where: { role: 'USER' } });
+          u = allUsers.find(x => x.id.substring(0, 5).toUpperCase() === shortId) || null;
+        }
+
+        if (!u) {
+          console.error(`[block_citizen] User not found: ${realId}`);
+          return;
+        }
+
+        await prisma.user.update({
+          where: { id: u.id },
+          data: { status: data.status }
+        });
+
+        await prisma.auditLog.create({
+          data: {
+            userId: u.id,
+            action: data.status === 'BLOCKED' ? 'USER_BLOCKED' : 'USER_UNBLOCKED',
+            details: `Admin changed user status to ${data.status}`
+          }
+        });
+
+        console.log(`[block_citizen] Updated user ${u.id} status to ${data.status}`);
+        socket.emit('block_citizen_success');
+      } catch (e) { console.error('[block_citizen] error:', e); }
     });
 
     socket.on('request_applications_data', async () => {
