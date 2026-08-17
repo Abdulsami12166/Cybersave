@@ -14,48 +14,27 @@ export class PrismaService
   private readonly logger = new Logger('PrismaService');
 
   async onModuleInit() {
-    let attempts = 0;
-    const maxAttempts = 3;
-    while (attempts < maxAttempts) {
+    await this.$connect();
+    this.logger.log('Prisma connected to MongoDB database successfully.');
+    await this.dropPhoneUniqueIndex();
+  }
+
+  private async dropPhoneUniqueIndex() {
+    // ponytail: stale User_phone_key unique index blocks multi-user registration.
+    // We must drop it via raw MongoDB command since prisma db push won't do it.
+    const candidates = ['User_phone_key', 'phone_1', 'phone'];
+    for (const name of candidates) {
       try {
-        await this.$connect();
-        this.logger.log('Prisma connected to MongoDB database successfully.');
-
-        // ponytail: list all User indexes to find and drop the stale phone unique index
-        try {
-          const result: any = await this.$runCommandRaw({ listIndexes: 'User' });
-          const indexes: any[] = result?.cursor?.firstBatch || [];
-          this.logger.log(`User indexes: ${JSON.stringify(indexes.map((i: any) => ({ name: i.name, key: i.key, unique: i.unique })))}`);
-
-          for (const idx of indexes) {
-            if (idx.key?.phone !== undefined && idx.unique === true) {
-              await this.$runCommandRaw({ dropIndexes: 'User', index: idx.name });
-              this.logger.log(`Dropped unique phone index: ${idx.name}`);
-            }
-          }
-        } catch (e) {
-          this.logger.warn(`Index cleanup warning: ${e.message}`);
-        }
-
-        break;
-      } catch (error) {
-        attempts++;
-        this.logger.warn(
-          `Database connection attempt ${attempts} failed: ${error.message}`,
-        );
-        if (attempts >= maxAttempts) {
-          this.logger.error(
-            'Could not establish initial database connection. Server starting in offline mode.',
-          );
-        } else {
-          await new Promise((res) => setTimeout(res, 2000));
-        }
+        await this.$runCommandRaw({ dropIndexes: 'User', index: name });
+        this.logger.log(`Dropped stale index: ${name}`);
+      } catch {
+        // index didn't exist — fine
       }
     }
+    this.logger.log('Phone index cleanup complete.');
   }
 
   async onModuleDestroy() {
     await this.$disconnect();
   }
 }
-
