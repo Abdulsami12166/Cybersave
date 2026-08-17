@@ -46,7 +46,7 @@ enum NotificationStatus {
 
 model User {
   id            String    @id @default(auto()) @map("_id") @db.ObjectId
-  phone         String?   @unique
+  phone         String?
   email         String?   @unique
   keycloakId    String?   @unique
   passwordHash  String?
