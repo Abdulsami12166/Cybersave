@@ -152,7 +152,7 @@ export class AuthService {
     const passwordHash = hashPassword(registerDto.password);
     const cleanPhone = registerDto.phone
       ? registerDto.phone.trim().replace(/\s+/g, '')
-      : undefined;
+      : `_no_phone_${cleanEmail}`; // Bypass MongoDB unique index collision on null
 
     const user: any = await this.prisma.user.create({
       data: {
@@ -163,7 +163,7 @@ export class AuthService {
           create: {
             fullName: registerDto.fullName,
             email: cleanEmail,
-            phone: cleanPhone || undefined,
+            phone: registerDto.phone ? cleanPhone : undefined,
           },
         },
         wallet: {
