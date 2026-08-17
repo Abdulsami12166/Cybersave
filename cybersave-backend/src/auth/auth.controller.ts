@@ -21,6 +21,12 @@ export class AuthController {
     return this.authService.login(body.email || body.emailOrPhone, body.password);
   }
 
+  @Post('send-otp')
+  @ApiOperation({ summary: 'Send OTP to Mobile Number' })
+  async sendOtp(@Body() body: any) {
+    return this.authService.sendOtp(body.phone);
+  }
+
   @Post('verify-otp')
   @ApiOperation({ summary: 'Verify OTP and get JWT Token' })
   async verifyOtp(@Body() body: any) {

@@ -2,6 +2,8 @@ import { Injectable, Logger, UnauthorizedException, BadRequestException } from '
 import { PrismaService } from '../database/prisma.service';
 import * as bcrypt from 'bcrypt';
 import { JwtService } from '@nestjs/jwt';
+import { RedisService } from '../common/services/redis.service';
+import { SmsService } from '../common/services/sms.service';
 
 @Injectable()
 export class AuthService {
@@ -9,7 +11,9 @@ export class AuthService {
 
   constructor(
     private readonly prisma: PrismaService,
-    private readonly jwtService: JwtService
+    private readonly jwtService: JwtService,
+    private readonly redisService: RedisService,
+    private readonly smsService: SmsService,
   ) {}
 
   private generateOtp(): string {
@@ -48,6 +52,28 @@ export class AuthService {
     return { success: true, message: 'User registered successfully' };
   }
 
+  async sendOtp(phone: string) {
+    if (!phone) throw new BadRequestException('Phone number is required');
+    const cleanPhone = phone.trim().replace(/\s+/g, '');
+    
+    // Generate 6 digit OTP
+    const otp = Math.floor(100000 + Math.random() * 900000).toString();
+
+    // Store in Redis (valid for 5 minutes)
+    await this.redisService.set(`otp:${cleanPhone}`, otp, 300);
+    this.logger.log(`[AuthService] Generated OTP ${otp} for phone ${cleanPhone}`);
+
+    // Send SMS
+    await this.smsService.sendSms(cleanPhone, otp);
+
+    const devOtpEnabled = process.env.DEV_OTP_ENABLED !== 'false';
+    return {
+      success: true,
+      message: 'OTP sent successfully.',
+      devOtp: devOtpEnabled ? otp : undefined,
+    };
+  }
+
   async login(email: string, passwordHash: string) {
     const user = await this.prisma.user.findUnique({ where: { email } });
     if (!user || !user.passwordHash) {
@@ -73,34 +99,89 @@ export class AuthService {
     return { success: true, message: 'OTP sent to email', email };
   }
 
-  async verifyOtp(email: string, otp: string) {
-    const user = await this.prisma.user.findUnique({ where: { email }, include: { profile: true } });
-    if (!user) {
-      throw new UnauthorizedException('Invalid credentials');
-    }
+  async verifyOtp(identifier: string, otp: string) {
+    if (!identifier || !otp) throw new BadRequestException('Identifier and OTP are required');
+    const cleanId = identifier.trim().replace(/\s+/g, '');
+    const isPhone = /^\+?[0-9]{10,15}$/.test(cleanId);
 
-    if (!user.otpCode || user.otpCode !== otp || !user.otpExpiry || user.otpExpiry < new Date()) {
-      throw new UnauthorizedException('Invalid or expired OTP');
-    }
-
-    // Clear OTP
-    await this.prisma.user.update({
-      where: { id: user.id },
-      data: { otpCode: null, otpExpiry: null }
-    });
-
-    const payload = { sub: user.id, email: user.email, role: user.role };
-    const accessToken = this.jwtService.sign(payload);
-
-    return {
-      accessToken,
-      user: {
-        id: user.id,
-        email: user.email,
-        role: user.role,
-        fullName: user.profile?.fullName,
+    if (isPhone) {
+      const storedOtp = await this.redisService.get(`otp:${cleanId}`);
+      if (!storedOtp || storedOtp !== otp) {
+        throw new UnauthorizedException('Invalid or expired OTP');
       }
-    };
+      await this.redisService.del(`otp:${cleanId}`);
+
+      let user = await this.prisma.user.findFirst({
+        where: { phone: cleanId },
+        include: { profile: true },
+      });
+
+      if (!user) {
+        const userEmail = `user_${cleanId.slice(-4)}_${Date.now()}@cybersave.gov.in`;
+        user = await this.prisma.user.create({
+          data: {
+            phone: cleanId,
+            email: userEmail,
+            profile: {
+              create: {
+                fullName: 'Citizen User',
+                phone: cleanId,
+                email: userEmail,
+              },
+            },
+            wallet: {
+              create: {
+                balance: 100.0,
+              },
+            },
+          },
+          include: { profile: true },
+        });
+        this.logger.log(`Created new user via mobile OTP: ${user.id}`);
+      }
+
+      const payload = { sub: user.id, email: user.email, role: user.role };
+      const accessToken = this.jwtService.sign(payload);
+
+      return {
+        accessToken,
+        user: {
+          id: user.id,
+          phone: user.phone,
+          email: user.email,
+          role: user.role,
+          fullName: user.profile?.fullName || 'Citizen User',
+        },
+      };
+    } else {
+      const user = await this.prisma.user.findUnique({ where: { email: cleanId }, include: { profile: true } });
+      if (!user) {
+        throw new UnauthorizedException('Invalid credentials');
+      }
+
+      if (!user.otpCode || user.otpCode !== otp || !user.otpExpiry || user.otpExpiry < new Date()) {
+        throw new UnauthorizedException('Invalid or expired OTP');
+      }
+
+      // Clear OTP
+      await this.prisma.user.update({
+        where: { id: user.id },
+        data: { otpCode: null, otpExpiry: null }
+      });
+
+      const payload = { sub: user.id, email: user.email, role: user.role };
+      const accessToken = this.jwtService.sign(payload);
+
+      return {
+        accessToken,
+        user: {
+          id: user.id,
+          email: user.email,
+          role: user.role,
+          fullName: user.profile?.fullName || 'Citizen User',
+        }
+      };
+    }
   }
 
   async resendOtp(email: string) {
