@@ -14,6 +14,7 @@ import { DocumentsModule } from './documents/documents.module';
 import { IntegrationsModule } from './common/services/integrations.module';
 import { AadhaarModule } from './aadhaar/aadhaar.module';
 import { SandboxModule } from './sandbox/sandbox.module';
+import { AdminGateway } from './admin/admin.gateway';
 
 @Module({
   imports: [
@@ -34,6 +35,6 @@ import { SandboxModule } from './sandbox/sandbox.module';
     SandboxModule,
   ],
   controllers: [AppController],
-  providers: [AppService],
+  providers: [AppService, AdminGateway],
 })
 export class AppModule {}
