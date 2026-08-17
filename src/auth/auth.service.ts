@@ -10,6 +10,7 @@ import { PrismaService } from '../database/prisma.service';
 import { FirebaseService } from '../common/services/firebase.service';
 import { RedisService } from '../common/services/redis.service';
 import { SmsService } from '../common/services/sms.service';
+import { ResendService } from '../common/services/resend.service';
 import {
   hashPassword,
   comparePassword,
@@ -28,6 +29,7 @@ export class AuthService {
     private readonly firebaseService: FirebaseService,
     private readonly redisService: RedisService,
     private readonly smsService: SmsService,
+    private readonly resendService: ResendService,
     private readonly jwtService: JwtService,
   ) {}
 
@@ -137,7 +139,7 @@ export class AuthService {
     const passwordHash = hashPassword(registerDto.password);
     const cleanPhone = registerDto.phone
       ? registerDto.phone.trim().replace(/\s+/g, '')
-      : null;
+      : undefined;
 
     const user: any = await this.prisma.user.create({
       data: {
@@ -148,7 +150,7 @@ export class AuthService {
           create: {
             fullName: registerDto.fullName,
             email: cleanEmail,
-            phone: cleanPhone,
+            phone: cleanPhone || undefined,
           },
         },
         wallet: {
@@ -167,6 +169,17 @@ export class AuthService {
     });
 
     this.logger.log(`Created new Cybersave user account via Email: ${user.id}`);
+
+    try {
+      await this.resendService.sendEmail(
+        cleanEmail,
+        'Welcome to CyberSave!',
+        `<h1>Welcome to CyberSave, ${registerDto.fullName}!</h1><p>Your account has been successfully created and your digital wallet has been credited with ₹100.00 as a welcome bonus.</p>`
+      );
+      this.logger.log(`Welcome email sent to ${cleanEmail}`);
+    } catch (e) {
+      this.logger.warn(`Failed to send welcome email to ${cleanEmail}: ${e.message}`);
+    }
 
     const userEmail = user.email || cleanEmail;
     const tokens = await this.generateTokens(user.id, userEmail, user.role);

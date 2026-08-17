@@ -5,6 +5,7 @@ import { AuthController } from './auth.controller';
 import { FirebaseService } from './firebase.service';
 import { RedisService } from '../common/services/redis.service';
 import { SmsService } from '../common/services/sms.service';
+import { ResendService } from '../common/services/resend.service';
 import { JwtAuthGuard } from '../common/guards/jwt.guard';
 
 @Module({
@@ -18,6 +19,7 @@ import { JwtAuthGuard } from '../common/guards/jwt.guard';
     FirebaseService,
     RedisService,
     SmsService,
+    ResendService,
     JwtAuthGuard,
   ],
   controllers: [AuthController],
@@ -26,6 +28,7 @@ import { JwtAuthGuard } from '../common/guards/jwt.guard';
     FirebaseService,
     RedisService,
     SmsService,
+    ResendService,
     JwtAuthGuard,
   ],
 })
