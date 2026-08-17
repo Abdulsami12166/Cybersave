@@ -34,28 +34,41 @@ export class AuthService {
   ) {}
 
   /**
-   * Phone authentication is handled directly by Firebase Phone Auth (6-digit SMS).
+   * Generates a 6-digit dummy OTP and stores it in Redis for development.
    */
   async sendOtp(sendOtpDto: SendOtpDto) {
     const cleanPhone = sendOtpDto.phone.trim().replace(/\s+/g, '');
-    this.logger.log(
-      `[AuthService] Phone authentication request for ${cleanPhone} delegated to Firebase Phone Auth (6-digit native SMS).`,
-    );
+    const devOtpEnabled = process.env.DEV_OTP_ENABLED !== 'false'; // Default true for this task unless explicitly false
+
+    // Generate 6 digit OTP
+    const otp = Math.floor(100000 + Math.random() * 900000).toString();
+    
+    // Store in Redis (valid for 5 minutes)
+    await this.redisService.set(`otp:${cleanPhone}`, otp, 300);
+
+    this.logger.log(`[AuthService] Generated OTP ${otp} for ${cleanPhone}`);
 
     return {
       success: true,
-      message:
-        'SMS delivery managed natively by Firebase Phone Authentication.',
-      phone: cleanPhone,
+      message: 'OTP sent successfully.',
+      devOtp: devOtpEnabled ? otp : undefined,
     };
   }
 
   /**
-   * Legacy verifyOtp endpoint — Phone authentication is performed natively via Firebase 6-digit SMS verification.
+   * Verifies the 6-digit OTP from Redis and logs in/registers user.
    */
   async verifyOtp(verifyOtpDto: VerifyOtpDto) {
     const cleanPhone = verifyOtpDto.phone.trim().replace(/\s+/g, '');
-    const { fullName, email } = verifyOtpDto;
+    const { fullName, email, otp } = verifyOtpDto;
+
+    const storedOtp = await this.redisService.get(`otp:${cleanPhone}`);
+    if (!storedOtp || storedOtp !== otp) {
+      throw new BadRequestException('Invalid or expired OTP.');
+    }
+
+    // Delete OTP after successful verification to prevent reuse
+    await this.redisService.del(`otp:${cleanPhone}`);
 
     let user: any = await this.prisma.user.findFirst({
       where: {
