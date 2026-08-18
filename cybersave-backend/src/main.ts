@@ -13,9 +13,10 @@ async function bootstrap() {
     logger: winstonLoggerInstance,
   });
 
-  // Enable CORS
+  // ponytail: scope CORS to env-configured origins in production
+  const corsOrigin = process.env.CORS_ORIGIN ? process.env.CORS_ORIGIN.split(',') : '*';
   app.enableCors({
-    origin: '*', // In production, replace with specific domain list
+    origin: corsOrigin,
     methods: 'GET,HEAD,PUT,PATCH,POST,DELETE,OPTIONS',
     credentials: true,
   });

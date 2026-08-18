@@ -25,7 +25,15 @@ setupSockets(io);
 const prisma = new PrismaClient();
 const PORT = process.env.ADMIN_PORT || 3001;
 
-app.use(cors());
+// ponytail: scope CORS to env-configured origin in production
+const allowedOrigins = process.env.CORS_ORIGIN
+  ? process.env.CORS_ORIGIN.split(',')
+  : '*';
+if (allowedOrigins === '*') {
+  console.warn('CORS_ORIGIN not set — allowing all origins. Set this in production.');
+}
+
+app.use(cors({ origin: allowedOrigins, credentials: true }));
 app.use(express.json());
 
 // --- Admin Seeding ---
@@ -43,7 +51,7 @@ async function seedAdmin() {
         role: 'ADMIN',
       }
     });
-    console.log('Seeded default admin user: admin@cybersave.com / admin123');
+    console.log('Seeded default admin user. Set a strong password immediately.');
   }
 }
 seedAdmin();

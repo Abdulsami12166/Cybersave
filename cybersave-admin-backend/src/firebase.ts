@@ -1,20 +1,22 @@
-import { initializeApp, cert } from 'firebase-admin/app';
+import { initializeApp, cert, getApps } from 'firebase-admin/app';
 import { getMessaging } from 'firebase-admin/messaging';
-import path from 'path';
-import fs from 'fs';
 
-// Using the provided service account JSON from the root
-const serviceAccountPath = path.resolve('C:\\Cybersave\\cyberbase-d3c1b-firebase-adminsdk-fbsvc-7feb16841a.json');
-const serviceAccount = JSON.parse(fs.readFileSync(serviceAccountPath, 'utf8'));
+// ponytail: use env vars, never commit credential files
+let messaging: any = null;
 
-let app;
-try {
-  app = initializeApp({
-    credential: cert(serviceAccount),
-  });
-  console.log('Firebase Admin SDK Initialized Successfully.');
-} catch (error) {
-  console.error('Firebase Admin Initialization Error:', error);
+const { FIREBASE_PROJECT_ID, FIREBASE_CLIENT_EMAIL, FIREBASE_PRIVATE_KEY } = process.env;
+
+if (FIREBASE_PROJECT_ID && FIREBASE_CLIENT_EMAIL && FIREBASE_PRIVATE_KEY) {
+  try {
+    const app = getApps().length === 0
+      ? initializeApp({ credential: cert({ projectId: FIREBASE_PROJECT_ID, clientEmail: FIREBASE_CLIENT_EMAIL, privateKey: FIREBASE_PRIVATE_KEY.replace(/\\n/g, '\n') }) })
+      : getApps()[0];
+    messaging = getMessaging(app);
+  } catch (error) {
+    console.error('Firebase Admin Initialization Error:', error);
+  }
+} else {
+  console.warn('Firebase env vars not set — push notifications disabled.');
 }
 
-export const messaging = app ? getMessaging(app) : null;
+export { messaging };

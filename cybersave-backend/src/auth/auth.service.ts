@@ -78,7 +78,7 @@ export class AuthService {
     // Send SMS
     await this.smsService.sendSms(cleanPhone, otp);
 
-    const devOtpEnabled = process.env.DEV_OTP_ENABLED !== 'false';
+    const devOtpEnabled = process.env.DEV_OTP_ENABLED === 'true'; // ponytail: safe default — must explicitly opt in
     return {
       success: true,
       message: 'OTP sent successfully.',
@@ -108,7 +108,7 @@ export class AuthService {
     // Simulate sending email
     this.logger.log(`[SIMULATED EMAIL] OTP for ${email} is ${otpCode}`);
 
-    const devOtpEnabled = process.env.DEV_OTP_ENABLED !== 'false';
+    const devOtpEnabled = process.env.DEV_OTP_ENABLED === 'true'; // ponytail: safe default — must explicitly opt in
     return { 
       success: true, 
       message: 'OTP sent to email', 
