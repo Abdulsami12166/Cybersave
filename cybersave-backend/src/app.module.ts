@@ -15,6 +15,7 @@ import { IntegrationsModule } from './common/services/integrations.module';
 import { AadhaarModule } from './aadhaar/aadhaar.module';
 import { SandboxModule } from './sandbox/sandbox.module';
 import { PaymentModule } from './payment/payment.module';
+import { AdminModule } from './admin/admin.module';
 
 @Module({
   imports: [
@@ -34,6 +35,7 @@ import { PaymentModule } from './payment/payment.module';
     AadhaarModule,
     SandboxModule,
     PaymentModule,
+    AdminModule,
   ],
   controllers: [AppController],
   providers: [AppService],

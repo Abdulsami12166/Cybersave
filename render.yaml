@@ -18,20 +18,8 @@ services:
         generateValue: true
       - key: JWT_REFRESH_SECRET
         generateValue: true
-
-  - type: web
-    name: cybersave-admin-backend
-    env: node
-    region: singapore
-    plan: free
-    rootDir: cybersave-admin-backend
-    buildCommand: npm install && npx prisma generate && npm run build
-    startCommand: npm start
-    envVars:
-      - key: DATABASE_URL
-        value: "mongodb+srv://sami:sami@cluster0.tmzlh9d.mongodb.net/cybersave?retryWrites=true&w=majority"
-      - key: NODE_ENV
-        value: production
+      - key: DEV_OTP_ENABLED
+        value: "false"
 
   - type: web
     name: cybersave-admin-frontend
@@ -45,7 +33,8 @@ services:
       - key: VITE_BACKEND_URL
         fromService:
           type: web
-          name: cybersave-admin-backend
+          name: cybersave-backend
           envVarKey: RENDER_EXTERNAL_URL
+
 
 

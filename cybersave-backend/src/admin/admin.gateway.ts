@@ -1,0 +1,991 @@
+import {
+  WebSocketGateway,
+  WebSocketServer,
+  SubscribeMessage,
+  MessageBody,
+  ConnectedSocket,
+  OnGatewayConnection,
+  OnGatewayDisconnect,
+} from '@nestjs/websockets';
+import { Server, Socket } from 'socket.io';
+import { PrismaService } from '../database/prisma.service';
+import { messaging } from './firebase';
+import * as bcrypt from 'bcrypt';
+
+@WebSocketGateway({
+  cors: {
+    origin: '*',
+  },
+})
+export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
+  @WebSocketServer()
+  server: Server;
+
+  constructor(private readonly prisma: PrismaService) {}
+
+  handleConnection(client: Socket) {
+    console.log('[AdminGateway] Client connected:', client.id);
+  }
+
+  handleDisconnect(client: Socket) {
+    console.log('[AdminGateway] Client disconnected:', client.id);
+  }
+
+  @SubscribeMessage('request_dashboard_data')
+  async handleDashboardData(@ConnectedSocket() client: Socket) {
+    try {
+      const today = new Date();
+      today.setHours(0, 0, 0, 0);
+
+      const totalApps = await this.prisma.application.count();
+      const appsToday = await this.prisma.application.count({
+        where: { submittedAt: { gte: today } },
+      });
+      const pendingApps = await this.prisma.application.count({
+        where: { status: 'PENDING' },
+      });
+      const completedAppsToday = await this.prisma.application.count({
+        where: { status: 'COMPLETED', updatedAt: { gte: today } },
+      });
+      const rejectedAppsToday = await this.prisma.application.count({
+        where: { status: 'REJECTED', updatedAt: { gte: today } },
+      });
+
+      const activeCentres = await this.prisma.user.count({
+        where: { role: 'ADMIN' },
+      });
+
+      const todayAppsList = await this.prisma.application.findMany({
+        where: { submittedAt: { gte: today } },
+        select: { feePaid: true },
+      });
+      const revenueToday = todayAppsList.reduce(
+        (sum, app) => sum + (app.feePaid || 0),
+        0,
+      );
+
+      client.emit('response_dashboard_data', {
+        stats: {
+          revenueToday,
+          appsToday,
+          pendingApps,
+          completedAppsToday,
+          rejectedAppsToday,
+          activeCentres,
+        },
+        collections: {
+          totalCollections: 1240000,
+          onlinePayments: 820000,
+          cashCollections: 420000,
+        },
+        serviceShare: [
+          { name: 'Aadhaar', percentage: 35 },
+          { name: 'PAN Card', percentage: 22 },
+          { name: 'Certificates', percentage: 18 },
+          { name: 'Banking', percentage: 15 },
+          { name: 'Other', percentage: 10 },
+        ],
+        operatorLogs: [
+          {
+            id: '1',
+            title: 'Action',
+            description: 'Sample log',
+            time: new Date().toISOString(),
+          },
+        ],
+        recentApps: [],
+        charts: { revenueOverview: [], applicationTrends: [] },
+      });
+    } catch (e) {
+      console.error('[AdminGateway] request_dashboard_data error:', e);
+    }
+  }
+
+  @SubscribeMessage('request_users_data')
+  async handleUsersData(@ConnectedSocket() client: Socket) {
+    try {
+      const totalCitizens = await this.prisma.user.count({
+        where: { role: 'USER' },
+      });
+      const activeCitizens = totalCitizens;
+      const newThisMonth = await this.prisma.user.count({
+        where: {
+          role: 'USER',
+          createdAt: {
+            gte: new Date(new Date().getFullYear(), new Date().getMonth(), 1),
+          },
+        },
+      });
+
+      const users = await this.prisma.user.findMany({
+        where: { role: 'USER' },
+        include: { profile: true, applications: true },
+        orderBy: { createdAt: 'desc' },
+      });
+
+      const formattedUsers = users.map((u) => ({
+        id: `CIT-${u.id.substring(0, 5).toUpperCase()}`,
+        dbId: u.id,
+        fullName: u.profile?.fullName || 'Unknown',
+        aadhaar: u.profile?.dob
+          ? '****' + Math.floor(1000 + Math.random() * 9000)
+          : 'Not Given',
+        mobile: u.phone || 'N/A',
+        district: u.profile?.district || 'Not Given',
+        servicesUsed: u.applications?.length || 0,
+        status: u.status === 'BLOCKED' ? 'BLOCKED' : u.status || 'Verified',
+        avatarUrl: u.profile?.avatarUrl || null,
+        lastActive: 'Active recently',
+      }));
+
+      client.emit('response_users_data', {
+        stats: {
+          totalCitizens,
+          activeCitizens,
+          newThisMonth,
+          pendingVerification: 0,
+        },
+        users: formattedUsers,
+      });
+    } catch (e) {
+      console.error('[AdminGateway] request_users_data error:', e);
+    }
+  }
+
+  @SubscribeMessage('request_user_detail')
+  async handleUserDetail(
+    @ConnectedSocket() client: Socket,
+    @MessageBody() data: { id: string },
+  ) {
+    try {
+      let realId = data.id;
+      let u = await this.prisma.user.findUnique({
+        where: { id: realId },
+        include: { profile: true },
+      });
+
+      if (!u && realId.startsWith('CIT-')) {
+        const shortId = realId.replace('CIT-', '').toUpperCase();
+        const allUsers = await this.prisma.user.findMany({
+          where: { role: 'USER' },
+          include: { profile: true },
+        });
+        u =
+          allUsers.find((x) => x.id.substring(0, 5).toUpperCase() === shortId) ||
+          null;
+      }
+
+      if (!u) {
+        u = await this.prisma.user.findFirst({
+          where: { role: 'USER' },
+          include: { profile: true },
+        });
+      }
+
+      if (!u) {
+        client.emit('response_user_detail', { error: 'User not found' });
+        return;
+      }
+
+      const apps = await this.prisma.application.findMany({
+        where: { userId: u.id },
+        orderBy: { submittedAt: 'desc' },
+      });
+
+      const logs = await this.prisma.auditLog.findMany({
+        where: { userId: u.id },
+        orderBy: { createdAt: 'desc' },
+      });
+
+      client.emit('response_user_detail', {
+        id: `CIT-${u.id.substring(0, 5).toUpperCase()}`,
+        dbId: u.id,
+        fullName: u.profile?.fullName || 'Unknown',
+        aadhaar: u.profile?.dob
+          ? '****' + Math.floor(1000 + Math.random() * 9000)
+          : 'Not Given',
+        mobile: u.phone || 'N/A',
+        email: u.email || 'N/A',
+        district: u.profile?.district || 'Not Given',
+        state: u.profile?.state || 'Not Given',
+        joinedDate: u.createdAt.toLocaleDateString(),
+        status: u.status === 'BLOCKED' ? 'BLOCKED' : u.status || 'Verified',
+        avatarUrl: u.profile?.avatarUrl || null,
+        applications: apps.map((a) => ({
+          id: `APP-${a.id.substring(0, 5).toUpperCase()}`,
+          refNumber: a.refNumber,
+          serviceTitle: a.serviceTitle,
+          status: a.status,
+          feePaid: a.feePaid,
+          submittedAt: a.submittedAt.toLocaleDateString(),
+        })),
+        auditLogs: logs.map((l) => ({
+          id: l.id,
+          action: l.action,
+          details: l.details || '',
+          createdAt:
+            l.createdAt.toLocaleDateString() +
+            ' ' +
+            l.createdAt.toLocaleTimeString(),
+        })),
+      });
+    } catch (e) {
+      console.error('[AdminGateway] request_user_detail error:', e);
+    }
+  }
+
+  @SubscribeMessage('block_citizen')
+  async handleBlockCitizen(
+    @ConnectedSocket() client: Socket,
+    @MessageBody() data: { id: string; status: string },
+  ) {
+    try {
+      let realId = data.id;
+      let u = await this.prisma.user.findUnique({ where: { id: realId } });
+
+      if (!u && realId.startsWith('CIT-')) {
+        const shortId = realId.replace('CIT-', '').toUpperCase();
+        const allUsers = await this.prisma.user.findMany({
+          where: { role: 'USER' },
+        });
+        u =
+          allUsers.find((x) => x.id.substring(0, 5).toUpperCase() === shortId) ||
+          null;
+      }
+
+      if (!u) {
+        console.error(`[AdminGateway] User not found: ${realId}`);
+        return;
+      }
+
+      await this.prisma.user.update({
+        where: { id: u.id },
+        data: { status: data.status },
+      });
+
+      await this.prisma.auditLog.create({
+        data: {
+          userId: u.id,
+          action: data.status === 'BLOCKED' ? 'USER_BLOCKED' : 'USER_UNBLOCKED',
+          details: `Admin changed user status to ${data.status}`,
+        },
+      });
+
+      client.emit('block_citizen_success');
+    } catch (e) {
+      console.error('[AdminGateway] block_citizen error:', e);
+    }
+  }
+
+  @SubscribeMessage('request_applications_data')
+  async handleApplicationsData(@ConnectedSocket() client: Socket) {
+    try {
+      const totalApps = await this.prisma.application.count();
+      const today = new Date();
+      today.setHours(0, 0, 0, 0);
+      const todayApps = await this.prisma.application.count({
+        where: { submittedAt: { gte: today } },
+      });
+      const pending = await this.prisma.application.count({
+        where: { status: 'VERIFYING' },
+      });
+      const processing = await this.prisma.application.count({
+        where: { status: 'IN_PROGRESS' },
+      });
+      const completed = await this.prisma.application.count({
+        where: { status: 'APPROVED' },
+      });
+
+      const apps = await this.prisma.application.findMany({
+        take: 8,
+        orderBy: { submittedAt: 'desc' },
+        include: {
+          user: { include: { profile: true } },
+          service: true,
+        },
+      });
+
+      const formattedApps = apps.map((a) => ({
+        id: `APP-2026-${a.id.substring(0, 4).toUpperCase()}`,
+        citizen: a.user?.profile?.fullName || 'Unknown',
+        serviceType: a.serviceTitle,
+        priority: 'Medium',
+        status:
+          a.status === 'SUBMITTED'
+            ? 'In Review'
+            : a.status === 'VERIFYING'
+              ? 'Pending'
+              : a.status === 'IN_PROGRESS'
+                ? 'Processing'
+                : a.status === 'APPROVED'
+                  ? 'Completed'
+                  : 'Rejected',
+        assigned: 'Auto Assigned',
+        submitted: a.submittedAt.toISOString(),
+        sla: '24h',
+        amount: a.feePaid,
+      }));
+
+      client.emit('response_applications_data', {
+        stats: { totalApps, todayApps, pending, processing, completed },
+        applications: formattedApps,
+      });
+    } catch (e) {
+      console.error('[AdminGateway] request_applications_data error:', e);
+    }
+  }
+
+  @SubscribeMessage('request_application_detail')
+  async handleApplicationDetail(
+    @ConnectedSocket() client: Socket,
+    @MessageBody() data: { id: string },
+  ) {
+    try {
+      client.emit('response_application_detail', {
+        id: data.id,
+        serviceName: 'Aadhaar Address Update',
+        sla: '4h 32m',
+        submitted: '3 Aug 2026, 09:14 AM',
+        assignedTo: 'Vikram Tiwari (VLE-0234)',
+        centre: 'CSC Hazratganj, Lucknow',
+        applicant: {
+          id: 'CIT-00482',
+          name: 'Priya Sharma',
+          aadhaar: 'XXXX XXXX 4521',
+          mobile: '+91 98765 43210',
+        },
+      });
+    } catch (e) {
+      console.error('[AdminGateway] request_application_detail error:', e);
+    }
+  }
+
+  @SubscribeMessage('request_services_data')
+  async handleServicesData(@ConnectedSocket() client: Socket) {
+    try {
+      const totalServices = await this.prisma.service.count();
+      const activeServices = await this.prisma.service.count({
+        where: { isActive: true },
+      });
+      const services = await this.prisma.service.findMany({ take: 50 });
+
+      const groups: Record<string, any> = {};
+      services.forEach((s) => {
+        if (!groups[s.category]) {
+          groups[s.category] = {
+            category: s.category,
+            department: s.department,
+            subServices: [],
+          };
+        }
+        groups[s.category].subServices.push({
+          id: s.id,
+          name: s.title,
+          category: s.category,
+          sla: s.processingTime,
+          fee: s.fee,
+          status: s.isActive ? 'Active' : 'Inactive',
+        });
+      });
+
+      client.emit('response_services_data', {
+        stats: { totalServices, active: activeServices, offline: 0, drafts: 0 },
+        services: Object.values(groups),
+      });
+    } catch (e) {
+      console.error('[AdminGateway] request_services_data error:', e);
+    }
+  }
+
+  @SubscribeMessage('edit_service')
+  async handleEditService(
+    @ConnectedSocket() client: Socket,
+    @MessageBody() data: { id: string; name: string },
+  ) {
+    try {
+      await this.prisma.service.update({
+        where: { id: data.id },
+        data: { title: data.name },
+      });
+      client.emit('edit_service_success');
+    } catch (e) {
+      console.error('[AdminGateway] edit_service error:', e);
+    }
+  }
+
+  @SubscribeMessage('create_application')
+  async handleCreateApplication(
+    @ConnectedSocket() client: Socket,
+    @MessageBody() data: { title: string; description: string },
+  ) {
+    try {
+      await this.prisma.service.create({
+        data: {
+          slug: data.title.toLowerCase().replace(/\s+/g, '-'),
+          title: data.title,
+          description: data.description,
+          category: 'Government',
+          department: 'General Administration',
+          fee: 50.0,
+          processingTime: '3-5 working days',
+          isActive: true,
+          iconName: 'file-text',
+          colorHex: '#3b82f6',
+        },
+      });
+      client.emit('create_application_success');
+      this.server.emit('applications_updated');
+    } catch (e) {
+      console.error('[AdminGateway] create_application error:', e);
+    }
+  }
+
+  @SubscribeMessage('save_service_config')
+  async handleSaveServiceConfig(@MessageBody() data: any) {
+    try {
+      const newService = await this.prisma.service.create({
+        data: {
+          slug: data.name.toLowerCase().replace(/\s+/g, '-'),
+          title: data.name,
+          description: data.description,
+          category: data.category,
+          department:
+            data.departmentRole || 'ID Processing & Verification (ID-V)',
+          fee: data.pricing?.fee || 0.0,
+          processingTime: '5-7 working days',
+          subServices: data.subServices,
+          formDataSchema: data.formElements,
+          requiredDocs: data.documents,
+          pricingConfig: data.pricing,
+          iconName: 'file-text',
+          colorHex: '#2563eb',
+          isActive: true,
+        },
+      });
+      console.log('[AdminGateway] Service configuration saved:', newService.id);
+    } catch (e) {
+      console.error('[AdminGateway] save_service_config error:', e);
+    }
+  }
+
+  @SubscribeMessage('request_operators_data')
+  async handleOperatorsData(@ConnectedSocket() client: Socket) {
+    try {
+      const totalOps = await this.prisma.user.count({
+        where: { role: 'ADMIN' },
+      });
+      const ops = await this.prisma.user.findMany({
+        where: { role: 'ADMIN' },
+        include: { profile: true },
+      });
+
+      const formattedOps = ops.map((o) => ({
+        id: o.id,
+        name: o.profile?.fullName || 'Admin',
+        role: 'System Admin',
+        department: 'IT & Infrastructure',
+        joinedDate: o.createdAt.toLocaleDateString(),
+        lastActive: 'Active recently',
+        status: 'Active',
+        permissions: o.permissions || [],
+      }));
+
+      client.emit('response_operators_data', {
+        stats: { totalOps, active: totalOps, pending: 0, suspended: 0 },
+        operators: formattedOps,
+      });
+    } catch (e) {
+      console.error('[AdminGateway] request_operators_data error:', e);
+    }
+  }
+
+  @SubscribeMessage('update_operator_access')
+  async handleUpdateOperatorAccess(
+    @ConnectedSocket() client: Socket,
+    @MessageBody() data: { id: string; permissions: string[] },
+  ) {
+    try {
+      await this.prisma.user.update({
+        where: { id: data.id },
+        data: { permissions: data.permissions },
+      });
+      client.emit('update_operator_access_success', {
+        id: data.id,
+        permissions: data.permissions,
+      });
+
+      const ops = await this.prisma.user.findMany({
+        where: { role: 'ADMIN' },
+        include: { profile: true },
+      });
+      const formattedOps = ops.map((o) => ({
+        id: o.id,
+        name: o.profile?.fullName || 'Admin',
+        role: 'System Admin',
+        department: 'IT & Infrastructure',
+        joinedDate: o.createdAt.toLocaleDateString(),
+        lastActive: 'Active recently',
+        status: 'Active',
+        permissions: o.permissions || [],
+      }));
+      this.server.emit('response_operators_data', {
+        stats: { totalOps: ops.length, active: ops.length, pending: 0, suspended: 0 },
+        operators: formattedOps,
+      });
+    } catch (e) {
+      console.error('[AdminGateway] update_operator_access error:', e);
+    }
+  }
+
+  @SubscribeMessage('add_new_operator')
+  async handleAddNewOperator(
+    @ConnectedSocket() client: Socket,
+    @MessageBody()
+    data: {
+      name: string;
+      email: string;
+      password?: string;
+      permissions?: string[];
+    },
+  ) {
+    try {
+      const salt = await bcrypt.genSalt(10);
+      const passwordHash = await bcrypt.hash(data.password || 'admin123', salt);
+
+      const newUser = await this.prisma.user.create({
+        data: {
+          email: data.email,
+          phone: `+9198765${Math.floor(10000 + Math.random() * 90000)}`,
+          keycloakId: `op-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
+          role: 'ADMIN',
+          passwordHash,
+          permissions: data.permissions || ['DASHBOARD', 'APPLICATIONS'],
+          profile: {
+            create: {
+              fullName: data.name,
+            },
+          },
+        },
+      });
+      client.emit('add_new_operator_success', newUser.id);
+      const ops = await this.prisma.user.findMany({
+        where: { role: 'ADMIN' },
+        include: { profile: true },
+      });
+      const formattedOps = ops.map((o) => ({
+        id: o.id,
+        name: o.profile?.fullName || 'Admin',
+        role: 'System Admin',
+        department: 'IT & Infrastructure',
+        joinedDate: o.createdAt.toLocaleDateString(),
+        lastActive: 'Active recently',
+        status: 'Active',
+        permissions: o.permissions || [],
+      }));
+      this.server.emit('response_operators_data', {
+        stats: { totalOps: ops.length, active: ops.length, pending: 0, suspended: 0 },
+        operators: formattedOps,
+      });
+    } catch (e) {
+      console.error('[AdminGateway] add_new_operator error:', e);
+    }
+  }
+
+  @SubscribeMessage('request_transactions_data')
+  async handleTransactionsData(@ConnectedSocket() client: Socket) {
+    try {
+      const apps = await this.prisma.application.findMany({
+        orderBy: { submittedAt: 'desc' },
+        take: 50,
+        include: { user: { include: { profile: true } }, service: true },
+      });
+      const formattedTransactions = apps.map((a) => ({
+        id: `TXN-${a.id.substring(0, 8).toUpperCase()}`,
+        date: a.submittedAt.toISOString(),
+        customer: a.user?.profile?.fullName || 'Unknown',
+        service: a.serviceTitle,
+        amount: a.feePaid,
+        status: 'SUCCESS',
+      }));
+      const totalAmount = apps.reduce((sum, a) => sum + (a.feePaid || 0), 0);
+      client.emit('response_transactions_data', {
+        transactions: formattedTransactions,
+        stats: { totalCount: apps.length, totalAmount },
+      });
+    } catch (e) {
+      console.error('[AdminGateway] request_transactions_data error:', e);
+    }
+  }
+
+  @SubscribeMessage('request_notifications')
+  async handleNotifications(@ConnectedSocket() client: Socket) {
+    try {
+      const total = await this.prisma.notification.count();
+      const unread = await this.prisma.notification.count({
+        where: { status: 'PENDING' },
+      });
+
+      const notifications = await this.prisma.notification.findMany({
+        orderBy: { createdAt: 'desc' },
+        take: 8,
+      });
+
+      const formatted = notifications.map((n) => ({
+        id: n.id,
+        type: n.type,
+        title: n.title,
+        message: n.body,
+        time: n.createdAt.toISOString(),
+        status: n.status,
+      }));
+
+      client.emit('response_notifications', {
+        stats: {
+          totalHistory: total,
+          unreadAlerts: unread,
+          successLogs: total - unread,
+          pendingChecks: unread,
+        },
+        notifications: formatted,
+      });
+    } catch (e) {
+      console.error('[AdminGateway] request_notifications error:', e);
+    }
+  }
+
+  @SubscribeMessage('send_push_notification')
+  async handlePushNotification(
+    @ConnectedSocket() client: Socket,
+    @MessageBody()
+    data: { userId: string; title: string; body: string; type: string },
+  ) {
+    try {
+      const { userId, title, body, type } = data;
+      const user = await this.prisma.user.findUnique({ where: { id: userId } });
+
+      await this.prisma.notification
+        .create({
+          data: {
+            userId: user ? user.id : 'default-system-user',
+            title,
+            body,
+            type: (type as any) || 'SYSTEM',
+            status: 'SENT',
+          },
+        })
+        .catch(() => null);
+
+      if (user && user.fcmToken && messaging) {
+        try {
+          await messaging.send({
+            token: user.fcmToken,
+            notification: { title, body },
+            data: { type },
+          });
+        } catch (firebaseErr) {
+          console.error('[AdminGateway] Firebase send error:', firebaseErr);
+        }
+      }
+
+      client.emit('response_push_sent', {
+        success: true,
+        message: 'Notification queued and sent.',
+      });
+    } catch (e) {
+      console.error('[AdminGateway] send_push_notification error:', e);
+      client.emit('response_push_sent', {
+        success: false,
+        error: 'Failed to send',
+      });
+    }
+  }
+
+  @SubscribeMessage('send_global_push')
+  async handleGlobalPush(
+    @ConnectedSocket() client: Socket,
+    @MessageBody() data: { title: string; body: string },
+  ) {
+    try {
+      if (messaging) {
+        await messaging.send({
+          topic: 'all',
+          notification: { title: data.title, body: data.body },
+        });
+      }
+      await this.prisma.notification
+        .create({
+          data: {
+            userId: '000000000000000000000000',
+            title: data.title,
+            body: data.body,
+            type: 'INFO',
+            status: 'SENT',
+          },
+        })
+        .catch(() => null);
+
+      this.server.emit('receive_global_push', {
+        title: data.title,
+        body: data.body,
+      });
+
+      const totalUsers = await this.prisma.user.count();
+      client.emit('send_global_push_success', { count: totalUsers });
+      client.emit('request_notifications');
+    } catch (e) {
+      console.error('[AdminGateway] send_global_push error:', e);
+    }
+  }
+
+  @SubscribeMessage('request_support_tickets')
+  async handleSupportTickets(@ConnectedSocket() client: Socket) {
+    try {
+      const total = await this.prisma.supportTicket.count();
+      const open = await this.prisma.supportTicket.count({
+        where: { status: 'OPEN' },
+      });
+      const inProgress = await this.prisma.supportTicket.count({
+        where: { status: 'IN_PROGRESS' },
+      });
+      const resolved = await this.prisma.supportTicket.count({
+        where: { status: 'RESOLVED' },
+      });
+
+      const tickets = await this.prisma.supportTicket.findMany({
+        take: 50,
+        orderBy: { createdAt: 'desc' },
+      });
+
+      const formatted = tickets.map((t) => ({
+        id: `TKT-${t.id.substring(0, 8).toUpperCase()}`,
+        title: t.title,
+        category: t.category,
+        priority: t.priority,
+        createdOn: t.createdAt.toLocaleDateString(),
+        lastUpdated: t.updatedAt.toLocaleDateString(),
+        assignedTo: t.assignedTo || 'Unassigned',
+        status: t.status,
+      }));
+
+      client.emit('response_support_tickets', {
+        stats: {
+          totalTickets: total,
+          openTickets: open,
+          inProgress,
+          resolved,
+        },
+        tickets: formatted,
+      });
+    } catch (e) {
+      console.error('[AdminGateway] request_support_tickets error:', e);
+    }
+  }
+
+  @SubscribeMessage('create_support_ticket')
+  async handleCreateSupportTicket(
+    @ConnectedSocket() client: Socket,
+    @MessageBody()
+    data: {
+      title: string;
+      category: string;
+      priority: string;
+      description: string;
+    },
+  ) {
+    try {
+      const adminUser = await this.prisma.user.findFirst({
+        where: { role: 'ADMIN' },
+      });
+      await this.prisma.supportTicket.create({
+        data: {
+          refNumber: `TKT-${Date.now()}`,
+          title: `${data.title} - ${data.description}`.substring(0, 100),
+          category: data.category,
+          priority: data.priority,
+          status: 'OPEN',
+          userId: adminUser?.id || '',
+        },
+      });
+      client.emit('create_support_ticket_success');
+    } catch (e) {
+      console.error('[AdminGateway] create_support_ticket error:', e);
+    }
+  }
+
+  @SubscribeMessage('request_analytics')
+  async handleAnalytics(@ConnectedSocket() client: Socket) {
+    try {
+      const totalDocs = await this.prisma.documentUpload.count();
+      const recentLogs = await this.prisma.documentUpload.findMany({
+        take: 4,
+        orderBy: { uploadedAt: 'desc' },
+        include: { user: { include: { profile: true } } },
+      });
+
+      client.emit('response_analytics', {
+        stats: {
+          totalUploads: totalDocs,
+          verified: 0,
+          pendingReview: totalDocs,
+          expired: 0,
+        },
+        trends: [
+          { month: 'Jan', uploads: 30, verifications: 20 },
+          { month: 'Feb', uploads: 45, verifications: 40 },
+        ],
+        categories: [{ name: 'Identity', count: totalDocs }],
+        statusDistribution: { verified: 0, pending: totalDocs, expired: 0 },
+        recentLogs: recentLogs.map((l) => ({
+          id: `DOC-${l.id.substring(0, 8).toUpperCase()}`,
+          name: l.fileType,
+          category: 'Identity',
+          user: l.user?.profile?.fullName || 'Unknown',
+          uploaded: l.uploadedAt.toLocaleDateString(),
+          status: 'Pending',
+        })),
+      });
+    } catch (e) {
+      console.error('[AdminGateway] request_analytics error:', e);
+    }
+  }
+
+  @SubscribeMessage('request_audit_logs')
+  async handleAuditLogs(@ConnectedSocket() client: Socket) {
+    try {
+      const total = await this.prisma.auditLog.count();
+      const logs = await this.prisma.auditLog.findMany({
+        orderBy: { createdAt: 'desc' },
+        take: 10,
+        include: { user: { include: { profile: true } } },
+      });
+
+      const formatted = logs.map((l) => ({
+        timestamp: l.createdAt
+          .toISOString()
+          .replace('T', ' ')
+          .substring(0, 19),
+        user: l.user?.profile?.fullName || 'System',
+        action: l.action,
+        resource: l.details || '-',
+        ipAddress: l.ipAddress || '192.168.1.1',
+        status: 'Success',
+      }));
+
+      client.emit('response_audit_logs', {
+        stats: {
+          totalEvents: total,
+          loginActivities: 0,
+          documentActions: total,
+          systemChanges: 0,
+        },
+        logs: formatted,
+      });
+    } catch (e) {
+      console.error('[AdminGateway] request_audit_logs error:', e);
+    }
+  }
+
+  @SubscribeMessage('request_ticket_thread')
+  async handleTicketThread(
+    @ConnectedSocket() client: Socket,
+    @MessageBody() data: { id: string },
+  ) {
+    try {
+      client.emit('response_ticket_thread', {
+        id: data.id || 'TKT-2024-001',
+        title: 'Login Authentication Issue',
+        description:
+          'Users reporting 502 Bad Gateway during Google OAuth single sign-on redirect flow.',
+        category: 'Technical',
+        priority: 'High',
+        createdOn: '10/01/2024',
+        lastUpdated: '10/03/2024',
+        assignedTo: { id: 'admin1', name: 'Amit S.' },
+        reporter: { id: 'user1', name: 'John Smith' },
+        messages: [
+          {
+            senderId: 'user1',
+            senderName: 'John Smith',
+            role: 'USER',
+            time: '10/01/2024 at 10:15 AM',
+            text: "Hi support team, I'm trying to log in using my corporate Google account but getting a 502 Bad Gateway screen immediately after selecting the account. Multiple employees are reporting the same issue. Any updates?",
+          },
+          {
+            senderId: 'admin1',
+            senderName: 'Amit S.',
+            role: 'AGENT',
+            time: '10/01/2024 at 11:30 AM',
+            text: 'Hello John, thank you for reaching out. We have received your report. Our engineering team is currently investigating potential latency in the authentication redirect service. I will keep you posted as we narrow down the cause.',
+          },
+        ],
+        notes: [
+          {
+            title: 'Google OAuth Endpoint Issue Confirmed',
+            author: 'Amit S. (Support Agent)',
+            time: '10/01/2024 at 11:45 AM',
+            content:
+              'Confirmed that the client credentials redirect URI mismatches on our Google Cloud Console.',
+          },
+        ],
+      });
+    } catch (e) {
+      console.error('[AdminGateway] request_ticket_thread error:', e);
+    }
+  }
+
+  @SubscribeMessage('request_operator_detail')
+  async handleOperatorDetail(
+    @ConnectedSocket() client: Socket,
+    @MessageBody() data: { id: string },
+  ) {
+    try {
+      const user = await this.prisma.user.findFirst({
+        where: { role: 'ADMIN' },
+        include: { documents: true },
+      });
+
+      const docs = [
+        {
+          id: '1',
+          fileName: 'Background Check',
+          type: 'PDF',
+          status: 'Verified',
+          fileSize: '12',
+          uploadedAt: '15/01/2024',
+        },
+        {
+          id: '2',
+          fileName: 'Driving License',
+          type: 'PDF',
+          status: 'Expired',
+          fileSize: '4',
+          uploadedAt: '12/01/2024',
+        },
+        {
+          id: '3',
+          fileName: 'PAN Card',
+          type: 'IMG',
+          status: 'Verified',
+          fileSize: '1.2',
+          uploadedAt: '12/01/2024',
+        },
+        {
+          id: '4',
+          fileName: 'Employment Contract',
+          type: 'PDF',
+          status: 'Verified',
+          fileSize: '15',
+          uploadedAt: '12/01/2024',
+        },
+      ];
+
+      client.emit('response_operator_detail', {
+        id: data.id,
+        name: user?.email || 'Rajesh Kumar',
+        documents: docs,
+      });
+    } catch (e) {
+      console.error('[AdminGateway] request_operator_detail error:', e);
+    }
+  }
+}
