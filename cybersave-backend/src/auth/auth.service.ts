@@ -86,34 +86,126 @@ export class AuthService {
     };
   }
 
-  async login(email: string, passwordHash: string) {
-    const user = await this.prisma.user.findUnique({ where: { email } });
-    if (!user || !user.passwordHash) {
-      throw new UnauthorizedException('Invalid credentials');
+  async login(emailOrPhone: string, password?: string) {
+    const cleanId = (emailOrPhone || '').trim();
+    
+    // Check by email or phone
+    const user = await this.prisma.user.findFirst({
+      where: {
+        OR: [
+          { email: cleanId.toLowerCase() },
+          { phone: cleanId },
+        ],
+      },
+      include: { profile: true },
+    });
+
+    if (!user) {
+      throw new UnauthorizedException('Invalid email or password');
     }
 
-    const isMatch = await bcrypt.compare(passwordHash, user.passwordHash);
-    if (!isMatch) {
-      throw new UnauthorizedException('Invalid credentials');
+    if (user.status === 'BLOCKED') {
+      throw new UnauthorizedException('Your account has been blocked by the Administrator.');
     }
 
+    if (password && user.passwordHash) {
+      const isMatch = await bcrypt.compare(password, user.passwordHash);
+      if (!isMatch) {
+        throw new UnauthorizedException('Invalid email or password');
+      }
+
+      // Direct login successful with valid password
+      const payload = { sub: user.id, email: user.email, role: user.role };
+      const accessToken = this.jwtService.sign(payload);
+
+      return {
+        success: true,
+        accessToken,
+        token: accessToken,
+        user: {
+          id: user.id,
+          email: user.email,
+          phone: user.phone,
+          role: user.role,
+          fullName: user.profile?.fullName || 'Citizen User',
+          avatarUrl: user.profile?.avatarUrl || null,
+        },
+      };
+    }
+
+    // Fallback: Generate OTP for phone/email verification if no password provided
     const otpCode = this.generateOtp();
     const otpExpiry = new Date(Date.now() + 10 * 60 * 1000); // 10 mins
 
     await this.prisma.user.update({
       where: { id: user.id },
-      data: { otpCode, otpExpiry }
+      data: { otpCode, otpExpiry },
     });
 
-    // Simulate sending email
-    this.logger.log(`[SIMULATED EMAIL] OTP for ${email} is ${otpCode}`);
+    const devOtpEnabled = process.env.DEV_OTP_ENABLED === 'true';
+    return {
+      success: true,
+      message: 'OTP sent to mobile/email',
+      email: user.email,
+      phone: user.phone,
+      devOtp: devOtpEnabled ? otpCode : undefined,
+    };
+  }
 
-    const devOtpEnabled = process.env.DEV_OTP_ENABLED === 'true'; // ponytail: safe default — must explicitly opt in
-    return { 
-      success: true, 
-      message: 'OTP sent to email', 
-      email,
-      devOtp: devOtpEnabled ? otpCode : undefined
+  async googleLogin(data: { token?: string; email?: string; fullName?: string; photoUrl?: string }) {
+    const email = (data.email || '').trim().toLowerCase();
+    if (!email) {
+      throw new BadRequestException('Google email is required');
+    }
+
+    let user = await this.prisma.user.findUnique({
+      where: { email },
+      include: { profile: true },
+    });
+
+    if (!user) {
+      const fullName = data.fullName || 'Citizen User';
+      user = await this.prisma.user.create({
+        data: {
+          email,
+          role: 'USER',
+          profile: {
+            create: {
+              fullName,
+              email,
+              avatarUrl: data.photoUrl || null,
+            },
+          },
+          wallet: {
+            create: {
+              balance: 100.0,
+            },
+          },
+        },
+        include: { profile: true },
+      });
+      this.logger.log(`Created new user via Google Login: ${user.id}`);
+    }
+
+    if (user.status === 'BLOCKED') {
+      throw new UnauthorizedException('Your account has been blocked by the Administrator.');
+    }
+
+    const payload = { sub: user.id, email: user.email, role: user.role };
+    const accessToken = this.jwtService.sign(payload);
+
+    return {
+      success: true,
+      accessToken,
+      token: accessToken,
+      user: {
+        id: user.id,
+        email: user.email,
+        phone: user.phone,
+        role: user.role,
+        fullName: user.profile?.fullName || data.fullName || 'Citizen User',
+        avatarUrl: user.profile?.avatarUrl || data.photoUrl || null,
+      },
     };
   }
 

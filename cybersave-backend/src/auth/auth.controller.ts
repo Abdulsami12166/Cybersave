@@ -16,9 +16,15 @@ export class AuthController {
   }
 
   @Post('login')
-  @ApiOperation({ summary: 'Login with Email and Password to get OTP' })
+  @ApiOperation({ summary: 'Login with Email/Phone and Password or get OTP' })
   async login(@Body() body: any) {
-    return this.authService.login(body.email || body.emailOrPhone, body.password);
+    return this.authService.login(body.email || body.emailOrPhone || body.phone, body.password);
+  }
+
+  @Post(['google', 'verify'])
+  @ApiOperation({ summary: 'Continue with Google / Gmail Sign In' })
+  async googleLogin(@Body() body: any) {
+    return this.authService.googleLogin(body);
   }
 
   @Post('send-otp')
