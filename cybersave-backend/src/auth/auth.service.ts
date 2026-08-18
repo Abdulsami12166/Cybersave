@@ -21,25 +21,27 @@ export class AuthService {
   }
 
   async register(email: string, passwordHash: string, fullName: string, phone?: string) {
-    const cleanEmail = email.trim();
-    const cleanPhone = phone?.trim().replace(/\s+/g, '');
+    const cleanEmail = email.trim().toLowerCase();
+    const cleanPhone = phone?.trim().replace(/\s+/g, '') || null;
 
-    let user = await this.prisma.user.findUnique({ where: { email: cleanEmail } });
-    if (user) {
-      throw new BadRequestException('User with this email already exists');
+    // Check email uniqueness (case-insensitive)
+    const existingEmail = await this.prisma.user.findUnique({ where: { email: cleanEmail } });
+    if (existingEmail) {
+      throw new BadRequestException('An account with this email already exists. Please sign in instead.');
     }
 
+    // Check phone uniqueness (only if provided)
     if (cleanPhone) {
       const existingPhone = await this.prisma.user.findFirst({ where: { phone: cleanPhone } });
       if (existingPhone) {
-        throw new BadRequestException('User with this phone number already exists');
+        throw new BadRequestException('An account with this phone number already exists.');
       }
     }
 
-    const salt = await bcrypt.genSalt();
+    const salt = await bcrypt.genSalt(10);
     const hashed = await bcrypt.hash(passwordHash, salt);
 
-    user = await this.prisma.user.create({
+    const user = await this.prisma.user.create({
       data: {
         email: cleanEmail,
         phone: cleanPhone,
