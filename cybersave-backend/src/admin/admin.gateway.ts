@@ -287,7 +287,7 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
         where: { submittedAt: { gte: today } },
       });
       const pending = await this.prisma.application.count({
-        where: { status: 'VERIFYING' },
+        where: { status: 'SUBMITTED' },
       });
       const processing = await this.prisma.application.count({
         where: { status: 'IN_PROGRESS' },
@@ -297,7 +297,7 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
       });
 
       const apps = await this.prisma.application.findMany({
-        take: 8,
+        take: 50,
         orderBy: { submittedAt: 'desc' },
         include: {
           user: { include: { profile: true } },
@@ -306,9 +306,9 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
       });
 
       const formattedApps = apps.map((a) => ({
-        id: `APP-2026-${a.id.substring(0, 4).toUpperCase()}`,
-        citizen: a.user?.profile?.fullName || 'Unknown',
-        serviceType: a.serviceTitle,
+        id: a.refNumber || `APP-2026-${a.id.substring(0, 4).toUpperCase()}`,
+        citizen: a.user?.profile?.fullName || (a.formData as any)?.fullName || a.user?.email || 'Citizen Applicant',
+        serviceType: a.serviceTitle || a.service?.title || 'Government Service',
         priority: 'Medium',
         status:
           a.status === 'SUBMITTED'
@@ -317,13 +317,13 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
               ? 'Pending'
               : a.status === 'IN_PROGRESS'
                 ? 'Processing'
-                : a.status === 'APPROVED'
+                : a.status === 'APPROVED' || a.status === 'COMPLETED'
                   ? 'Completed'
                   : 'Rejected',
-        assigned: 'Auto Assigned',
-        submitted: a.submittedAt.toISOString(),
+        assigned: a.officialOfficer || 'Auto Assigned (SDM)',
+        submitted: a.submittedAt ? a.submittedAt.toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' }) : 'Today',
         sla: '24h',
-        amount: a.feePaid,
+        amount: a.feePaid || 50.0,
       }));
 
       client.emit('response_applications_data', {
@@ -416,25 +416,61 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
   @SubscribeMessage('create_application')
   async handleCreateApplication(
     @ConnectedSocket() client: Socket,
-    @MessageBody() data: { title: string; description: string },
+    @MessageBody() data: { title: string; description: string; fee?: number; category?: string },
   ) {
     try {
-      await this.prisma.service.create({
-        data: {
-          slug: data.title.toLowerCase().replace(/\s+/g, '-'),
-          title: data.title,
-          description: data.description,
-          category: 'Government',
-          department: 'General Administration',
-          fee: 50.0,
-          processingTime: '3-5 working days',
+      const rawTitle = data.title || 'New Government Scheme';
+      const slug = rawTitle.toLowerCase().trim().replace(/[^a-z0-9]+/g, '-');
+      
+      const defaultDocs = [
+        { type: 'Government-Issued Identity Proof', req: 'Required' },
+        { type: 'Address Proof', req: 'Required' },
+        { type: 'Application Supporting Document', req: 'Required' },
+      ];
+
+      const defaultSchema = [
+        { label: 'Full Name', type: 'text', required: true },
+        { label: 'Date of Birth', type: 'date', required: true },
+        { label: 'Gender', type: 'select', required: true },
+        { label: "Father's Name", type: 'text', required: true },
+        { label: "Mother's Name", type: 'text', required: true },
+        { label: 'Place of Birth', type: 'text', required: true },
+        { label: 'State', type: 'text', required: true },
+        { label: 'District', type: 'text', required: true },
+        { label: 'PIN Code', type: 'text', required: true },
+      ];
+
+      const newService = await this.prisma.service.upsert({
+        where: { slug },
+        update: {
+          title: rawTitle,
+          description: data.description || 'Government certified e-governance service workflow.',
+          category: data.category || 'Government',
+          fee: data.fee || 50.0,
+          requiredDocs: defaultDocs,
+          formDataSchema: defaultSchema,
           isActive: true,
-          iconName: 'file-text',
-          colorHex: '#3b82f6',
+        },
+        create: {
+          slug,
+          title: rawTitle,
+          description: data.description || 'Government certified e-governance service workflow.',
+          category: data.category || 'Government',
+          department: 'General Administration',
+          fee: data.fee || 50.0,
+          processingTime: '7-15 Days',
+          eligibility: ['Citizen of India', 'Valid ID verification credentials'],
+          requiredDocs: defaultDocs,
+          formDataSchema: defaultSchema,
+          isActive: true,
+          iconName: 'file-document-outline',
+          colorHex: '#2563eb',
         },
       });
+
       client.emit('create_application_success');
       this.server.emit('applications_updated');
+      this.server.emit('services_updated', newService);
     } catch (e) {
       console.error('[AdminGateway] create_application error:', e);
     }
@@ -443,26 +479,48 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
   @SubscribeMessage('save_service_config')
   async handleSaveServiceConfig(@MessageBody() data: any) {
     try {
-      const newService = await this.prisma.service.create({
-        data: {
-          slug: data.name.toLowerCase().replace(/\s+/g, '-'),
-          title: data.name,
-          description: data.description,
-          category: data.category,
-          department:
-            data.departmentRole || 'ID Processing & Verification (ID-V)',
-          fee: data.pricing?.fee || 0.0,
-          processingTime: '5-7 working days',
+      const rawTitle = data.name || data.title || 'Custom Service';
+      const slug = rawTitle.toLowerCase().trim().replace(/[^a-z0-9]+/g, '-');
+      const feeVal = data.pricing?.fee || data.fee || 50.0;
+
+      const newService = await this.prisma.service.upsert({
+        where: { slug },
+        update: {
+          title: rawTitle,
+          description: data.description || 'Government certified digital service workflow.',
+          category: data.category || 'Government',
+          department: data.departmentRole || 'ID Processing & Verification (ID-V)',
+          fee: feeVal,
+          processingTime: '7-15 Days',
           subServices: data.subServices,
           formDataSchema: data.formElements,
           requiredDocs: data.documents,
           pricingConfig: data.pricing,
-          iconName: 'file-text',
+          iconName: 'file-document-outline',
+          colorHex: '#2563eb',
+          isActive: true,
+        },
+        create: {
+          slug,
+          title: rawTitle,
+          description: data.description || 'Government certified digital service workflow.',
+          category: data.category || 'Government',
+          department: data.departmentRole || 'ID Processing & Verification (ID-V)',
+          fee: feeVal,
+          processingTime: '7-15 Days',
+          eligibility: ['Citizen of India', 'Valid ID verification credentials'],
+          subServices: data.subServices,
+          formDataSchema: data.formElements,
+          requiredDocs: data.documents,
+          pricingConfig: data.pricing,
+          iconName: 'file-document-outline',
           colorHex: '#2563eb',
           isActive: true,
         },
       });
+
       console.log('[AdminGateway] Service configuration saved:', newService.id);
+      this.server.emit('services_updated', newService);
     } catch (e) {
       console.error('[AdminGateway] save_service_config error:', e);
     }

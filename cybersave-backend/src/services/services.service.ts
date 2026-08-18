@@ -146,11 +146,73 @@ export class ServicesService implements OnModuleInit {
     }
   }
 
-  async getServiceById(id: string) {
-    try {
-      return await this.prisma.service.findUnique({ where: { id } });
-    } catch (error) {
-      return null;
-    }
+  async createOrUpdateService(data: any) {
+    const rawTitle = data.title || data.name || 'Custom Service';
+    const slug = (data.slug || rawTitle)
+      .toLowerCase()
+      .trim()
+      .replace(/[^a-z0-9]+/g, '-');
+
+    const feeVal = typeof data.fee === 'number'
+      ? data.fee
+      : parseFloat(data.pricing?.fee || data.fee || '50.0') || 50.0;
+
+    const defaultDocs = [
+      { type: 'Government-Issued Identity Proof', req: 'Required' },
+      { type: 'Address Proof', req: 'Required' },
+      { type: 'Application Supporting Document', req: 'Required' },
+    ];
+
+    const defaultSchema = [
+      { label: 'Full Name', type: 'text', required: true },
+      { label: 'Date of Birth', type: 'date', required: true },
+      { label: 'Gender', type: 'select', required: true },
+      { label: "Father's Name", type: 'text', required: true },
+      { label: "Mother's Name", type: 'text', required: true },
+      { label: 'Place of Birth', type: 'text', required: true },
+      { label: 'State', type: 'text', required: true },
+      { label: 'District', type: 'text', required: true },
+      { label: 'PIN Code', type: 'text', required: true },
+    ];
+
+    const service = await this.prisma.service.upsert({
+      where: { slug },
+      update: {
+        title: rawTitle,
+        description: data.description || 'Government certified digital service workflow.',
+        category: data.category || 'Government',
+        department: data.department || data.departmentRole || 'General Administration',
+        fee: feeVal,
+        processingTime: data.processingTime || '7-15 Days',
+        eligibility: data.eligibility || ['Citizen of India', 'Valid ID verification credentials'],
+        requiredDocs: data.requiredDocs || data.documents || defaultDocs,
+        subServices: data.subServices || [],
+        formDataSchema: data.formDataSchema || data.formElements || defaultSchema,
+        pricingConfig: data.pricingConfig || data.pricing || { fee: feeVal },
+        iconName: data.iconName || 'file-document-outline',
+        colorHex: data.colorHex || '#2563eb',
+        isActive: data.isActive !== undefined ? data.isActive : true,
+      },
+      create: {
+        slug,
+        title: rawTitle,
+        description: data.description || 'Government certified digital service workflow.',
+        category: data.category || 'Government',
+        department: data.department || data.departmentRole || 'General Administration',
+        fee: feeVal,
+        processingTime: data.processingTime || '7-15 Days',
+        eligibility: data.eligibility || ['Citizen of India', 'Valid ID verification credentials'],
+        requiredDocs: data.requiredDocs || data.documents || defaultDocs,
+        subServices: data.subServices || [],
+        formDataSchema: data.formDataSchema || data.formElements || defaultSchema,
+        pricingConfig: data.pricingConfig || data.pricing || { fee: feeVal },
+        iconName: data.iconName || 'file-document-outline',
+        colorHex: data.colorHex || '#2563eb',
+        isActive: data.isActive !== undefined ? data.isActive : true,
+      },
+    });
+
+    this.logger.log(`Service created/updated: ${service.title} (${service.slug})`);
+    return service;
   }
 }

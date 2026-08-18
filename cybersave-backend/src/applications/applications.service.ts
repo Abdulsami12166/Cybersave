@@ -3,14 +3,48 @@ import { PrismaService } from '../database/prisma.service';
 import { TwilioService } from '../common/services/twilio.service';
 import { ApplicationStatus } from '@prisma/client';
 
+import { IsString, IsOptional, IsNumber } from 'class-validator';
+
 export class CreateApplicationDto {
+  @IsString()
   userId: string;
+
+  @IsOptional()
+  @IsString()
   serviceId?: string;
+
+  @IsOptional()
+  @IsString()
   serviceSlug?: string;
+
+  @IsString()
   serviceTitle: string;
-  formData: any;
+
+  @IsOptional()
+  formData?: any;
+
+  @IsOptional()
   documents?: Array<{ fileName: string; fileUrl: string }>;
+
+  @IsOptional()
+  @IsNumber()
   feePaid?: number;
+
+  @IsOptional()
+  @IsString()
+  paymentStatus?: string;
+
+  @IsOptional()
+  @IsString()
+  razorpayOrderId?: string;
+
+  @IsOptional()
+  @IsString()
+  razorpayPaymentId?: string;
+
+  @IsOptional()
+  @IsString()
+  razorpaySignature?: string;
 }
 
 @Injectable()
