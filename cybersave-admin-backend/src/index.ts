@@ -64,7 +64,7 @@ app.post('/api/auth/login', async (req: any, res: any) => {
   }
 
   const token = jwt.sign({ id: user.id, email: user.email, role: user.role }, JWT_SECRET, { expiresIn: '24h' });
-  res.json({ token, admin: { id: user.id, email: user.email } });
+  res.json({ token, admin: { id: user.id, email: user.email, permissions: user.permissions || [] } });
 });
 
 // --- Auth Middleware ---
