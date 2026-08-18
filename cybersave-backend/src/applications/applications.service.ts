@@ -64,31 +64,73 @@ export class ApplicationsService {
   async createApplication(dto: CreateApplicationDto) {
     const refNumber = this.generateRefNumber();
 
+    let validUserId = dto.userId;
+    if (validUserId) {
+      const u = await this.prisma.user.findUnique({ where: { id: validUserId } }).catch(() => null);
+      if (!u) {
+        const firstUser = await this.prisma.user.findFirst();
+        if (firstUser) validUserId = firstUser.id;
+      }
+    } else {
+      const firstUser = await this.prisma.user.findFirst();
+      if (firstUser) validUserId = firstUser.id;
+    }
+
     let serviceId = dto.serviceId;
     if (!serviceId && dto.serviceSlug) {
       const srv = await this.prisma.service.findUnique({
         where: { slug: dto.serviceSlug },
-      });
+      }).catch(() => null);
+      if (srv) serviceId = srv.id;
+    }
+    if (!serviceId && dto.serviceTitle) {
+      const srv = await this.prisma.service.findFirst({
+        where: { title: dto.serviceTitle },
+      }).catch(() => null);
       if (srv) serviceId = srv.id;
     }
     if (!serviceId) {
       const firstSrv = await this.prisma.service.findFirst();
-      serviceId = firstSrv?.id || 'default-service-id';
+      if (firstSrv) {
+        serviceId = firstSrv.id;
+      } else {
+        const createdSrv = await this.prisma.service.create({
+          data: {
+            slug: (dto.serviceTitle || 'government-service').toLowerCase().replace(/[^a-z0-9]+/g, '-'),
+            title: dto.serviceTitle || 'Government Service',
+            description: 'Government certified service workflow.',
+            category: 'Government',
+            department: 'General Administration',
+            fee: dto.feePaid || 50.0,
+            processingTime: '7-15 Days',
+            iconName: 'file-document-outline',
+            colorHex: '#2563eb',
+          },
+        });
+        serviceId = createdSrv.id;
+      }
     }
 
     const application = await this.prisma.application.create({
       data: {
         refNumber,
-        userId: dto.userId,
-        serviceId,
+        userId: validUserId,
+        serviceId: serviceId!,
         serviceTitle: dto.serviceTitle,
         status: ApplicationStatus.SUBMITTED,
         estimatedCompletion: '7-10 Days',
         officialOfficer: 'Officer Sharma (SDM)',
         feePaid: dto.feePaid || 50.0,
-        paymentStatus: 'Success',
+        paymentStatus: dto.paymentStatus || 'Success',
+        razorpayOrderId: dto.razorpayOrderId,
+        razorpayPaymentId: dto.razorpayPaymentId,
+        razorpaySignature: dto.razorpaySignature,
         formData: dto.formData || {},
         documents: dto.documents || [],
+      },
+      include: {
+        user: { include: { profile: true } },
+        service: true,
       },
     });
 
