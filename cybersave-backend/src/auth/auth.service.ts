@@ -20,10 +20,20 @@ export class AuthService {
     return Math.floor(100000 + Math.random() * 900000).toString();
   }
 
-  async register(email: string, passwordHash: string, fullName: string) {
-    let user = await this.prisma.user.findUnique({ where: { email } });
+  async register(email: string, passwordHash: string, fullName: string, phone?: string) {
+    const cleanEmail = email.trim();
+    const cleanPhone = phone?.trim().replace(/\s+/g, '');
+
+    let user = await this.prisma.user.findUnique({ where: { email: cleanEmail } });
     if (user) {
       throw new BadRequestException('User with this email already exists');
+    }
+
+    if (cleanPhone) {
+      const existingPhone = await this.prisma.user.findFirst({ where: { phone: cleanPhone } });
+      if (existingPhone) {
+        throw new BadRequestException('User with this phone number already exists');
+      }
     }
 
     const salt = await bcrypt.genSalt();
@@ -31,12 +41,14 @@ export class AuthService {
 
     user = await this.prisma.user.create({
       data: {
-        email,
+        email: cleanEmail,
+        phone: cleanPhone,
         passwordHash: hashed,
         profile: {
           create: {
-            fullName,
-            email,
+            fullName: fullName.trim(),
+            email: cleanEmail,
+            phone: cleanPhone,
           },
         },
         wallet: {
@@ -96,7 +108,13 @@ export class AuthService {
     // Simulate sending email
     this.logger.log(`[SIMULATED EMAIL] OTP for ${email} is ${otpCode}`);
 
-    return { success: true, message: 'OTP sent to email', email };
+    const devOtpEnabled = process.env.DEV_OTP_ENABLED !== 'false';
+    return { 
+      success: true, 
+      message: 'OTP sent to email', 
+      email,
+      devOtp: devOtpEnabled ? otpCode : undefined
+    };
   }
 
   async verifyOtp(identifier: string, otp: string) {

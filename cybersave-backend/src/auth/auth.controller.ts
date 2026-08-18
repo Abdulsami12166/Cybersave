@@ -12,7 +12,7 @@ export class AuthController {
   @Post('register')
   @ApiOperation({ summary: 'Register a new user with Email and Password' })
   async register(@Body() body: any) {
-    return this.authService.register(body.email, body.password, body.fullName);
+    return this.authService.register(body.email, body.password, body.fullName, body.phone);
   }
 
   @Post('login')
