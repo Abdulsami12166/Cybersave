@@ -1046,17 +1046,26 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
       const tickets = await this.prisma.supportTicket.findMany({
         take: 50,
         orderBy: { createdAt: 'desc' },
+        include: { user: true },
       });
 
       const formatted = tickets.map((t) => ({
-        id: `TKT-${t.id.substring(0, 8).toUpperCase()}`,
+        id: t.refNumber || `TKT-${t.id.substring(0, 8).toUpperCase()}`,
+        dbId: t.id,
         title: t.title,
+        description: t.description || t.title,
+        attachmentUrl: t.attachmentUrl || null,
         category: t.category,
         priority: t.priority,
         createdOn: t.createdAt.toLocaleDateString(),
         lastUpdated: t.updatedAt.toLocaleDateString(),
         assignedTo: t.assignedTo || 'Unassigned',
         status: t.status,
+        reporter: {
+          name: (t.user as any)?.fullName || t.user?.email || 'Citizen User',
+          email: t.user?.email || 'citizen@cybersave.gov.in',
+          phone: t.user?.phone || '+91 98765 43210',
+        },
       }));
 
       client.emit('response_support_tickets', {
@@ -1183,40 +1192,61 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
     @MessageBody() data: { id: string },
   ) {
     try {
+      const ticketId = data?.id;
+      let foundTicket: any = null;
+      if (ticketId) {
+        foundTicket = await this.prisma.supportTicket.findFirst({
+          where: {
+            OR: [
+              { id: ticketId.startsWith('TKT-') ? undefined : ticketId },
+              { refNumber: ticketId },
+              { refNumber: `TKT-${ticketId}` },
+            ].filter(Boolean) as any,
+          },
+          include: { user: true },
+        });
+      }
+
+      const reporterName = (foundTicket?.user as any)?.fullName || foundTicket?.user?.email || 'Citizen User';
+      const reporterId = foundTicket?.userId || 'user1';
+      const ticketTitle = foundTicket?.title || 'Support Request';
+      const ticketDesc = foundTicket?.description || foundTicket?.title || 'Citizen raised an inquiry regarding portal operations.';
+      const attachmentUrl = foundTicket?.attachmentUrl || null;
+
       client.emit('response_ticket_thread', {
-        id: data.id || 'TKT-2024-001',
-        title: 'Login Authentication Issue',
-        description:
-          'Users reporting 502 Bad Gateway during Google OAuth single sign-on redirect flow.',
-        category: 'Technical',
-        priority: 'High',
-        createdOn: '10/01/2024',
-        lastUpdated: '10/03/2024',
-        assignedTo: { id: 'admin1', name: 'Amit S.' },
-        reporter: { id: 'user1', name: 'John Smith' },
+        id: foundTicket?.refNumber || ticketId || 'TKT-2024-001',
+        title: ticketTitle,
+        description: ticketDesc,
+        attachmentUrl: attachmentUrl,
+        category: foundTicket?.category || 'Technical Support',
+        priority: foundTicket?.priority || 'Medium',
+        createdOn: foundTicket ? foundTicket.createdAt.toLocaleDateString() : '10/01/2024',
+        lastUpdated: foundTicket ? foundTicket.updatedAt.toLocaleDateString() : '10/03/2024',
+        assignedTo: { id: 'admin1', name: foundTicket?.assignedTo || 'Amit S. (Support Desk)' },
+        reporter: { id: reporterId, name: reporterName },
         messages: [
           {
-            senderId: 'user1',
-            senderName: 'John Smith',
+            senderId: reporterId,
+            senderName: reporterName,
             role: 'USER',
-            time: '10/01/2024 at 10:15 AM',
-            text: "Hi support team, I'm trying to log in using my corporate Google account but getting a 502 Bad Gateway screen immediately after selecting the account. Multiple employees are reporting the same issue. Any updates?",
+            time: foundTicket ? foundTicket.createdAt.toLocaleString() : '10/01/2024 at 10:15 AM',
+            text: ticketDesc,
+            attachmentUrl: attachmentUrl,
           },
           {
             senderId: 'admin1',
-            senderName: 'Amit S.',
+            senderName: 'Support Officer',
             role: 'AGENT',
-            time: '10/01/2024 at 11:30 AM',
-            text: 'Hello John, thank you for reaching out. We have received your report. Our engineering team is currently investigating potential latency in the authentication redirect service. I will keep you posted as we narrow down the cause.',
+            time: 'Just now',
+            text: 'Hello, our support team has received your ticket and verified the attached details. We are investigating and will update you shortly.',
           },
         ],
         notes: [
           {
-            title: 'Google OAuth Endpoint Issue Confirmed',
-            author: 'Amit S. (Support Agent)',
-            time: '10/01/2024 at 11:45 AM',
-            content:
-              'Confirmed that the client credentials redirect URI mismatches on our Google Cloud Console.',
+            title: 'Ticket Queued for Investigation',
+            author: 'Support Automation Desk',
+            time: foundTicket ? foundTicket.createdAt.toLocaleString() : 'Just now',
+            content: 'Customer issue logged and proof attachment attached for administrative audit.',
           },
         ],
       });

@@ -40,10 +40,26 @@ export class AdminController {
     throw new BadRequestException('No image file or buffer provided');
   }
 
+  @Post(['api/v1/support/upload', 'api/support/upload', 'support/upload'])
+  @UseInterceptors(FileInterceptor('file'))
+  @ApiOperation({ summary: 'Multer / Cloudinary Ticket Proof Upload' })
+  async uploadSupportTicketProof(@UploadedFile() file: any, @Body() body: any) {
+    if (file && file.buffer) {
+      const url = await this.cloudinaryService.uploadImage(file.buffer, 'cybersave/support');
+      return { success: true, url, secure_url: url };
+    }
+    if (body?.image || body?.avatar || body?.file) {
+      const img = body.image || body.avatar || body.file;
+      const url = await this.cloudinaryService.uploadBase64Image(img, 'cybersave/support');
+      return { success: true, url, secure_url: url };
+    }
+    throw new BadRequestException('No image proof file or buffer provided');
+  }
+
   @Post(['api/v1/support/tickets', 'api/support/tickets', 'support/tickets'])
   @ApiOperation({ summary: 'Create Support Ticket from Mobile or Web' })
   async createSupportTicketRest(@Body() body: any) {
-    const { category, subject, description, priority, userId } = body;
+    const { category, subject, description, priority, userId, attachmentUrl } = body;
 
     let resolvedUserId = userId;
     if (!resolvedUserId) {
@@ -54,8 +70,10 @@ export class AdminController {
     const ticket = await this.prisma.supportTicket.create({
       data: {
         refNumber: `TKT-${Math.floor(100000 + Math.random() * 900000)}`,
-        title: `${subject || 'Support Ticket'} - ${description || ''}`.substring(0, 100),
-        category: category || 'Technical',
+        title: subject || 'Support Ticket',
+        description: description || '',
+        attachmentUrl: attachmentUrl || null,
+        category: category || 'Technical Support',
         priority: priority || 'Medium',
         status: 'OPEN',
         userId: resolvedUserId,

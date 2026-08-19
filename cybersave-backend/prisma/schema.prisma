@@ -240,17 +240,19 @@ model AadhaarDocument {
 }
 
 model SupportTicket {
-  id          String   @id @default(auto()) @map("_id") @db.ObjectId
-  refNumber   String   @unique // e.g. TKT-2024-001
-  userId      String?  @db.ObjectId
-  user        User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
-  title       String
-  category    String   @default("Technical")
-  priority    String   @default("Medium") // High, Medium, Low, Critical
-  status      String   @default("OPEN") // OPEN, IN_PROGRESS, RESOLVED, ESCALATED
-  assignedTo  String?
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  id            String   @id @default(auto()) @map("_id") @db.ObjectId
+  refNumber     String   @unique // e.g. TKT-2024-001
+  userId        String?  @db.ObjectId
+  user          User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+  title         String
+  description   String?
+  attachmentUrl String?
+  category      String   @default("Technical")
+  priority      String   @default("Medium") // High, Medium, Low, Critical
+  status        String   @default("OPEN") // OPEN, IN_PROGRESS, RESOLVED, ESCALATED
+  assignedTo    String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
 
   @@index([userId])
   @@index([status])
