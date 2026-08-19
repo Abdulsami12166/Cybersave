@@ -1,6 +1,7 @@
 import { Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../database/prisma.service';
 import { TwilioService } from '../common/services/twilio.service';
+import { AdminGateway } from '../admin/admin.gateway';
 import { ApplicationStatus } from '@prisma/client';
 
 import { IsString, IsOptional, IsNumber } from 'class-validator';
@@ -153,11 +154,24 @@ export class ApplicationsService {
       );
     }
 
+    try {
+      AdminGateway.broadcast('applications_updated', application);
+      AdminGateway.broadcast('new_application_submitted', application);
+    } catch (wsErr) {
+      this.logger.warn(`WS broadcast error: ${wsErr.message}`);
+    }
+
     return application;
   }
 
-  async getUserApplications(userId: string, status?: string) {
-    const whereClause: any = { userId };
+  async getUserApplications(userId?: string, status?: string) {
+    const whereClause: any = {};
+    if (userId && userId !== 'default-user-id' && userId !== 'all') {
+      whereClause.OR = [
+        { userId },
+        { userId: 'default-user-id' },
+      ];
+    }
     if (status && status !== 'All') {
       const upper = status.toUpperCase().replace(/\s+/g, '_');
       if (
@@ -170,7 +184,7 @@ export class ApplicationsService {
     return this.prisma.application.findMany({
       where: whereClause,
       orderBy: { submittedAt: 'desc' },
-      include: { service: true },
+      include: { service: true, user: { include: { profile: true } } },
     });
   }
 
@@ -232,6 +246,13 @@ export class ApplicationsService {
         service: true,
       },
     });
+
+    try {
+      AdminGateway.broadcast('applications_updated', updated);
+      AdminGateway.broadcast('application_status_changed', updated);
+    } catch (wsErr) {
+      this.logger.warn(`WS broadcast error: ${wsErr.message}`);
+    }
 
     try {
       const phone = updated.user?.phone || updated.user?.profile?.phone;

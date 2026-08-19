@@ -21,7 +21,17 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
   @WebSocketServer()
   server: Server;
 
-  constructor(private readonly prisma: PrismaService) {}
+  static instance: AdminGateway | null = null;
+
+  constructor(private readonly prisma: PrismaService) {
+    AdminGateway.instance = this;
+  }
+
+  static broadcast(event: string, data?: any) {
+    if (AdminGateway.instance?.server) {
+      AdminGateway.instance.server.emit(event, data);
+    }
+  }
 
   handleConnection(client: Socket) {
     console.log('[AdminGateway] Client connected:', client.id);
