@@ -8,9 +8,9 @@ export class PaymentService {
   private keySecret: string;
 
   constructor() {
-    this.keySecret = process.env.RAZORPAY_KEY_SECRET || 'dummy_test_secret';
+    this.keySecret = process.env.RAZORPAY_KEY_SECRET || 'BYhn7iZmm4IRKtwZCxwCK3qk';
     this.razorpay = new Razorpay({
-      key_id: process.env.RAZORPAY_KEY_ID || 'rzp_test_zVwTfVzPZZVvKj',
+      key_id: process.env.RAZORPAY_KEY_ID || 'rzp_test_TRYEFMkB13HLOJ',
       key_secret: this.keySecret,
     });
   }
