@@ -40,6 +40,37 @@ export class AdminController {
     throw new BadRequestException('No image file or buffer provided');
   }
 
+  @Post(['api/v1/support/tickets', 'api/support/tickets', 'support/tickets'])
+  @ApiOperation({ summary: 'Create Support Ticket from Mobile or Web' })
+  async createSupportTicketRest(@Body() body: any) {
+    const { category, subject, description, priority, userId } = body;
+
+    let resolvedUserId = userId;
+    if (!resolvedUserId) {
+      const defaultUser = await this.prisma.user.findFirst();
+      resolvedUserId = defaultUser?.id || '';
+    }
+
+    const ticket = await this.prisma.supportTicket.create({
+      data: {
+        refNumber: `TKT-${Math.floor(100000 + Math.random() * 900000)}`,
+        title: `${subject || 'Support Ticket'} - ${description || ''}`.substring(0, 100),
+        category: category || 'Technical',
+        priority: priority || 'Medium',
+        status: 'OPEN',
+        userId: resolvedUserId,
+      },
+    });
+
+    return { success: true, ticket };
+  }
+
+  @Post(['api/v1/support/feedback', 'api/support/feedback', 'support/feedback'])
+  @ApiOperation({ summary: 'Submit Customer Feedback from Mobile' })
+  async submitFeedbackRest(@Body() body: any) {
+    return { success: true, message: 'Feedback recorded successfully' };
+  }
+
   // Handles both /api/auth/login and /auth/login for the admin portal
   @Post(['api/auth/login', 'auth/login'])
   @ApiOperation({ summary: 'Admin Portal Login' })

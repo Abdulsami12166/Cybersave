@@ -35,7 +35,7 @@ export class CloudinaryService {
       this.logger.log(
         'Cloudinary credentials missing, returning default avatar URL.',
       );
-      return 'https://res.cloudinary.com/sami/image/upload/v1/cybersave/avatars/default_avatar.jpg';
+      return 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?w=200';
     }
 
     return new Promise((resolve) => {
@@ -62,7 +62,7 @@ export class CloudinaryService {
   ): Promise<string> {
     if (!this.isConfigured) {
       this.logger.warn('Cloudinary not configured for base64 upload.');
-      return 'https://res.cloudinary.com/sami/image/upload/v1/cybersave/avatars/default_avatar.jpg';
+      return 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?w=200';
     }
 
     try {
@@ -76,7 +76,7 @@ export class CloudinaryService {
       return result.secure_url;
     } catch (error: any) {
       this.logger.error('Cloudinary base64 upload failed', error);
-      return 'https://res.cloudinary.com/sami/image/upload/v1/cybersave/avatars/default_avatar.jpg';
+      return 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?w=200';
     }
   }
 }
