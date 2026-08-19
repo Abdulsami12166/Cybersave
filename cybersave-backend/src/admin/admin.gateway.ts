@@ -526,10 +526,14 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
 
       const mappedStatus = validStatusMap[data.status] || (data.status.toUpperCase() as any);
 
+      const isMongoId = (idStr?: string) => typeof idStr === 'string' && /^[0-9a-fA-F]{24}$/.test(idStr);
+      const orConditions: any[] = [{ refNumber: targetId }];
+      if (isMongoId(targetId)) {
+        orConditions.push({ id: targetId });
+      }
+
       const app = await this.prisma.application.findFirst({
-        where: {
-          OR: [{ id: targetId }, { refNumber: targetId }],
-        },
+        where: { OR: orConditions },
       });
 
       if (app) {
@@ -548,6 +552,7 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
 
         // Real-time broadcast to all connected Admin and Mobile clients
         this.server.emit('applications_updated');
+        this.server.emit('transactions_updated');
         this.server.emit('application_status_changed', {
           id: updated.id,
           refNumber: updated.refNumber,
@@ -575,10 +580,14 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
     @MessageBody() data: { id: string },
   ) {
     try {
+      const isMongoId = (idStr?: string) => typeof idStr === 'string' && /^[0-9a-fA-F]{24}$/.test(idStr);
+      const orConditions: any[] = [{ refNumber: data.id }];
+      if (isMongoId(data.id)) {
+        orConditions.push({ id: data.id });
+      }
+
       const app = await this.prisma.application.findFirst({
-        where: {
-          OR: [{ id: data.id }, { refNumber: data.id }],
-        },
+        where: { OR: orConditions },
         include: {
           user: { include: { profile: true } },
           service: true,
@@ -633,8 +642,10 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
           centre: 'CyberSave E-Gov Portal Central Hub',
           status: app.status,
           rejectionReason: app.rejectionReason,
-          feePaid: app.feePaid,
-          paymentStatus: app.paymentStatus,
+          feePaid: app.feePaid || 50.0,
+          paymentStatus: app.paymentStatus || 'Success',
+          razorpayPaymentId: app.razorpayPaymentId || '',
+          razorpayOrderId: app.razorpayOrderId || '',
           formData: app.formData,
           documents: cleanedDocs,
           applicant: {
@@ -977,18 +988,30 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
     try {
       const apps = await this.prisma.application.findMany({
         orderBy: { submittedAt: 'desc' },
-        take: 50,
+        take: 100,
         include: { user: { include: { profile: true } }, service: true },
       });
-      const formattedTransactions = apps.map((a) => ({
-        id: `TXN-${a.id.substring(0, 8).toUpperCase()}`,
-        date: a.submittedAt.toISOString(),
-        customer: a.user?.profile?.fullName || 'Unknown',
-        service: a.serviceTitle,
-        amount: a.feePaid,
-        status: 'SUCCESS',
-      }));
-      const totalAmount = apps.reduce((sum, a) => sum + (a.feePaid || 0), 0);
+      const formattedTransactions = apps.map((a) => {
+        const userProfile = a.user?.profile;
+        const formData = (a.formData as any) || {};
+        const customerName = userProfile?.fullName || formData.fullName || (a.user as any)?.fullName || a.user?.email || 'Citizen User';
+        const txnId = a.razorpayPaymentId || `TXN-${a.id.substring(0, 8).toUpperCase()}`;
+
+        return {
+          id: txnId,
+          rawId: a.id,
+          refNumber: a.refNumber,
+          date: a.submittedAt.toISOString(),
+          customer: customerName,
+          service: a.serviceTitle || a.service?.title || 'Government Service',
+          amount: a.feePaid || 50.0,
+          status: (a.paymentStatus || 'SUCCESS').toUpperCase(),
+          paymentMethod: a.razorpayPaymentId ? 'Razorpay (Test UPI)' : 'Govt Portal Payment',
+          razorpayPaymentId: a.razorpayPaymentId || '',
+          razorpayOrderId: a.razorpayOrderId || '',
+        };
+      });
+      const totalAmount = apps.reduce((sum, a) => sum + (a.feePaid || 50.0), 0);
       client.emit('response_transactions_data', {
         transactions: formattedTransactions,
         stats: { totalCount: apps.length, totalAmount },
