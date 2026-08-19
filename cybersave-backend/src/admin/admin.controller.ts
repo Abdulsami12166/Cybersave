@@ -2,6 +2,7 @@ import {
   Controller,
   Post,
   Get,
+  Put,
   Body,
   UnauthorizedException,
   BadRequestException,
@@ -413,5 +414,87 @@ export class AdminController {
       where: { isActive: true },
     });
     return { services };
+  }
+
+  @Get(['api/admin/profile', 'admin/profile'])
+  @ApiOperation({ summary: 'Get Admin Profile' })
+  async getAdminProfile() {
+    const adminUser = await this.prisma.user.findFirst({
+      where: { role: 'ADMIN' },
+      include: { profile: true },
+    });
+    if (!adminUser) {
+      return {
+        name: 'Super Administrator',
+        email: 'admin@cybersave.com',
+        role: 'Super Admin',
+        phone: '+91 98765 43210',
+        avatarUrl: '',
+      };
+    }
+    return {
+      id: adminUser.id,
+      name: adminUser.profile?.fullName || (adminUser.email === 'admin@cybersave.com' ? 'Super Administrator' : 'Administrator'),
+      email: adminUser.email,
+      role: adminUser.role === 'ADMIN' ? 'Super Admin' : 'Sub-Admin / Operator',
+      phone: adminUser.phone || adminUser.profile?.phone || '+91 98765 43210',
+      avatarUrl: adminUser.profile?.avatarUrl || '',
+    };
+  }
+
+  @Put(['api/admin/profile', 'admin/profile', 'api/admin/settings'])
+  @ApiOperation({ summary: 'Update Admin Profile' })
+  async updateAdminProfile(@Body() body: any) {
+    const { name, email, phone, avatarUrl, role } = body;
+    const adminUser = await this.prisma.user.findFirst({
+      where: { role: 'ADMIN' },
+      include: { profile: true },
+    });
+
+    if (adminUser) {
+      if (email && email !== adminUser.email) {
+        await this.prisma.user.update({
+          where: { id: adminUser.id },
+          data: { email, phone: phone || adminUser.phone },
+        });
+      } else if (phone) {
+        await this.prisma.user.update({
+          where: { id: adminUser.id },
+          data: { phone },
+        });
+      }
+
+      if (adminUser.profile) {
+        await this.prisma.profile.update({
+          where: { id: adminUser.profile.id },
+          data: {
+            fullName: name || adminUser.profile.fullName,
+            phone: phone || adminUser.profile.phone,
+            avatarUrl: avatarUrl || adminUser.profile.avatarUrl,
+          },
+        });
+      } else {
+        await this.prisma.profile.create({
+          data: {
+            userId: adminUser.id,
+            fullName: name || 'Super Administrator',
+            phone: phone || '+91 98765 43210',
+            avatarUrl: avatarUrl || '',
+          },
+        });
+      }
+    }
+
+    return {
+      success: true,
+      message: 'Admin profile updated successfully',
+      admin: {
+        name: name || adminUser?.profile?.fullName || 'Super Administrator',
+        email: email || adminUser?.email || 'admin@cybersave.com',
+        role: role || (adminUser?.role === 'ADMIN' ? 'Super Admin' : 'Sub-Admin / Operator'),
+        phone: phone || adminUser?.phone || '+91 98765 43210',
+        avatarUrl: avatarUrl || adminUser?.profile?.avatarUrl || '',
+      },
+    };
   }
 }
