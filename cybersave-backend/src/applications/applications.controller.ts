@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Param, Post, Query } from '@nestjs/common';
+import { Body, Controller, Get, Param, Patch, Post, Put, Query } from '@nestjs/common';
 import {
   ApplicationsService,
   CreateApplicationDto,
@@ -26,5 +26,42 @@ export class ApplicationsController {
   @Get(':id')
   async getApplicationById(@Param('id') id: string) {
     return this.applicationsService.getApplicationById(id);
+  }
+
+  @Patch(':id/status')
+  async updateStatusPatch(
+    @Param('id') id: string,
+    @Body() body: { status: string; rejectionReason?: string },
+  ) {
+    return this.applicationsService.updateStatus(id, body.status, body.rejectionReason);
+  }
+
+  @Put(':id/status')
+  async updateStatusPut(
+    @Param('id') id: string,
+    @Body() body: { status: string; rejectionReason?: string },
+  ) {
+    return this.applicationsService.updateStatus(id, body.status, body.rejectionReason);
+  }
+
+  @Post(':id/status')
+  async updateStatusPost(
+    @Param('id') id: string,
+    @Body() body: { status: string; rejectionReason?: string },
+  ) {
+    return this.applicationsService.updateStatus(id, body.status, body.rejectionReason);
+  }
+
+  @Post(':id/approve')
+  async approveApplication(@Param('id') id: string) {
+    return this.applicationsService.updateStatus(id, 'APPROVED');
+  }
+
+  @Post(':id/reject')
+  async rejectApplication(
+    @Param('id') id: string,
+    @Body() body?: { rejectionReason?: string },
+  ) {
+    return this.applicationsService.updateStatus(id, 'REJECTED', body?.rejectionReason);
   }
 }

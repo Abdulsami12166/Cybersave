@@ -179,7 +179,10 @@ export class ApplicationsService {
       where: {
         OR: [{ id }, { refNumber: id }],
       },
-      include: { service: true },
+      include: { 
+        service: true,
+        user: { include: { profile: true } },
+      },
     });
 
     if (!application) {
@@ -187,5 +190,63 @@ export class ApplicationsService {
     }
 
     return application;
+  }
+
+  async updateStatus(id: string, status: string, rejectionReason?: string) {
+    const app = await this.prisma.application.findFirst({
+      where: {
+        OR: [{ id }, { refNumber: id }],
+      },
+    });
+
+    if (!app) {
+      throw new NotFoundException(`Application ${id} not found`);
+    }
+
+    const validStatusMap: Record<string, ApplicationStatus> = {
+      APPROVED: ApplicationStatus.APPROVED,
+      approved: ApplicationStatus.APPROVED,
+      REJECTED: ApplicationStatus.REJECTED,
+      rejected: ApplicationStatus.REJECTED,
+      IN_PROGRESS: ApplicationStatus.IN_PROGRESS,
+      'in progress': ApplicationStatus.IN_PROGRESS,
+      VERIFYING: ApplicationStatus.VERIFYING,
+      verifying: ApplicationStatus.VERIFYING,
+      SUBMITTED: ApplicationStatus.SUBMITTED,
+      submitted: ApplicationStatus.SUBMITTED,
+      COMPLETED: ApplicationStatus.COMPLETED,
+      completed: ApplicationStatus.COMPLETED,
+    };
+
+    const targetStatus = validStatusMap[status] || (status as ApplicationStatus);
+
+    const updated = await this.prisma.application.update({
+      where: { id: app.id },
+      data: {
+        status: targetStatus,
+        rejectionReason: targetStatus === ApplicationStatus.REJECTED ? (rejectionReason || 'Application rejected during administrative verification.') : null,
+        updatedAt: new Date(),
+      },
+      include: {
+        user: { include: { profile: true } },
+        service: true,
+      },
+    });
+
+    try {
+      const phone = updated.user?.phone || updated.user?.profile?.phone;
+      if (phone) {
+        const msg = targetStatus === ApplicationStatus.APPROVED
+          ? `Cybersave: Your application for ${updated.serviceTitle} (#${updated.refNumber}) has been APPROVED.`
+          : targetStatus === ApplicationStatus.REJECTED
+            ? `Cybersave: Your application for ${updated.serviceTitle} (#${updated.refNumber}) has been REJECTED. Reason: ${rejectionReason || 'Document verification issue'}.`
+            : `Cybersave: Your application for ${updated.serviceTitle} (#${updated.refNumber}) status changed to ${targetStatus}.`;
+        await this.twilioService.sendSms(phone, msg);
+      }
+    } catch (e) {
+      this.logger.warn(`SMS notification warning: ${e.message}`);
+    }
+
+    return updated;
   }
 }

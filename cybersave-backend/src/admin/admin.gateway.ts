@@ -297,7 +297,7 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
       });
 
       const apps = await this.prisma.application.findMany({
-        take: 50,
+        take: 100,
         orderBy: { submittedAt: 'desc' },
         include: {
           user: { include: { profile: true } },
@@ -305,26 +305,74 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
         },
       });
 
-      const formattedApps = apps.map((a) => ({
-        id: a.refNumber || `APP-2026-${a.id.substring(0, 4).toUpperCase()}`,
-        citizen: a.user?.profile?.fullName || (a.formData as any)?.fullName || a.user?.email || 'Citizen Applicant',
-        serviceType: a.serviceTitle || a.service?.title || 'Government Service',
-        priority: 'Medium',
-        status:
-          a.status === 'SUBMITTED'
-            ? 'In Review'
-            : a.status === 'VERIFYING'
-              ? 'Pending'
-              : a.status === 'IN_PROGRESS'
-                ? 'Processing'
-                : a.status === 'APPROVED' || a.status === 'COMPLETED'
-                  ? 'Completed'
-                  : 'Rejected',
-        assigned: a.officialOfficer || 'Auto Assigned (SDM)',
-        submitted: a.submittedAt ? a.submittedAt.toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' }) : 'Today',
-        sla: '24h',
-        amount: a.feePaid || 50.0,
-      }));
+      const formattedApps = apps.map((a) => {
+        const userProfile = a.user?.profile;
+        const formData = (a.formData as any) || {};
+        return {
+          id: a.refNumber || `APP-2026-${a.id.substring(0, 4).toUpperCase()}`,
+          rawId: a.id,
+          refNumber: a.refNumber,
+          citizen: userProfile?.fullName || formData.fullName || a.user?.email || 'Citizen Applicant',
+          citizenEmail: a.user?.email || formData.email || '',
+          citizenPhone: a.user?.phone || userProfile?.phone || formData.phone || '',
+          serviceType: a.serviceTitle || a.service?.title || 'Government Service',
+          serviceCategory: a.service?.category || 'Government',
+          priority: 'Medium',
+          rawStatus: a.status,
+          status:
+            a.status === 'SUBMITTED'
+              ? 'In Review'
+              : a.status === 'VERIFYING'
+                ? 'Pending'
+                : a.status === 'IN_PROGRESS'
+                  ? 'Processing'
+                  : a.status === 'APPROVED'
+                    ? 'Approved'
+                    : a.status === 'COMPLETED'
+                      ? 'Completed'
+                      : a.status === 'REJECTED'
+                        ? 'Rejected'
+                        : 'Pending',
+          assigned: a.officialOfficer || 'Auto Assigned (SDM)',
+          submitted: a.submittedAt ? a.submittedAt.toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' }) : 'Today',
+          submittedAtFull: a.submittedAt ? a.submittedAt.toLocaleString('en-IN', { dateStyle: 'medium', timeStyle: 'short' }) : new Date().toLocaleString('en-IN'),
+          sla: '24h',
+          amount: a.feePaid || 50.0,
+          paymentStatus: a.paymentStatus || 'Success',
+          razorpayPaymentId: a.razorpayPaymentId || '',
+          razorpayOrderId: a.razorpayOrderId || '',
+          rejectionReason: a.rejectionReason || '',
+          formData: {
+            fullName: formData.fullName || userProfile?.fullName || '',
+            email: formData.email || a.user?.email || '',
+            phone: formData.phone || a.user?.phone || userProfile?.phone || '',
+            dob: formData.dob || userProfile?.dob || '',
+            gender: formData.gender || userProfile?.gender || '',
+            fatherName: formData.fatherName || '',
+            motherName: formData.motherName || '',
+            placeOfBirth: formData.placeOfBirth || '',
+            state: formData.state || userProfile?.state || '',
+            district: formData.district || userProfile?.district || '',
+            pinCode: formData.pinCode || userProfile?.pinCode || '',
+            address: formData.address || userProfile?.address || '',
+            ...formData,
+          },
+          documents: (a.documents as any) || [],
+          applicantProfile: {
+            fullName: userProfile?.fullName || formData.fullName || 'Citizen Applicant',
+            aadhaar: (userProfile as any)?.aadhaarNumber || formData.aadhaarNumber || 'Verified ID Vault',
+            dob: userProfile?.dob || formData.dob || 'Not Provided',
+            gender: userProfile?.gender || formData.gender || 'Not Provided',
+            fatherName: formData.fatherName || 'Not Provided',
+            motherName: formData.motherName || 'Not Provided',
+            placeOfBirth: formData.placeOfBirth || 'Not Provided',
+            state: userProfile?.state || formData.state || 'Not Provided',
+            district: userProfile?.district || formData.district || 'Not Provided',
+            pinCode: userProfile?.pinCode || formData.pinCode || 'Not Provided',
+            address: userProfile?.address || formData.address || 'Not Provided',
+          },
+        };
+      });
 
       client.emit('response_applications_data', {
         stats: { totalApps, todayApps, pending, processing, completed },
@@ -335,26 +383,129 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
     }
   }
 
+  @SubscribeMessage('update_application_status')
+  async handleUpdateApplicationStatus(
+    @ConnectedSocket() client: Socket,
+    @MessageBody() data: { id?: string; applicationId?: string; refNumber?: string; status: string; rejectionReason?: string },
+  ) {
+    try {
+      const targetId = data.id || data.applicationId || data.refNumber;
+      if (!targetId) return;
+
+      const validStatusMap: Record<string, string> = {
+        'approved': 'APPROVED',
+        'Approved': 'APPROVED',
+        'APPROVED': 'APPROVED',
+        'rejected': 'REJECTED',
+        'Rejected': 'REJECTED',
+        'REJECTED': 'REJECTED',
+        'in progress': 'IN_PROGRESS',
+        'In Progress': 'IN_PROGRESS',
+        'processing': 'IN_PROGRESS',
+        'Processing': 'IN_PROGRESS',
+        'IN_PROGRESS': 'IN_PROGRESS',
+        'pending': 'VERIFYING',
+        'Pending': 'VERIFYING',
+        'verifying': 'VERIFYING',
+        'VERIFYING': 'VERIFYING',
+        'submitted': 'SUBMITTED',
+        'Submitted': 'SUBMITTED',
+        'In Review': 'SUBMITTED',
+        'SUBMITTED': 'SUBMITTED',
+        'completed': 'COMPLETED',
+        'Completed': 'COMPLETED',
+        'COMPLETED': 'COMPLETED',
+      };
+
+      const mappedStatus = validStatusMap[data.status] || (data.status.toUpperCase() as any);
+
+      const app = await this.prisma.application.findFirst({
+        where: {
+          OR: [{ id: targetId }, { refNumber: targetId }],
+        },
+      });
+
+      if (app) {
+        const updated = await this.prisma.application.update({
+          where: { id: app.id },
+          data: {
+            status: mappedStatus as any,
+            rejectionReason: mappedStatus === 'REJECTED' ? (data.rejectionReason || 'Application rejected during administrative verification.') : null,
+            updatedAt: new Date(),
+          },
+          include: {
+            user: { include: { profile: true } },
+            service: true,
+          },
+        });
+
+        // Real-time broadcast to all connected Admin and Mobile clients
+        this.server.emit('applications_updated');
+        this.server.emit('application_status_changed', {
+          id: updated.id,
+          refNumber: updated.refNumber,
+          userId: updated.userId,
+          status: updated.status,
+          rejectionReason: updated.rejectionReason,
+        });
+
+        client.emit('update_application_status_success', {
+          id: updated.id,
+          refNumber: updated.refNumber,
+          status: updated.status,
+          rejectionReason: updated.rejectionReason,
+        });
+      }
+    } catch (e) {
+      console.error('[AdminGateway] update_application_status error:', e);
+      client.emit('update_application_status_error', { error: e.message });
+    }
+  }
+
   @SubscribeMessage('request_application_detail')
   async handleApplicationDetail(
     @ConnectedSocket() client: Socket,
     @MessageBody() data: { id: string },
   ) {
     try {
-      client.emit('response_application_detail', {
-        id: data.id,
-        serviceName: 'Aadhaar Address Update',
-        sla: '4h 32m',
-        submitted: '3 Aug 2026, 09:14 AM',
-        assignedTo: 'Vikram Tiwari (VLE-0234)',
-        centre: 'CSC Hazratganj, Lucknow',
-        applicant: {
-          id: 'CIT-00482',
-          name: 'Priya Sharma',
-          aadhaar: 'XXXX XXXX 4521',
-          mobile: '+91 98765 43210',
+      const app = await this.prisma.application.findFirst({
+        where: {
+          OR: [{ id: data.id }, { refNumber: data.id }],
+        },
+        include: {
+          user: { include: { profile: true } },
+          service: true,
         },
       });
+
+      if (app) {
+        client.emit('response_application_detail', {
+          id: app.refNumber,
+          rawId: app.id,
+          serviceName: app.serviceTitle,
+          sla: '24h',
+          submitted: app.submittedAt ? app.submittedAt.toLocaleString('en-IN') : 'Today',
+          assignedTo: app.officialOfficer || 'Officer Sharma (SDM)',
+          centre: 'CyberSave E-Gov Portal Central Hub',
+          status: app.status,
+          rejectionReason: app.rejectionReason,
+          feePaid: app.feePaid,
+          paymentStatus: app.paymentStatus,
+          formData: app.formData,
+          documents: app.documents,
+          applicant: {
+            name: app.user?.profile?.fullName || (app.formData as any)?.fullName || 'Applicant',
+            email: app.user?.email || (app.formData as any)?.email,
+            phone: app.user?.phone || app.user?.profile?.phone || (app.formData as any)?.phone,
+            aadhaar: (app.user?.profile as any)?.aadhaarNumber || (app.formData as any)?.aadhaarNumber || 'Verified ID Vault',
+            dob: app.user?.profile?.dob || (app.formData as any)?.dob,
+            gender: app.user?.profile?.gender || (app.formData as any)?.gender,
+            state: app.user?.profile?.state || (app.formData as any)?.state,
+            district: app.user?.profile?.district || (app.formData as any)?.district,
+            address: app.user?.profile?.address || (app.formData as any)?.address,
+          },
+        });
+      }
     } catch (e) {
       console.error('[AdminGateway] request_application_detail error:', e);
     }
