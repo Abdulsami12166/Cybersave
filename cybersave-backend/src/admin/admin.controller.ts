@@ -5,10 +5,14 @@ import {
   Body,
   UnauthorizedException,
   BadRequestException,
+  UseInterceptors,
+  UploadedFile,
 } from '@nestjs/common';
+import { FileInterceptor } from '@nestjs/platform-express';
 import { ApiTags, ApiOperation } from '@nestjs/swagger';
 import { PrismaService } from '../database/prisma.service';
 import { JwtService } from '@nestjs/jwt';
+import { CloudinaryService } from '../common/services/cloudinary.service';
 import * as bcrypt from 'bcrypt';
 
 @ApiTags('Admin Portal')
@@ -17,7 +21,24 @@ export class AdminController {
   constructor(
     private readonly prisma: PrismaService,
     private readonly jwtService: JwtService,
+    private readonly cloudinaryService: CloudinaryService,
   ) {}
+
+  @Post(['api/admin/upload', 'admin/upload', 'api/upload'])
+  @UseInterceptors(FileInterceptor('file'))
+  @ApiOperation({ summary: 'Multer Cloudinary Image Upload' })
+  async uploadAdminImage(@UploadedFile() file: any, @Body() body: any) {
+    if (file && file.buffer) {
+      const url = await this.cloudinaryService.uploadImage(file.buffer, 'cybersave/avatars');
+      return { success: true, url, secure_url: url };
+    }
+    if (body?.image || body?.avatar || body?.file) {
+      const img = body.image || body.avatar || body.file;
+      const url = await this.cloudinaryService.uploadBase64Image(img, 'cybersave/avatars');
+      return { success: true, url, secure_url: url };
+    }
+    throw new BadRequestException('No image file or buffer provided');
+  }
 
   // Handles both /api/auth/login and /auth/login for the admin portal
   @Post(['api/auth/login', 'auth/login'])
