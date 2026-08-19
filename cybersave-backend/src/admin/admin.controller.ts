@@ -102,8 +102,8 @@ export class AdminController {
       accessToken: token,
       admin: {
         id: user.id,
-        email: user.email,
-        name: user.profile?.fullName || (user.email === 'admin@cybersave.com' ? 'Super Administrator' : user.email.split('@')[0]),
+        email: user.email || normalizedEmail,
+        name: user.profile?.fullName || (user.email === 'admin@cybersave.com' ? 'Super Administrator' : (user.email ? user.email.split('@')[0] : 'Operator')),
         role: user.email === 'admin@cybersave.com' ? 'Super Admin' : 'Sub-Admin / Operator',
         permissions: user.permissions || [],
       },
