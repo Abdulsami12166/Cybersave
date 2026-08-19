@@ -64,11 +64,16 @@ export class ApplicationsService {
 
   async createApplication(dto: CreateApplicationDto) {
     const refNumber = this.generateRefNumber();
+    const isMongoId = (id?: string) => typeof id === 'string' && /^[0-9a-fA-F]{24}$/.test(id);
 
     let validUserId = dto.userId;
     if (validUserId && validUserId !== 'default-user-id') {
+      const userOrConditions: any[] = [];
+      if (isMongoId(validUserId)) userOrConditions.push({ id: validUserId });
+      userOrConditions.push({ email: validUserId }, { phone: validUserId });
+
       const u = await this.prisma.user.findFirst({
-        where: { OR: [{ id: validUserId }, { email: validUserId }, { phone: validUserId }] },
+        where: { OR: userOrConditions },
       }).catch(() => null);
       if (u) {
         validUserId = u.id;
@@ -128,7 +133,7 @@ export class ApplicationsService {
     const application = await this.prisma.application.create({
       data: {
         refNumber,
-        userId: validUserId || 'default-user-id',
+        userId: (isMongoId(validUserId) ? validUserId : undefined) as any,
         serviceId: serviceId!,
         serviceTitle: dto.serviceTitle,
         status: ApplicationStatus.SUBMITTED,
@@ -178,6 +183,7 @@ export class ApplicationsService {
   }
 
   async getUserApplications(userId?: string, status?: string) {
+    const isMongoId = (id?: string) => typeof id === 'string' && /^[0-9a-fA-F]{24}$/.test(id);
     const whereClause: any = {};
     if (status && status !== 'All') {
       const upper = status.toUpperCase().replace(/\s+/g, '_');
@@ -189,26 +195,33 @@ export class ApplicationsService {
     }
 
     if (userId && userId !== 'default-user-id' && userId !== 'all') {
+      const userOrConditions: any[] = [];
+      if (isMongoId(userId)) userOrConditions.push({ id: userId });
+      userOrConditions.push({ phone: userId }, { email: userId });
+
       const matchedUser = await this.prisma.user.findFirst({
-        where: { OR: [{ id: userId }, { phone: userId }, { email: userId }] },
+        where: { OR: userOrConditions },
       }).catch(() => null);
 
-      const targetIds = [userId, 'default-user-id'];
-      if (matchedUser) {
+      const targetIds: string[] = [];
+      if (isMongoId(userId)) targetIds.push(userId);
+      if (matchedUser && isMongoId(matchedUser.id) && !targetIds.includes(matchedUser.id)) {
         targetIds.push(matchedUser.id);
       }
 
-      const userApps = await this.prisma.application.findMany({
-        where: {
-          ...whereClause,
-          userId: { in: targetIds },
-        },
-        orderBy: { submittedAt: 'desc' },
-        include: { service: true, user: { include: { profile: true } } },
-      });
+      if (targetIds.length > 0) {
+        const userApps = await this.prisma.application.findMany({
+          where: {
+            ...whereClause,
+            userId: { in: targetIds },
+          },
+          orderBy: { submittedAt: 'desc' },
+          include: { service: true, user: { include: { profile: true } } },
+        });
 
-      if (userApps.length > 0) {
-        return userApps;
+        if (userApps.length > 0) {
+          return userApps;
+        }
       }
     }
 
@@ -220,9 +233,15 @@ export class ApplicationsService {
   }
 
   async getApplicationById(id: string) {
+    const isMongoId = (idStr?: string) => typeof idStr === 'string' && /^[0-9a-fA-F]{24}$/.test(idStr);
+    const orConditions: any[] = [{ refNumber: id }];
+    if (isMongoId(id)) {
+      orConditions.push({ id });
+    }
+
     const application = await this.prisma.application.findFirst({
       where: {
-        OR: [{ id }, { refNumber: id }],
+        OR: orConditions,
       },
       include: { 
         service: true,
@@ -238,9 +257,15 @@ export class ApplicationsService {
   }
 
   async updateStatus(id: string, status: string, rejectionReason?: string) {
+    const isMongoId = (idStr?: string) => typeof idStr === 'string' && /^[0-9a-fA-F]{24}$/.test(idStr);
+    const orConditions: any[] = [{ refNumber: id }];
+    if (isMongoId(id)) {
+      orConditions.push({ id });
+    }
+
     const app = await this.prisma.application.findFirst({
       where: {
-        OR: [{ id }, { refNumber: id }],
+        OR: orConditions,
       },
     });
 
