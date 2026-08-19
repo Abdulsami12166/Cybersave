@@ -13,12 +13,15 @@ async function bootstrap() {
     logger: winstonLoggerInstance,
   });
 
-  // ponytail: scope CORS to env-configured origins in production
-  const corsOrigin = process.env.CORS_ORIGIN ? process.env.CORS_ORIGIN.split(',') : '*';
+  // Enable full dynamic CORS with credentials support across all web & mobile clients
   app.enableCors({
-    origin: corsOrigin,
+    origin: (requestOrigin: string | undefined, callback: (err: Error | null, allow?: boolean) => void) => {
+      // Allow all origins and reflect origin for browser credential compatibility
+      callback(null, true);
+    },
     methods: 'GET,HEAD,PUT,PATCH,POST,DELETE,OPTIONS',
     credentials: true,
+    allowedHeaders: 'Origin,X-Requested-With,Content-Type,Accept,Authorization',
   });
 
   // Security Headers using Helmet
