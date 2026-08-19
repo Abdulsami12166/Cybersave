@@ -370,74 +370,116 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
         },
       });
 
-      const formattedApps = apps.map((a) => {
-        const userProfile = a.user?.profile;
-        const formData = (a.formData as any) || {};
-        return {
-          id: a.refNumber || `APP-2026-${a.id.substring(0, 4).toUpperCase()}`,
-          rawId: a.id,
-          refNumber: a.refNumber,
-          citizen: userProfile?.fullName || formData.fullName || a.user?.email || 'Citizen Applicant',
-          citizenEmail: a.user?.email || formData.email || '',
-          citizenPhone: a.user?.phone || userProfile?.phone || formData.phone || '',
-          serviceType: a.serviceTitle || a.service?.title || 'Government Service',
-          serviceCategory: a.service?.category || 'Government',
-          priority: 'Medium',
-          rawStatus: a.status,
-          status:
-            a.status === 'SUBMITTED'
-              ? 'In Review'
-              : a.status === 'VERIFYING'
-                ? 'Pending'
-                : a.status === 'IN_PROGRESS'
-                  ? 'Processing'
-                  : a.status === 'APPROVED'
-                    ? 'Approved'
-                    : a.status === 'COMPLETED'
-                      ? 'Completed'
-                      : a.status === 'REJECTED'
-                        ? 'Rejected'
-                        : 'Pending',
-          assigned: a.officialOfficer || 'Auto Assigned (SDM)',
-          submitted: a.submittedAt ? a.submittedAt.toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' }) : 'Today',
-          submittedAtFull: a.submittedAt ? a.submittedAt.toLocaleString('en-IN', { dateStyle: 'medium', timeStyle: 'short' }) : new Date().toLocaleString('en-IN'),
-          sla: '24h',
-          amount: a.feePaid || 50.0,
-          paymentStatus: a.paymentStatus || 'Success',
-          razorpayPaymentId: a.razorpayPaymentId || '',
-          razorpayOrderId: a.razorpayOrderId || '',
-          rejectionReason: a.rejectionReason || '',
-          formData: {
-            fullName: formData.fullName || userProfile?.fullName || '',
-            email: formData.email || a.user?.email || '',
-            phone: formData.phone || a.user?.phone || userProfile?.phone || '',
-            dob: formData.dob || userProfile?.dob || '',
-            gender: formData.gender || userProfile?.gender || '',
-            fatherName: formData.fatherName || '',
-            motherName: formData.motherName || '',
-            placeOfBirth: formData.placeOfBirth || '',
-            state: formData.state || userProfile?.state || '',
-            district: formData.district || userProfile?.district || '',
-            pinCode: formData.pinCode || userProfile?.pinCode || '',
-            address: formData.address || userProfile?.address || '',
-            ...formData,
-          },
-          documents: (a.documents as any) || [],
-          applicantProfile: {
-            fullName: userProfile?.fullName || formData.fullName || 'Citizen Applicant',
-            aadhaar: (userProfile as any)?.aadhaarNumber || formData.aadhaarNumber || 'Verified ID Vault',
-            dob: userProfile?.dob || formData.dob || 'Not Provided',
-            gender: userProfile?.gender || formData.gender || 'Not Provided',
-            fatherName: formData.fatherName || 'Not Provided',
-            motherName: formData.motherName || 'Not Provided',
-            placeOfBirth: formData.placeOfBirth || 'Not Provided',
-            state: userProfile?.state || formData.state || 'Not Provided',
-            district: userProfile?.district || formData.district || 'Not Provided',
-            pinCode: userProfile?.pinCode || formData.pinCode || 'Not Provided',
-            address: userProfile?.address || formData.address || 'Not Provided',
-          },
-        };
-      });
+      const formattedApps = await Promise.all(
+        apps.map(async (a) => {
+          const userProfile = a.user?.profile;
+          const formData = (a.formData as any) || {};
+          let docs = (a.documents as any) || [];
+
+          // If docs is empty, has empty arrays, or lacks valid fileUrl, look up DocumentUpload for this user
+          const hasValidDocs =
+            Array.isArray(docs) &&
+            docs.length > 0 &&
+            docs.some(
+              (d: any) =>
+                d &&
+                typeof d === 'object' &&
+                !Array.isArray(d) &&
+                (d.fileUrl || d.url || d.uri),
+            );
+
+          if (!hasValidDocs && a.userId) {
+            const userDocs = await this.prisma.documentUpload.findMany({
+              where: { userId: a.userId },
+              orderBy: { uploadedAt: 'desc' },
+              take: 4,
+            });
+            if (userDocs.length > 0) {
+              docs = userDocs.map((ud, idx) => ({
+                label: `Document Proof #${idx + 1}`,
+                fileName: ud.fileName || `proof_${idx + 1}.jpg`,
+                fileUrl: ud.fileUrl,
+                type: 'Identity Proof',
+              }));
+            }
+          }
+
+          // Clean docs array so no empty arrays or invalid objects remain
+          const cleanedDocs = (Array.isArray(docs) ? docs : [])
+            .filter((d: any) => d && typeof d === 'object' && !Array.isArray(d) && (d.fileUrl || d.url || d.uri || d.fileName || d.label))
+            .map((d: any, idx: number) => ({
+              label: d.label || `Document Proof #${idx + 1}`,
+              fileName: d.fileName || `proof_${idx + 1}.jpg`,
+              fileUrl: d.fileUrl || d.url || d.uri || '',
+              type: d.type || 'Identity Proof',
+            }));
+
+          return {
+            id: a.refNumber || `APP-2026-${a.id.substring(0, 4).toUpperCase()}`,
+            rawId: a.id,
+            refNumber: a.refNumber,
+            citizen: userProfile?.fullName || formData.fullName || a.user?.email || 'Citizen Applicant',
+            citizenEmail: a.user?.email || formData.email || '',
+            citizenPhone: a.user?.phone || userProfile?.phone || formData.phone || '',
+            serviceType: a.serviceTitle || a.service?.title || 'Government Service',
+            serviceCategory: a.service?.category || 'Government',
+            priority: 'Medium',
+            rawStatus: a.status,
+            status:
+              a.status === 'SUBMITTED'
+                ? 'In Review'
+                : a.status === 'VERIFYING'
+                  ? 'Pending'
+                  : a.status === 'IN_PROGRESS'
+                    ? 'Processing'
+                    : a.status === 'APPROVED'
+                      ? 'Approved'
+                      : a.status === 'COMPLETED'
+                        ? 'Completed'
+                        : a.status === 'REJECTED'
+                          ? 'Rejected'
+                          : 'Pending',
+            assigned: a.officialOfficer || 'Auto Assigned (SDM)',
+            submitted: a.submittedAt ? a.submittedAt.toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' }) : 'Today',
+            submittedAtFull: a.submittedAt ? a.submittedAt.toLocaleString('en-IN', { dateStyle: 'medium', timeStyle: 'short' }) : new Date().toLocaleString('en-IN'),
+            sla: '24h',
+            amount: a.feePaid || 50.0,
+            paymentStatus: a.paymentStatus || 'Success',
+            razorpayPaymentId: a.razorpayPaymentId || '',
+            razorpayOrderId: a.razorpayOrderId || '',
+            rejectionReason: a.rejectionReason || '',
+            formData: {
+              fullName: formData.fullName || userProfile?.fullName || '',
+              email: formData.email || a.user?.email || '',
+              phone: formData.phone || a.user?.phone || userProfile?.phone || '',
+              dob: formData.dob || userProfile?.dob || '',
+              gender: formData.gender || userProfile?.gender || '',
+              fatherName: formData.fatherName || '',
+              motherName: formData.motherName || '',
+              placeOfBirth: formData.placeOfBirth || '',
+              state: formData.state || userProfile?.state || '',
+              district: formData.district || userProfile?.district || '',
+              pinCode: formData.pinCode || userProfile?.pinCode || '',
+              address: formData.address || userProfile?.address || '',
+              ...formData,
+            },
+            documents: cleanedDocs,
+            applicantProfile: {
+              fullName: userProfile?.fullName || formData.fullName || 'Citizen Applicant',
+              aadhaar: (userProfile as any)?.aadhaarNumber || formData.aadhaarNumber || 'Verified ID Vault',
+              dob: userProfile?.dob || formData.dob || 'Not Provided',
+              gender: userProfile?.gender || formData.gender || 'Not Provided',
+              fatherName: formData.fatherName || 'Not Provided',
+              motherName: formData.motherName || 'Not Provided',
+              placeOfBirth: formData.placeOfBirth || 'Not Provided',
+              state: userProfile?.state || formData.state || 'Not Provided',
+              district: userProfile?.district || formData.district || 'Not Provided',
+              pinCode: userProfile?.pinCode || formData.pinCode || 'Not Provided',
+              address: userProfile?.address || formData.address || 'Not Provided',
+            },
+          };
+        }),
+      );
 
       client.emit('response_applications_data', {
         stats: { totalApps, todayApps, pending, processing, completed },
@@ -544,6 +586,43 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
       });
 
       if (app) {
+        let docs = (app.documents as any) || [];
+        const hasValidDocs =
+          Array.isArray(docs) &&
+          docs.length > 0 &&
+          docs.some(
+            (d: any) =>
+              d &&
+              typeof d === 'object' &&
+              !Array.isArray(d) &&
+              (d.fileUrl || d.url || d.uri),
+          );
+
+        if (!hasValidDocs && app.userId) {
+          const userDocs = await this.prisma.documentUpload.findMany({
+            where: { userId: app.userId },
+            orderBy: { uploadedAt: 'desc' },
+            take: 4,
+          });
+          if (userDocs.length > 0) {
+            docs = userDocs.map((ud, idx) => ({
+              label: `Document Proof #${idx + 1}`,
+              fileName: ud.fileName || `proof_${idx + 1}.jpg`,
+              fileUrl: ud.fileUrl,
+              type: 'Identity Proof',
+            }));
+          }
+        }
+
+        const cleanedDocs = (Array.isArray(docs) ? docs : [])
+          .filter((d: any) => d && typeof d === 'object' && !Array.isArray(d) && (d.fileUrl || d.url || d.uri || d.fileName || d.label))
+          .map((d: any, idx: number) => ({
+            label: d.label || `Document Proof #${idx + 1}`,
+            fileName: d.fileName || `proof_${idx + 1}.jpg`,
+            fileUrl: d.fileUrl || d.url || d.uri || '',
+            type: d.type || 'Identity Proof',
+          }));
+
         client.emit('response_application_detail', {
           id: app.refNumber,
           rawId: app.id,
@@ -557,7 +636,7 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
           feePaid: app.feePaid,
           paymentStatus: app.paymentStatus,
           formData: app.formData,
-          documents: app.documents,
+          documents: cleanedDocs,
           applicant: {
             name: app.user?.profile?.fullName || (app.formData as any)?.fullName || 'Applicant',
             email: app.user?.email || (app.formData as any)?.email,
