@@ -761,14 +761,15 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
       const salt = await bcrypt.genSalt(10);
       const passwordHash = await bcrypt.hash(data.password || 'admin123', salt);
 
+      const normalizedEmail = (data.email || '').trim().toLowerCase();
       const newUser = await this.prisma.user.create({
         data: {
-          email: data.email,
+          email: normalizedEmail,
           phone: `+9198765${Math.floor(10000 + Math.random() * 90000)}`,
           keycloakId: `op-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
           role: 'ADMIN',
           passwordHash,
-          permissions: data.permissions || ['DASHBOARD', 'APPLICATIONS'],
+          permissions: data.permissions && data.permissions.length > 0 ? data.permissions : ['DASHBOARD', 'APPLICATIONS'],
           profile: {
             create: {
               fullName: data.name,

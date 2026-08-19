@@ -30,13 +30,25 @@ export class AdminController {
 
     const normalizedEmail = email.trim().toLowerCase();
 
-    // Find admin user in database
+    // Find admin user in database safely without unsupported MongoDB flags
     let user = await this.prisma.user.findFirst({
       where: {
-        email: { equals: normalizedEmail, mode: 'insensitive' },
+        email: normalizedEmail,
         role: 'ADMIN',
       },
+      include: { profile: true },
     });
+
+    // Fallback: search among admins in case email had different casing when created
+    if (!user) {
+      const allAdmins = await this.prisma.user.findMany({
+        where: { role: 'ADMIN' },
+        include: { profile: true },
+      });
+      user = allAdmins.find(
+        (a) => a.email && a.email.trim().toLowerCase() === normalizedEmail,
+      ) || null;
+    }
 
     // Auto-seed or repair default Super Admin if needed
     if (!user && normalizedEmail === 'admin@cybersave.com' && password === 'admin123') {
@@ -48,7 +60,13 @@ export class AdminController {
           passwordHash,
           role: 'ADMIN',
           permissions: ['SUPER_ADMIN', 'ALL'],
+          profile: {
+            create: {
+              fullName: 'Super Administrator',
+            },
+          },
         },
+        include: { profile: true },
       });
     }
 
@@ -65,6 +83,7 @@ export class AdminController {
         user = await this.prisma.user.update({
           where: { id: user.id },
           data: { passwordHash },
+          include: { profile: true },
         });
       } else {
         throw new UnauthorizedException('Invalid credentials');
@@ -84,6 +103,8 @@ export class AdminController {
       admin: {
         id: user.id,
         email: user.email,
+        name: user.profile?.fullName || (user.email === 'admin@cybersave.com' ? 'Super Administrator' : user.email.split('@')[0]),
+        role: user.email === 'admin@cybersave.com' ? 'Super Admin' : 'Sub-Admin / Operator',
         permissions: user.permissions || [],
       },
     };
