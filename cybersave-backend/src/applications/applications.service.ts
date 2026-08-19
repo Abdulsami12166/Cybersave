@@ -66,9 +66,13 @@ export class ApplicationsService {
     const refNumber = this.generateRefNumber();
 
     let validUserId = dto.userId;
-    if (validUserId) {
-      const u = await this.prisma.user.findUnique({ where: { id: validUserId } }).catch(() => null);
-      if (!u) {
+    if (validUserId && validUserId !== 'default-user-id') {
+      const u = await this.prisma.user.findFirst({
+        where: { OR: [{ id: validUserId }, { email: validUserId }, { phone: validUserId }] },
+      }).catch(() => null);
+      if (u) {
+        validUserId = u.id;
+      } else {
         const firstUser = await this.prisma.user.findFirst();
         if (firstUser) validUserId = firstUser.id;
       }
@@ -112,10 +116,19 @@ export class ApplicationsService {
       }
     }
 
+    // Sanitize documents to ensure clean format
+    const sanitizedDocs = (Array.isArray(dto.documents) ? dto.documents : [])
+      .filter((d: any) => d && (d.fileUrl || d.url || d.uri || d.fileName || d.label))
+      .map((d: any, idx: number) => ({
+        label: d.label || `Document ${idx + 1}`,
+        fileName: d.fileName || `proof_${idx + 1}.jpg`,
+        fileUrl: d.fileUrl || d.url || d.uri || d.path || '',
+      }));
+
     const application = await this.prisma.application.create({
       data: {
         refNumber,
-        userId: validUserId,
+        userId: validUserId || 'default-user-id',
         serviceId: serviceId!,
         serviceTitle: dto.serviceTitle,
         status: ApplicationStatus.SUBMITTED,
@@ -127,7 +140,7 @@ export class ApplicationsService {
         razorpayPaymentId: dto.razorpayPaymentId,
         razorpaySignature: dto.razorpaySignature,
         formData: dto.formData || {},
-        documents: dto.documents || [],
+        documents: sanitizedDocs,
       },
       include: {
         user: { include: { profile: true } },
@@ -166,18 +179,36 @@ export class ApplicationsService {
 
   async getUserApplications(userId?: string, status?: string) {
     const whereClause: any = {};
-    if (userId && userId !== 'default-user-id' && userId !== 'all') {
-      whereClause.OR = [
-        { userId },
-        { userId: 'default-user-id' },
-      ];
-    }
     if (status && status !== 'All') {
       const upper = status.toUpperCase().replace(/\s+/g, '_');
       if (
         Object.values(ApplicationStatus).includes(upper as ApplicationStatus)
       ) {
         whereClause.status = upper as ApplicationStatus;
+      }
+    }
+
+    if (userId && userId !== 'default-user-id' && userId !== 'all') {
+      const matchedUser = await this.prisma.user.findFirst({
+        where: { OR: [{ id: userId }, { phone: userId }, { email: userId }] },
+      }).catch(() => null);
+
+      const targetIds = [userId, 'default-user-id'];
+      if (matchedUser) {
+        targetIds.push(matchedUser.id);
+      }
+
+      const userApps = await this.prisma.application.findMany({
+        where: {
+          ...whereClause,
+          userId: { in: targetIds },
+        },
+        orderBy: { submittedAt: 'desc' },
+        include: { service: true, user: { include: { profile: true } } },
+      });
+
+      if (userApps.length > 0) {
+        return userApps;
       }
     }
 
