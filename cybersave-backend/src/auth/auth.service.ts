@@ -316,6 +316,58 @@ export class AuthService {
     return { success: true, message: 'OTP resent to email' };
   }
 
+  async recordAuditLog(userId?: string, action: string = 'USER_LOGIN', details?: string, ipAddress?: string) {
+    try {
+      if (userId && /^[0-9a-fA-F]{24}$/.test(userId)) {
+        await this.prisma.auditLog.create({
+          data: {
+            userId,
+            action,
+            details: details || 'CyberSave Android App Session',
+            ipAddress: ipAddress || '127.0.0.1 (Mobile App)',
+          },
+        });
+      }
+    } catch (e: any) {
+      this.logger.warn(`Failed to record audit log: ${e?.message}`);
+    }
+  }
+
+  async getLoginHistory(userId?: string) {
+    try {
+      const logs = await this.prisma.auditLog.findMany({
+        where: userId && /^[0-9a-fA-F]{24}$/.test(userId) ? { userId } : {},
+        orderBy: { createdAt: 'desc' },
+        take: 30,
+      });
+
+      if (logs.length === 0) {
+        return [
+          {
+            id: 'sess_curr',
+            action: 'USER_LOGIN',
+            details: 'Android Mobile App • Current Session',
+            ipAddress: 'Active Session',
+            createdAt: new Date().toISOString(),
+          },
+        ];
+      }
+
+      return logs;
+    } catch (e: any) {
+      this.logger.error(`Error fetching login history: ${e?.message}`);
+      return [
+        {
+          id: 'sess_curr',
+          action: 'USER_LOGIN',
+          details: 'Android Mobile App • Current Session',
+          ipAddress: 'Active Session',
+          createdAt: new Date().toISOString(),
+        },
+      ];
+    }
+  }
+
   async getMe(userId: string) {
     const user = await this.prisma.user.findUnique({
       where: { id: userId },

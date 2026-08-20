@@ -52,4 +52,10 @@ export class AuthController {
   async getMe(@GetUser() user: any) {
     return this.authService.getMe(user.sub || user.id);
   }
+
+  @Get(['history', 'login-history'])
+  @ApiOperation({ summary: 'Get login history and security audit logs' })
+  async getLoginHistory(@GetUser() user: any) {
+    return this.authService.getLoginHistory(user?.sub || user?.id);
+  }
 }

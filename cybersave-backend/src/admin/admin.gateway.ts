@@ -49,11 +49,11 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
 
       const allApps = await this.prisma.application.findMany({
         include: { user: { include: { profile: true } } },
-        orderBy: { createdAt: 'desc' },
+        orderBy: { submittedAt: 'desc' },
       });
 
       const todayApps = allApps.filter((a) => {
-        const d = new Date(a.submittedAt || a.createdAt);
+        const d = new Date(a.submittedAt || a.updatedAt);
         return d >= today;
       });
 
@@ -93,7 +93,7 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
         const dateLabel = `${dayShort} (${d.getDate()} ${d.toLocaleString('en-US', { month: 'short' })})`;
 
         const dayApps = allApps.filter((a) => {
-          const appDate = new Date(a.submittedAt || a.createdAt);
+          const appDate = new Date(a.submittedAt || a.updatedAt);
           return appDate >= d && appDate < nextD;
         });
 
