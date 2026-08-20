@@ -47,32 +47,34 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
       const today = new Date();
       today.setHours(0, 0, 0, 0);
 
-      const totalApps = await this.prisma.application.count();
-      const appsToday = await this.prisma.application.count({
-        where: { submittedAt: { gte: today } },
+      const allApps = await this.prisma.application.findMany({
+        include: { user: { include: { profile: true } } },
+        orderBy: { createdAt: 'desc' },
       });
-      const pendingApps = await this.prisma.application.count({
-        where: { status: 'PENDING' },
+
+      const todayApps = allApps.filter((a) => {
+        const d = new Date(a.submittedAt || a.createdAt);
+        return d >= today;
       });
-      const completedAppsToday = await this.prisma.application.count({
-        where: { status: 'COMPLETED', updatedAt: { gte: today } },
-      });
-      const rejectedAppsToday = await this.prisma.application.count({
-        where: { status: 'REJECTED', updatedAt: { gte: today } },
-      });
+
+      const revenueToday = todayApps.reduce((sum, a) => {
+        const fee = typeof a.feePaid === 'number' && !isNaN(a.feePaid) ? a.feePaid : (a.feePaid ? Number(a.feePaid) : 55.0);
+        return sum + fee;
+      }, 0);
+
+      const totalRevenue = allApps.reduce((sum, a) => {
+        const fee = typeof a.feePaid === 'number' && !isNaN(a.feePaid) ? a.feePaid : (a.feePaid ? Number(a.feePaid) : 55.0);
+        return sum + fee;
+      }, 0);
+
+      const appsToday = todayApps.length;
+      const pendingApps = allApps.filter((a) => a.status === 'PENDING' || a.status === 'SUBMITTED' || a.status === 'VERIFYING' || a.status === 'IN_PROGRESS').length;
+      const completedAppsToday = todayApps.filter((a) => a.status === 'COMPLETED' || a.status === 'APPROVED').length;
+      const rejectedAppsToday = todayApps.filter((a) => a.status === 'REJECTED').length;
 
       const activeCentres = await this.prisma.user.count({
         where: { role: 'ADMIN' },
       });
-
-      const todayAppsList = await this.prisma.application.findMany({
-        where: { submittedAt: { gte: today } },
-        select: { feePaid: true },
-      });
-      const revenueToday = todayAppsList.reduce(
-        (sum, app) => sum + (app.feePaid || 0),
-        0,
-      );
 
       // Compute dynamic 7-day overview (<= 7 days)
       const dayNames = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
@@ -90,55 +92,49 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
         const dayShort = dayNames[d.getDay()];
         const dateLabel = `${dayShort} (${d.getDate()} ${d.toLocaleString('en-US', { month: 'short' })})`;
 
-        const dayApps = await this.prisma.application.findMany({
-          where: {
-            submittedAt: {
-              gte: d,
-              lt: nextD,
-            },
-          },
-          select: { feePaid: true, status: true },
+        const dayApps = allApps.filter((a) => {
+          const appDate = new Date(a.submittedAt || a.createdAt);
+          return appDate >= d && appDate < nextD;
         });
 
-        const dayRev = dayApps.reduce((acc, a) => acc + (a.feePaid || 50), 0);
+        const dayRev = dayApps.reduce((acc, a) => {
+          const fee = typeof a.feePaid === 'number' && !isNaN(a.feePaid) ? a.feePaid : (a.feePaid ? Number(a.feePaid) : 55.0);
+          return acc + fee;
+        }, 0);
         const dayComp = dayApps.filter((a) => a.status === 'COMPLETED' || a.status === 'APPROVED').length;
-        const dayPend = dayApps.filter((a) => a.status === 'PENDING' || a.status === 'IN_PROGRESS').length;
+        const dayPend = dayApps.filter((a) => a.status === 'PENDING' || a.status === 'SUBMITTED' || a.status === 'VERIFYING' || a.status === 'IN_PROGRESS').length;
         const dayRej = dayApps.filter((a) => a.status === 'REJECTED').length;
-
-        // Baseline fallbacks if day has 0 entries
-        const val = dayRev > 0 ? dayRev : (i === 0 ? (revenueToday || 2450) : 1800 + i * 450);
-        const comp = dayComp > 0 ? dayComp : 6 + i * 2;
-        const pend = dayPend > 0 ? dayPend : 3 + (i % 3);
-        const rej = dayRej > 0 ? dayRej : (i % 2 === 0 ? 1 : 0);
 
         revenueOverview.push({
           day: dayShort,
           date: dateLabel,
-          value: val,
+          value: dayRev,
         });
 
         applicationTrends.push({
           day: dayShort,
           date: dateLabel,
-          completed: comp,
-          pending: pend,
-          rejected: rej,
+          completed: dayComp,
+          pending: dayPend,
+          rejected: dayRej,
         });
       }
 
       client.emit('response_dashboard_data', {
         stats: {
-          revenueToday: revenueToday || 4850,
-          appsToday: appsToday || 14,
-          pendingApps: pendingApps || 6,
-          completedAppsToday: completedAppsToday || 8,
-          rejectedAppsToday: rejectedAppsToday || 1,
-          activeCentres: activeCentres || 8,
+          revenueToday: revenueToday,
+          totalRevenue: totalRevenue,
+          appsToday: appsToday,
+          totalApps: allApps.length,
+          pendingApps: pendingApps,
+          completedAppsToday: completedAppsToday,
+          rejectedAppsToday: rejectedAppsToday,
+          activeCentres: activeCentres || 1,
         },
         collections: {
-          totalCollections: 1240000,
-          onlinePayments: 820000,
-          cashCollections: 420000,
+          totalCollections: totalRevenue,
+          onlinePayments: totalRevenue,
+          cashCollections: 0,
         },
         serviceShare: [
           { name: 'Aadhaar Services', percentage: 35 },
@@ -150,12 +146,12 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
         operatorLogs: [
           {
             id: '1',
-            title: 'Action',
-            description: 'Sample log',
+            title: 'System Online',
+            description: 'Real-time WebSocket & Database sync active',
             time: new Date().toISOString(),
           },
         ],
-        recentApps: [],
+        recentApps: allApps.slice(0, 5),
         charts: {
           revenueOverview,
           applicationTrends,
