@@ -64,8 +64,11 @@ export class AiService implements OnModuleInit {
           where: { id: userId },
           include: { profile: true },
         });
-        if (user?.profile?.fullName) userName = user.profile.fullName;
-        else if (user?.fullName) userName = user.fullName;
+        if (user?.profile?.fullName) {
+          userName = user.profile.fullName;
+        } else if (user?.email) {
+          userName = user.email.split('@')[0];
+        }
       } catch (e) {
         this.logger.warn('Failed to fetch user name for AI prompt', e);
       }
