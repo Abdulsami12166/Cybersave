@@ -6,12 +6,17 @@ import { LoggingInterceptor } from './common/interceptors/logging.interceptor';
 import { ValidationPipe } from '@nestjs/common';
 import helmet from 'helmet';
 import compression from 'compression';
+import { json, urlencoded } from 'express';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule, {
     logger: winstonLoggerInstance,
   });
+
+  // Body parser size limits for large form submissions and documents
+  app.use(json({ limit: '50mb' }));
+  app.use(urlencoded({ extended: true, limit: '50mb' }));
 
   // Enable full dynamic CORS with credentials support across all web & mobile clients
   app.enableCors({
