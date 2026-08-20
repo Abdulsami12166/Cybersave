@@ -246,7 +246,7 @@ export class ApplicationsService {
       }
     }
 
-    if (userId && userId !== 'default-user-id' && userId !== 'all') {
+    if (userId && userId !== 'all') {
       const userOrConditions: any[] = [];
       if (isMongoId(userId)) userOrConditions.push({ id: userId });
       userOrConditions.push({ phone: userId }, { email: userId });
@@ -262,7 +262,7 @@ export class ApplicationsService {
       }
 
       if (targetIds.length > 0) {
-        const userApps = await this.prisma.application.findMany({
+        return this.prisma.application.findMany({
           where: {
             ...whereClause,
             userId: { in: targetIds },
@@ -270,18 +270,11 @@ export class ApplicationsService {
           orderBy: { submittedAt: 'desc' },
           include: { service: true, user: { include: { profile: true } } },
         });
-
-        if (userApps.length > 0) {
-          return userApps;
-        }
       }
-    }
 
-    return this.prisma.application.findMany({
-      where: whereClause,
-      orderBy: { submittedAt: 'desc' },
-      include: { service: true, user: { include: { profile: true } } },
-    });
+      // User has no applications - return empty array to maintain strict privacy
+      return [];
+    }
   }
 
   async getApplicationById(id: string) {
