@@ -67,24 +67,51 @@ export class ApplicationsService {
     const isMongoId = (id?: string) => typeof id === 'string' && /^[0-9a-fA-F]{24}$/.test(id);
 
     let validUserId = dto.userId;
-    if (validUserId && validUserId !== 'default-user-id') {
-      const userOrConditions: any[] = [];
-      if (isMongoId(validUserId)) userOrConditions.push({ id: validUserId });
-      userOrConditions.push({ email: validUserId }, { phone: validUserId });
 
-      const u = await this.prisma.user.findFirst({
-        where: { OR: userOrConditions },
+    const userOrConditions: any[] = [];
+    if (validUserId && isMongoId(validUserId)) userOrConditions.push({ id: validUserId });
+    if (validUserId && validUserId.includes('@')) userOrConditions.push({ email: validUserId.trim().toLowerCase() });
+    if (validUserId && /^\+?[0-9]{10,13}$/.test(validUserId)) userOrConditions.push({ phone: validUserId.trim() });
+    if (dto.formData?.email) userOrConditions.push({ email: String(dto.formData.email).trim().toLowerCase() });
+    if (dto.formData?.phone) userOrConditions.push({ phone: String(dto.formData.phone).trim() });
+
+    let matchedUser = userOrConditions.length > 0
+      ? await this.prisma.user.findFirst({
+          where: { OR: userOrConditions },
+          include: { profile: true },
+        }).catch(() => null)
+      : null;
+
+    if (!matchedUser) {
+      matchedUser = await this.prisma.user.findFirst({
+        include: { profile: true },
       }).catch(() => null);
-      if (u) {
-        validUserId = u.id;
-      } else {
-        const firstUser = await this.prisma.user.findFirst();
-        if (firstUser) validUserId = firstUser.id;
-      }
-    } else {
-      const firstUser = await this.prisma.user.findFirst();
-      if (firstUser) validUserId = firstUser.id;
     }
+
+    if (!matchedUser) {
+      const citizenEmail = dto.formData?.email || (validUserId && validUserId.includes('@') ? validUserId : `citizen_${Date.now()}@cybersave.app`);
+      matchedUser = await this.prisma.user.create({
+        data: {
+          email: citizenEmail,
+          phone: dto.formData?.phone || (validUserId && /^\+?[0-9]{10,13}$/.test(validUserId) ? validUserId : '+91 98765 43210'),
+          role: 'USER',
+          profile: {
+            create: {
+              fullName: dto.formData?.fullName || 'Citizen Applicant',
+              email: citizenEmail,
+              phone: dto.formData?.phone || '+91 98765 43210',
+              state: dto.formData?.stateName || dto.formData?.state || 'Delhi',
+              district: dto.formData?.district || 'New Delhi',
+              pinCode: dto.formData?.pinCode || '110001',
+              address: dto.formData?.address || 'New Delhi, India',
+            },
+          },
+        },
+        include: { profile: true },
+      });
+    }
+
+    validUserId = matchedUser.id;
 
     let serviceId = dto.serviceId;
     if (!serviceId && dto.serviceSlug) {
@@ -121,19 +148,20 @@ export class ApplicationsService {
       }
     }
 
-    // Sanitize documents to ensure clean format
+    // Sanitize documents to ensure clean Cloudinary URLs and metadata
     const sanitizedDocs = (Array.isArray(dto.documents) ? dto.documents : [])
       .filter((d: any) => d && (d.fileUrl || d.url || d.uri || d.fileName || d.label))
       .map((d: any, idx: number) => ({
         label: d.label || `Document ${idx + 1}`,
         fileName: d.fileName || `proof_${idx + 1}.jpg`,
         fileUrl: d.fileUrl || d.url || d.uri || d.path || '',
+        type: d.type || 'Identity Proof',
       }));
 
     const application = await this.prisma.application.create({
       data: {
         refNumber,
-        userId: (isMongoId(validUserId) ? validUserId : undefined) as any,
+        userId: validUserId,
         serviceId: serviceId!,
         serviceTitle: dto.serviceTitle,
         status: ApplicationStatus.SUBMITTED,
@@ -153,9 +181,26 @@ export class ApplicationsService {
       },
     });
 
+    // Also persist uploaded document proofs to DocumentUpload vault
+    if (sanitizedDocs.length > 0) {
+      for (const doc of sanitizedDocs) {
+        if (doc.fileUrl) {
+          await this.prisma.documentUpload.create({
+            data: {
+              userId: validUserId,
+              applicationId: application.id,
+              fileName: doc.fileName || doc.label,
+              fileUrl: doc.fileUrl,
+              fileType: doc.type || 'document',
+            },
+          }).catch(() => null);
+        }
+      }
+    }
+
     try {
       const user = await this.prisma.user.findUnique({
-        where: { id: dto.userId },
+        where: { id: validUserId },
         include: { profile: true },
       });
 
@@ -175,6 +220,13 @@ export class ApplicationsService {
     try {
       AdminGateway.broadcast('applications_updated', application);
       AdminGateway.broadcast('new_application_submitted', application);
+      AdminGateway.broadcast('application_status_changed', {
+        id: application.id,
+        refNumber: application.refNumber,
+        userId: application.userId,
+        status: application.status,
+        serviceTitle: application.serviceTitle,
+      });
     } catch (wsErr) {
       this.logger.warn(`WS broadcast error: ${wsErr.message}`);
     }
