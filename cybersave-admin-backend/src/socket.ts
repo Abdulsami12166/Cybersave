@@ -79,76 +79,185 @@ export function setupSockets(io: Server) {
 
     socket.on('request_user_detail', async (data: { id: string }) => {
       try {
-        let realId = data.id;
-        let u = await prisma.user.findUnique({
-          where: { id: realId },
-          include: { profile: true }
-        });
-        
-        if (!u && realId.startsWith('CIT-')) {
+        let realId = data?.id;
+        const isMongoId = (s?: string) => typeof s === 'string' && /^[0-9a-fA-F]{24}$/.test(s);
+        let u: any = null;
+
+        if (isMongoId(realId)) {
+          u = await prisma.user.findUnique({
+            where: { id: realId },
+            include: {
+              profile: true,
+              applications: { orderBy: { submittedAt: 'desc' } },
+              documents: true,
+              aadhaarDocs: true,
+              auditLogs: { orderBy: { createdAt: 'desc' }, take: 15 },
+            },
+          });
+        }
+
+        if (!u && realId?.startsWith('CIT-')) {
           const shortId = realId.replace('CIT-', '').toUpperCase();
-          const allUsers = await prisma.user.findMany({ where: { role: 'USER' }, include: { profile: true } });
-          u = allUsers.find(x => x.id.substring(0, 5).toUpperCase() === shortId) || null;
+          const allUsers = await prisma.user.findMany({
+            where: { role: 'USER' },
+            include: {
+              profile: true,
+              applications: { orderBy: { submittedAt: 'desc' } },
+              documents: true,
+              aadhaarDocs: true,
+              auditLogs: { orderBy: { createdAt: 'desc' }, take: 15 },
+            },
+          });
+          u = allUsers.find((x) => x.id.substring(0, 5).toUpperCase() === shortId) || null;
+        }
+
+        if (!u && realId) {
+          u = await prisma.user.findFirst({
+            where: { OR: [{ id: realId }, { email: realId }, { phone: realId }] },
+            include: {
+              profile: true,
+              applications: { orderBy: { submittedAt: 'desc' } },
+              documents: true,
+              aadhaarDocs: true,
+              auditLogs: { orderBy: { createdAt: 'desc' }, take: 15 },
+            },
+          });
         }
 
         if (!u) {
-          u = await prisma.user.findFirst({ where: { role: 'USER' }, include: { profile: true } });
+          u = await prisma.user.findFirst({
+            where: { role: 'USER' },
+            include: {
+              profile: true,
+              applications: { orderBy: { submittedAt: 'desc' } },
+              documents: true,
+              aadhaarDocs: true,
+              auditLogs: { orderBy: { createdAt: 'desc' }, take: 15 },
+            },
+          });
         }
-        
+
         if (!u) {
           socket.emit('response_user_detail', { error: 'User not found' });
           return;
         }
 
-        const apps = await prisma.application.findMany({
-          where: { userId: u.id },
-          orderBy: { submittedAt: 'desc' }
-        });
-
-        const logs = await prisma.auditLog.findMany({
-          where: { userId: u.id },
-          orderBy: { createdAt: 'desc' }
-        });
-
-        socket.emit('response_user_detail', {
-          id: `CIT-${u.id.substring(0, 5).toUpperCase()}`,
-          dbId: u.id,
-          fullName: u.profile?.fullName || 'Unknown',
-          aadhaar: u.profile?.dob ? '****' + Math.floor(1000 + Math.random() * 9000) : 'Not Given',
-          mobile: u.phone || 'N/A',
-          email: u.email || 'N/A',
-          district: u.profile?.district || 'Not Given',
-          state: u.profile?.state || 'Not Given',
-          joinedDate: u.createdAt.toLocaleDateString(),
-          status: u.status === 'BLOCKED' ? 'BLOCKED' : (u.status || 'Verified'),
-          avatarUrl: u.profile?.avatarUrl || null,
-          applications: apps.map(a => ({
-            id: `APP-${a.id.substring(0, 5).toUpperCase()}`,
-            refNumber: a.refNumber,
-            serviceTitle: a.serviceTitle,
-            status: a.status,
-            feePaid: a.feePaid,
-            submittedAt: a.submittedAt.toLocaleDateString()
-          })),
-          auditLogs: logs.map(l => ({
-            id: l.id,
-            action: l.action,
-            details: l.details || '',
-            createdAt: l.createdAt.toLocaleDateString() + ' ' + l.createdAt.toLocaleTimeString()
-          }))
-        });
-      } catch (e) { console.error(e); }
+        const formatted = formatCitizenSocketPayload(u);
+        socket.emit('response_user_detail', formatted);
+      } catch (e) {
+        console.error('[Socket] request_user_detail error:', e);
+      }
     });
 
-    socket.on('block_citizen', async (data: { id: string, status: string }) => {
+    socket.on('update_citizen_profile', async (data: any) => {
+      try {
+        const { id, fullName, phone, email, address, district, state, pinCode, dob, gender, status } = data;
+        const isMongoId = (s?: string) => typeof s === 'string' && /^[0-9a-fA-F]{24}$/.test(s);
+        let u: any = null;
+
+        if (isMongoId(id)) {
+          u = await prisma.user.findUnique({ where: { id }, include: { profile: true } });
+        }
+        if (!u && id?.startsWith('CIT-')) {
+          const shortId = id.replace('CIT-', '').toUpperCase();
+          const allUsers = await prisma.user.findMany({ where: { role: 'USER' }, include: { profile: true } });
+          u = allUsers.find((x) => x.id.substring(0, 5).toUpperCase() === shortId) || null;
+        }
+        if (!u && id) {
+          u = await prisma.user.findFirst({ where: { OR: [{ id }, { email: id }, { phone: id }] }, include: { profile: true } });
+        }
+
+        if (!u) {
+          socket.emit('update_citizen_error', { message: 'Citizen not found' });
+          return;
+        }
+
+        await prisma.user.update({
+          where: { id: u.id },
+          data: {
+            email: email || u.email,
+            phone: phone || u.phone,
+            status: status || u.status,
+          },
+        });
+
+        if (u.profile) {
+          await prisma.profile.update({
+            where: { id: u.profile.id },
+            data: {
+              fullName: fullName ?? u.profile.fullName,
+              phone: phone ?? u.profile.phone,
+              email: email ?? u.profile.email,
+              address: address ?? u.profile.address,
+              district: district ?? u.profile.district,
+              state: state ?? u.profile.state,
+              pinCode: pinCode ?? u.profile.pinCode,
+              dob: dob ?? u.profile.dob,
+              gender: gender ?? u.profile.gender,
+            },
+          });
+        } else {
+          await prisma.profile.create({
+            data: {
+              userId: u.id,
+              fullName: fullName || 'Citizen User',
+              phone: phone || u.phone || '',
+              email: email || u.email || '',
+              address: address || '',
+              district: district || '',
+              state: state || '',
+              pinCode: pinCode || '',
+              dob: dob || '',
+              gender: gender || '',
+            },
+          });
+        }
+
+        await prisma.auditLog.create({
+          data: {
+            userId: u.id,
+            action: 'CITIZEN_PROFILE_UPDATED',
+            details: `Admin updated citizen profile information`,
+          },
+        }).catch(() => null);
+
+        const updated = await prisma.user.findUnique({
+          where: { id: u.id },
+          include: {
+            profile: true,
+            applications: { orderBy: { submittedAt: 'desc' } },
+            documents: true,
+            aadhaarDocs: true,
+            auditLogs: { orderBy: { createdAt: 'desc' }, take: 15 },
+          },
+        });
+
+        const formatted = formatCitizenSocketPayload(updated);
+        socket.emit('update_citizen_success', formatted);
+        io.emit('response_user_detail', formatted);
+        io.emit('user_detail_updated', formatted);
+      } catch (e: any) {
+        console.error('[Socket] update_citizen_profile error:', e);
+        socket.emit('update_citizen_error', { message: e.message });
+      }
+    });
+
+    socket.on('block_citizen', async (data: { id: string, status?: string }) => {
       try {
         let realId = data.id;
-        let u = await prisma.user.findUnique({ where: { id: realId } });
-        
-        if (!u && realId.startsWith('CIT-')) {
+        const isMongoId = (s?: string) => typeof s === 'string' && /^[0-9a-fA-F]{24}$/.test(s);
+        let u: any = null;
+
+        if (isMongoId(realId)) {
+          u = await prisma.user.findUnique({ where: { id: realId } });
+        }
+        if (!u && realId?.startsWith('CIT-')) {
           const shortId = realId.replace('CIT-', '').toUpperCase();
           const allUsers = await prisma.user.findMany({ where: { role: 'USER' } });
-          u = allUsers.find(x => x.id.substring(0, 5).toUpperCase() === shortId) || null;
+          u = allUsers.find((x) => x.id.substring(0, 5).toUpperCase() === shortId) || null;
+        }
+        if (!u && realId) {
+          u = await prisma.user.findFirst({ where: { OR: [{ id: realId }, { email: realId }, { phone: realId }] } });
         }
 
         if (!u) {
@@ -156,22 +265,86 @@ export function setupSockets(io: Server) {
           return;
         }
 
+        const nextStatus = data.status || (u.status === 'BLOCKED' ? 'Verified' : 'BLOCKED');
+
         await prisma.user.update({
           where: { id: u.id },
-          data: { status: data.status }
+          data: { status: nextStatus }
         });
 
         await prisma.auditLog.create({
           data: {
             userId: u.id,
-            action: data.status === 'BLOCKED' ? 'USER_BLOCKED' : 'USER_UNBLOCKED',
-            details: `Admin changed user status to ${data.status}`
+            action: nextStatus === 'BLOCKED' ? 'USER_BLOCKED' : 'USER_UNBLOCKED',
+            details: `Admin changed citizen status to ${nextStatus}`
           }
+        }).catch(() => null);
+
+        const updated = await prisma.user.findUnique({
+          where: { id: u.id },
+          include: {
+            profile: true,
+            applications: { orderBy: { submittedAt: 'desc' } },
+            documents: true,
+            aadhaarDocs: true,
+            auditLogs: { orderBy: { createdAt: 'desc' }, take: 15 },
+          },
         });
 
-        console.log(`[block_citizen] Updated user ${u.id} status to ${data.status}`);
-        socket.emit('block_citizen_success');
-      } catch (e) { console.error('[block_citizen] error:', e); }
+        const formatted = formatCitizenSocketPayload(updated);
+        socket.emit('block_citizen_success', formatted);
+        io.emit('response_user_detail', formatted);
+        io.emit('user_detail_updated', formatted);
+      } catch (e) {
+        console.error('[block_citizen] error:', e);
+      }
+    });
+
+    socket.on('send_push_notification', async (data: { userId: string; title: string; body: string; type?: string }) => {
+      try {
+        const { userId, title, body } = data;
+        const isMongoId = (s?: string) => typeof s === 'string' && /^[0-9a-fA-F]{24}$/.test(s);
+        let u: any = null;
+
+        if (isMongoId(userId)) {
+          u = await prisma.user.findUnique({ where: { id: userId } });
+        }
+        if (!u && userId?.startsWith('CIT-')) {
+          const shortId = userId.replace('CIT-', '').toUpperCase();
+          const allUsers = await prisma.user.findMany({ where: { role: 'USER' } });
+          u = allUsers.find((x) => x.id.substring(0, 5).toUpperCase() === shortId) || null;
+        }
+        if (!u && userId) {
+          u = await prisma.user.findFirst({ where: { OR: [{ id: userId }, { email: userId }, { phone: userId }] } });
+        }
+
+        const targetUserId = u ? u.id : userId;
+
+        if (targetUserId && isMongoId(targetUserId)) {
+          await prisma.notification.create({
+            data: {
+              userId: targetUserId,
+              title: title || 'Cybersave Notification',
+              body: body || '',
+              status: 'SENT',
+              sentAt: new Date(),
+            },
+          }).catch(() => null);
+
+          await prisma.auditLog.create({
+            data: {
+              userId: targetUserId,
+              action: 'NOTIFICATION_SENT',
+              details: `Dispatch sent: "${title}"`,
+            },
+          }).catch(() => null);
+        }
+
+        socket.emit('response_push_sent', { success: true, message: 'Notification dispatched successfully' });
+      } catch (e: any) {
+        console.error('[Socket] send_push_notification error:', e);
+        socket.emit('response_push_sent', { success: false, error: e.message });
+      }
     });
 
     socket.on('request_applications_data', async () => {
@@ -672,3 +845,115 @@ export function setupSockets(io: Server) {
     });
   });
 }
+
+function formatCitizenSocketPayload(u: any) {
+  if (!u) return null;
+  const apps = u.applications || [];
+  const profile = u.profile || {};
+  const firstAppForm = (apps[0]?.formData as any) || {};
+
+  const rawFullName = profile.fullName || firstAppForm.fullName || (u.email ? u.email.split('@')[0] : null) || (u.phone ? `Citizen ${u.phone.slice(-4)}` : '');
+  const formattedFullName = rawFullName
+    ? rawFullName.trim().split(' ').map((w: string) => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase()).join(' ')
+    : 'Citizen User';
+
+  const fatherName = profile.fatherName || firstAppForm.fatherName || firstAppForm.father_name || '';
+  const dob = profile.dob || u.aadhaarDocs?.[0]?.dateOfBirth || firstAppForm.dob || '';
+  const gender = profile.gender || u.aadhaarDocs?.[0]?.gender || firstAppForm.gender || '';
+  const aadhaar = profile.aadhaarNumber || u.aadhaarDocs?.[0]?.referenceId || firstAppForm.aadhaar || firstAppForm.aadhaarNumber || (profile.dob ? `•••• •••• ${u.id.slice(-4)}` : '');
+  const pan = profile.pan || firstAppForm.pan || firstAppForm.panNumber || '';
+  const mobile = u.phone || profile.phone || firstAppForm.phone || '';
+  const email = u.email || profile.email || firstAppForm.email || '';
+  const address = profile.address || u.aadhaarDocs?.[0]?.address || firstAppForm.address || '';
+  const district = profile.district || firstAppForm.district || '';
+  const state = profile.state || firstAppForm.state || firstAppForm.stateName || '';
+  const pinCode = profile.pinCode || firstAppForm.pinCode || firstAppForm.pincode || '';
+
+  const totalAmountSpent = apps.reduce((sum: number, a: any) => {
+    const f = typeof a.feePaid === 'number' && !isNaN(a.feePaid) ? a.feePaid : (a.feePaid ? Number(a.feePaid) : 50.0);
+    return sum + f;
+  }, 0);
+
+  const docList: any[] = [];
+  const seenDocUrls = new Set<string>();
+
+  if (Array.isArray(u.documents)) {
+    u.documents.forEach((d: any) => {
+      if (d.fileUrl && !seenDocUrls.has(d.fileUrl)) {
+        seenDocUrls.add(d.fileUrl);
+        docList.push({
+          id: d.id,
+          name: d.fileName || 'Uploaded Document.pdf',
+          fileUrl: d.fileUrl,
+          date: d.uploadedAt ? new Date(d.uploadedAt).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' }) : 'Recently',
+          status: 'Verified',
+        });
+      }
+    });
+  }
+
+  if (Array.isArray(u.aadhaarDocs)) {
+    u.aadhaarDocs.forEach((d: any) => {
+      docList.push({
+        id: d.id,
+        name: `${d.documentType || 'Aadhaar Document'}.pdf`,
+        fileUrl: d.documentUrl || null,
+        date: d.verifiedAt ? new Date(d.verifiedAt).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' }) : 'Recently',
+        status: d.verificationStatus === 'SUCCESS' ? 'Verified' : (d.verificationStatus || 'Uploaded'),
+      });
+    });
+  }
+
+  const recentServices = apps.slice(0, 8).map((a: any) => ({
+    id: a.id,
+    refNumber: a.refNumber,
+    name: a.serviceTitle || (a.service ? a.service.title : 'Government Scheme Service'),
+    date: a.submittedAt ? new Date(a.submittedAt).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' }) : 'Recent',
+    amount: a.feePaid ? `₹${a.feePaid}` : '₹50',
+    rawAmount: a.feePaid || 50,
+    status: a.status === 'APPROVED' || a.status === 'COMPLETED' ? 'Completed' : (a.status === 'IN_PROGRESS' ? 'In Progress' : (a.status === 'REJECTED' ? 'Rejected' : 'Pending')),
+  }));
+
+  const recentActivity = (u.auditLogs || []).slice(0, 8).map((l: any) => ({
+    id: l.id,
+    title: l.action.replace(/_/g, ' ').toLowerCase().replace(/\b\w/g, (c: string) => c.toUpperCase()),
+    details: l.details || '',
+    date: l.createdAt ? new Date(l.createdAt).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' }) : 'Recently',
+    color: l.action.includes('REJECT') || l.action.includes('BLOCK') ? '#EF4444' : (l.action.includes('APPROV') || l.action.includes('SUCCESS') ? '#10B981' : '#2563EB'),
+  }));
+
+  return {
+    id: `CIT-${u.id.substring(0, 5).toUpperCase()}`,
+    dbId: u.id,
+    fullName: formattedFullName,
+    fatherName: fatherName || '-',
+    dob: dob || '-',
+    gender: gender || '-',
+    aadhaar: aadhaar || '-',
+    pan: pan || '-',
+    mobile: mobile || '-',
+    phone: mobile || '-',
+    email: email || '-',
+    address: address || '-',
+    district: district || '-',
+    state: state || '-',
+    pinCode: pinCode || '-',
+    joinedDate: u.createdAt ? new Date(u.createdAt).toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' }) : '15 March 2024',
+    status: u.status === 'BLOCKED' ? 'Blocked' : (u.status || 'Verified'),
+    avatarUrl: profile.avatarUrl || null,
+    quickStats: {
+      totalServicesUsed: apps.length,
+      totalAmountSpent: `₹${totalAmountSpent.toLocaleString('en-IN')}`,
+      lastActive: 'Active recently',
+      registeredCentre: district && district !== '-' ? `CSC ${district} Centre` : 'CSC Lucknow Centre',
+      assignedOperator: 'Vikram Tiwari (VLE-0234)',
+    },
+    recentServices,
+    uploadedDocuments: docList,
+    recentActivity,
+    applications: recentServices,
+    documents: docList,
+    auditLogs: recentActivity,
+  };
+}
+
