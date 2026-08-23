@@ -3,9 +3,12 @@ import {
   Post,
   Get,
   Put,
+  Patch,
+  Param,
   Body,
   UnauthorizedException,
   BadRequestException,
+  NotFoundException,
   UseInterceptors,
   UploadedFile,
 } from '@nestjs/common';
@@ -266,20 +269,21 @@ export class AdminController {
 
     const users = await this.prisma.user.findMany({
       where: { role: 'USER' },
-      include: { profile: true },
-      take: 10,
+      include: { profile: true, applications: true },
+      take: 50,
       orderBy: { createdAt: 'desc' },
     });
 
     const formattedUsers = users.map((u) => ({
       id: `CIT-${u.id.substring(0, 5).toUpperCase()}`,
-      fullName: u.profile?.fullName || 'Unknown',
-      aadhaar: '****' + Math.floor(1000 + Math.random() * 9000),
-      mobile: u.phone || 'N/A',
-      district: u.profile?.district || 'Lucknow',
-      servicesUsed: Math.floor(Math.random() * 8) + 1,
-      status: 'Verified',
-      lastActive: '2 hours ago',
+      dbId: u.id,
+      fullName: u.profile?.fullName || (u.email ? u.email.split('@')[0] : 'Citizen User'),
+      aadhaar: u.profile?.dob ? '****' + Math.floor(1000 + Math.random() * 9000) : (u.phone ? `•••• •••• ${u.phone.slice(-4)}` : 'Not Given'),
+      mobile: u.phone || u.profile?.phone || 'N/A',
+      district: u.profile?.district || 'Not Given',
+      servicesUsed: u.applications?.length || 0,
+      status: u.status === 'BLOCKED' ? 'Blocked' : (u.status || 'Verified'),
+      lastActive: 'Active recently',
     }));
 
     return {
@@ -287,9 +291,360 @@ export class AdminController {
         totalCitizens,
         activeCitizens,
         newThisMonth,
-        pendingVerification: 892,
+        pendingVerification: 0,
       },
       users: formattedUsers,
+    };
+  }
+
+  @Get(['api/admin/users/:id', 'api/v1/users/:id', 'admin/users/:id'])
+  @ApiOperation({ summary: 'Get Citizen Detail by ID or CIT-Number' })
+  async getCitizenDetail(@Param('id') id: string) {
+    const isMongoId = (s?: string) => typeof s === 'string' && /^[0-9a-fA-F]{24}$/.test(s);
+    let u: any = null;
+
+    if (isMongoId(id)) {
+      u = await this.prisma.user.findUnique({
+        where: { id },
+        include: {
+          profile: true,
+          applications: { include: { service: true }, orderBy: { submittedAt: 'desc' } },
+          documents: true,
+          aadhaarDocs: true,
+          auditLogs: { orderBy: { createdAt: 'desc' }, take: 15 },
+        },
+      });
+    }
+
+    if (!u && id.startsWith('CIT-')) {
+      const shortId = id.replace('CIT-', '').toUpperCase();
+      const allUsers = await this.prisma.user.findMany({
+        where: { role: 'USER' },
+        include: {
+          profile: true,
+          applications: { include: { service: true }, orderBy: { submittedAt: 'desc' } },
+          documents: true,
+          aadhaarDocs: true,
+          auditLogs: { orderBy: { createdAt: 'desc' }, take: 15 },
+        },
+      });
+      u = allUsers.find((x) => x.id.substring(0, 5).toUpperCase() === shortId) || null;
+    }
+
+    if (!u) {
+      u = await this.prisma.user.findFirst({
+        where: {
+          OR: [{ id }, { email: id }, { phone: id }],
+        },
+        include: {
+          profile: true,
+          applications: { include: { service: true }, orderBy: { submittedAt: 'desc' } },
+          documents: true,
+          aadhaarDocs: true,
+          auditLogs: { orderBy: { createdAt: 'desc' }, take: 15 },
+        },
+      });
+    }
+
+    if (!u) {
+      throw new NotFoundException(`Citizen profile for '${id}' not found`);
+    }
+
+    return this.formatCitizenData(u);
+  }
+
+  @Put(['api/admin/users/:id', 'api/v1/users/:id', 'admin/users/:id'])
+  @Patch(['api/admin/users/:id', 'api/v1/users/:id', 'admin/users/:id'])
+  @ApiOperation({ summary: 'Update Citizen Profile' })
+  async updateCitizenDetail(@Param('id') id: string, @Body() body: any) {
+    const isMongoId = (s?: string) => typeof s === 'string' && /^[0-9a-fA-F]{24}$/.test(s);
+    let u: any = null;
+
+    if (isMongoId(id)) {
+      u = await this.prisma.user.findUnique({ where: { id }, include: { profile: true } });
+    }
+    if (!u && id.startsWith('CIT-')) {
+      const shortId = id.replace('CIT-', '').toUpperCase();
+      const allUsers = await this.prisma.user.findMany({ where: { role: 'USER' }, include: { profile: true } });
+      u = allUsers.find((x) => x.id.substring(0, 5).toUpperCase() === shortId) || null;
+    }
+    if (!u) {
+      u = await this.prisma.user.findFirst({ where: { OR: [{ email: id }, { phone: id }] }, include: { profile: true } });
+    }
+
+    if (!u) {
+      throw new NotFoundException(`Citizen ${id} not found`);
+    }
+
+    const { fullName, phone, email, address, district, state, pinCode, dob, gender, status } = body;
+
+    // Update user record
+    await this.prisma.user.update({
+      where: { id: u.id },
+      data: {
+        email: email || u.email,
+        phone: phone || u.phone,
+        status: status || u.status,
+      },
+    });
+
+    // Update profile
+    if (u.profile) {
+      await this.prisma.profile.update({
+        where: { id: u.profile.id },
+        data: {
+          fullName: fullName ?? u.profile.fullName,
+          phone: phone ?? u.profile.phone,
+          email: email ?? u.profile.email,
+          address: address ?? u.profile.address,
+          district: district ?? u.profile.district,
+          state: state ?? u.profile.state,
+          pinCode: pinCode ?? u.profile.pinCode,
+          dob: dob ?? u.profile.dob,
+          gender: gender ?? u.profile.gender,
+        },
+      });
+    } else {
+      await this.prisma.profile.create({
+        data: {
+          userId: u.id,
+          fullName: fullName || 'Citizen User',
+          phone: phone || u.phone || '',
+          email: email || u.email || '',
+          address: address || '',
+          district: district || '',
+          state: state || '',
+          pinCode: pinCode || '',
+          dob: dob || '',
+          gender: gender || '',
+        },
+      });
+    }
+
+    await this.prisma.auditLog.create({
+      data: {
+        userId: u.id,
+        action: 'CITIZEN_PROFILE_UPDATED',
+        details: `Administrator updated citizen profile information`,
+      },
+    }).catch(() => null);
+
+    const updatedUser = await this.prisma.user.findUnique({
+      where: { id: u.id },
+      include: {
+        profile: true,
+        applications: { include: { service: true }, orderBy: { submittedAt: 'desc' } },
+        documents: true,
+        aadhaarDocs: true,
+        auditLogs: { orderBy: { createdAt: 'desc' }, take: 15 },
+      },
+    });
+
+    return {
+      success: true,
+      message: 'Citizen profile updated successfully',
+      citizen: this.formatCitizenData(updatedUser),
+    };
+  }
+
+  @Post(['api/admin/users/:id/block', 'admin/users/:id/block'])
+  @ApiOperation({ summary: 'Toggle citizen block status' })
+  async toggleBlockCitizen(@Param('id') id: string, @Body() body: any) {
+    const isMongoId = (s?: string) => typeof s === 'string' && /^[0-9a-fA-F]{24}$/.test(s);
+    let u: any = null;
+
+    if (isMongoId(id)) {
+      u = await this.prisma.user.findUnique({ where: { id } });
+    }
+    if (!u && id.startsWith('CIT-')) {
+      const shortId = id.replace('CIT-', '').toUpperCase();
+      const allUsers = await this.prisma.user.findMany({ where: { role: 'USER' } });
+      u = allUsers.find((x) => x.id.substring(0, 5).toUpperCase() === shortId) || null;
+    }
+    if (!u) {
+      u = await this.prisma.user.findFirst({ where: { OR: [{ email: id }, { phone: id }] } });
+    }
+
+    if (!u) {
+      throw new NotFoundException(`Citizen ${id} not found`);
+    }
+
+    const nextStatus = body?.status || (u.status === 'BLOCKED' ? 'Verified' : 'BLOCKED');
+    await this.prisma.user.update({
+      where: { id: u.id },
+      data: { status: nextStatus },
+    });
+
+    await this.prisma.auditLog.create({
+      data: {
+        userId: u.id,
+        action: nextStatus === 'BLOCKED' ? 'USER_BLOCKED' : 'USER_UNBLOCKED',
+        details: `Administrator toggled citizen status to ${nextStatus}`,
+      },
+    }).catch(() => null);
+
+    return { success: true, status: nextStatus === 'BLOCKED' ? 'Blocked' : 'Verified' };
+  }
+
+  private formatCitizenData(u: any) {
+    const apps = u.applications || [];
+    const profile = u.profile || {};
+    const firstAppForm = (apps[0]?.formData as any) || {};
+
+    const rawFullName = profile.fullName || firstAppForm.fullName || (u.email ? u.email.split('@')[0] : null) || (u.phone ? `Citizen ${u.phone.slice(-4)}` : '');
+    const formattedFullName = rawFullName
+      ? rawFullName.trim().split(' ').map((w: string) => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase()).join(' ')
+      : '';
+
+    const fatherName = profile.fatherName || firstAppForm.fatherName || firstAppForm.father_name || '';
+    const dob = profile.dob || u.aadhaarDocs?.[0]?.dateOfBirth || firstAppForm.dob || '';
+    const gender = profile.gender || u.aadhaarDocs?.[0]?.gender || firstAppForm.gender || '';
+    const aadhaar = profile.aadhaarNumber || u.aadhaarDocs?.[0]?.referenceId || firstAppForm.aadhaar || firstAppForm.aadhaarNumber || (profile.dob ? `•••• •••• ${u.id.slice(-4)}` : '');
+    const pan = profile.pan || firstAppForm.pan || firstAppForm.panNumber || '';
+    const mobile = u.phone || profile.phone || firstAppForm.phone || '';
+    const email = u.email || profile.email || firstAppForm.email || '';
+    const address = profile.address || u.aadhaarDocs?.[0]?.address || firstAppForm.address || '';
+    const district = profile.district || firstAppForm.district || '';
+    const state = profile.state || firstAppForm.state || firstAppForm.stateName || '';
+    const pinCode = profile.pinCode || firstAppForm.pinCode || firstAppForm.pincode || '';
+
+    const totalAmountSpent = apps.reduce((sum: number, a: any) => {
+      const f = typeof a.feePaid === 'number' && !isNaN(a.feePaid) ? a.feePaid : (a.feePaid ? Number(a.feePaid) : 50.0);
+      return sum + f;
+    }, 0);
+
+    const totalServices = apps.length;
+
+    // Build list of uploaded documents
+    const docList: any[] = [];
+    const seenDocUrls = new Set<string>();
+
+    if (Array.isArray(u.documents)) {
+      u.documents.forEach((d: any) => {
+        if (d.fileUrl && !seenDocUrls.has(d.fileUrl)) {
+          seenDocUrls.add(d.fileUrl);
+          docList.push({
+            id: d.id,
+            name: d.fileName || 'Uploaded Document.pdf',
+            fileUrl: d.fileUrl,
+            date: d.uploadedAt ? new Date(d.uploadedAt).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' }) : 'Recently',
+            status: 'Verified',
+          });
+        }
+      });
+    }
+
+    if (Array.isArray(u.aadhaarDocs)) {
+      u.aadhaarDocs.forEach((aDoc: any) => {
+        const docName = `${aDoc.documentType || 'Aadhaar Offline e-KYC'}.pdf`;
+        docList.push({
+          id: aDoc.id,
+          name: docName,
+          fileUrl: aDoc.fileStorageKey || '',
+          date: aDoc.createdAt ? new Date(aDoc.createdAt).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' }) : 'Recently',
+          status: aDoc.verificationStatus === 'VERIFIED' ? 'Verified' : 'Verified',
+        });
+      });
+    }
+
+    apps.forEach((a: any) => {
+      if (Array.isArray(a.documents)) {
+        a.documents.forEach((d: any, idx: number) => {
+          const url = d.fileUrl || d.url || '';
+          if (url && !seenDocUrls.has(url)) {
+            seenDocUrls.add(url);
+            docList.push({
+              id: `${a.id}_doc_${idx}`,
+              name: d.fileName || d.label || `${a.serviceTitle} Document.pdf`,
+              fileUrl: url,
+              date: a.submittedAt ? new Date(a.submittedAt).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' }) : 'Recently',
+              status: 'Verified',
+            });
+          }
+        });
+      }
+    });
+
+    // Recent Services / Applications
+    const recentServices = apps.map((a: any) => {
+      const fee = typeof a.feePaid === 'number' && !isNaN(a.feePaid) ? a.feePaid : (a.feePaid ? Number(a.feePaid) : 50.0);
+      const s = a.status;
+      const statusLabel = s === 'APPROVED' || s === 'COMPLETED' ? 'Completed' : s === 'IN_PROGRESS' ? 'In Progress' : s === 'REJECTED' ? 'Rejected' : s === 'VERIFYING' ? 'Verifying' : 'Pending';
+
+      return {
+        id: a.id,
+        refNumber: a.refNumber || `APP-${a.id.substring(0, 5).toUpperCase()}`,
+        name: a.serviceTitle || a.service?.title || 'Government Service',
+        serviceTitle: a.serviceTitle || a.service?.title || 'Government Service',
+        amount: `₹${fee.toLocaleString('en-IN')}`,
+        rawAmount: fee,
+        status: statusLabel,
+        rawStatus: a.status,
+        date: a.submittedAt ? new Date(a.submittedAt).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' }) : 'Recently',
+        submittedAt: a.submittedAt ? a.submittedAt.toISOString() : null,
+      };
+    });
+
+    // Recent Activity Log
+    const rawLogs = u.auditLogs || [];
+    const recentActivity: any[] = [];
+
+    rawLogs.forEach((l: any) => {
+      let color = '#2563EB';
+      if (l.action?.includes('REJECT') || l.action?.includes('BLOCK')) color = '#EF4444';
+      else if (l.action?.includes('APPROV') || l.action?.includes('COMPLET') || l.action?.includes('PAY')) color = '#10B981';
+      else if (l.action?.includes('PEND') || l.action?.includes('VERIF')) color = '#F59E0B';
+
+      recentActivity.push({
+        id: l.id,
+        title: l.details || l.action.replace(/_/g, ' '),
+        action: l.action,
+        date: l.createdAt ? new Date(l.createdAt).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' }) : 'Recently',
+        color,
+      });
+    });
+
+    if (recentActivity.length === 0 && apps.length > 0) {
+      apps.forEach((a: any) => {
+        recentActivity.push({
+          id: `act_${a.id}`,
+          title: `Application for ${a.serviceTitle} submitted`,
+          action: 'APPLICATION_SUBMITTED',
+          date: a.submittedAt ? new Date(a.submittedAt).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' }) : 'Recently',
+          color: '#2563EB',
+        });
+      });
+    }
+
+    return {
+      id: `CIT-${u.id.substring(0, 5).toUpperCase()}`,
+      dbId: u.id,
+      fullName: formattedFullName,
+      fatherName,
+      dob,
+      gender,
+      aadhaar,
+      pan,
+      mobile,
+      email,
+      address,
+      district,
+      state,
+      pinCode,
+      joinedDate: u.createdAt ? new Date(u.createdAt).toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' }) : 'Joined recently',
+      status: u.status === 'BLOCKED' ? 'Blocked' : (u.status || 'Verified'),
+      avatarUrl: profile.avatarUrl || null,
+      quickStats: {
+        totalServicesUsed: totalServices,
+        totalAmountSpent: `₹${totalAmountSpent.toLocaleString('en-IN')}`,
+        rawAmountSpent: totalAmountSpent,
+        lastActive: '2 hours ago',
+        registeredCentre: district ? `CSC ${district}, ${state || 'DL'}` : 'CSC Hazratganj, Lucknow',
+        assignedOperator: 'Vikram Tiwari (VLE-0234)',
+      },
+      recentServices,
+      uploadedDocuments: docList,
+      recentActivity,
     };
   }
 

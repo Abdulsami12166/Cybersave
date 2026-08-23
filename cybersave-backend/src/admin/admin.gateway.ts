@@ -220,26 +220,60 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
   ) {
     try {
       let realId = data.id;
-      let u = await this.prisma.user.findUnique({
-        where: { id: realId },
-        include: { profile: true },
-      });
+      const isMongoId = (s?: string) => typeof s === 'string' && /^[0-9a-fA-F]{24}$/.test(s);
+      let u: any = null;
+
+      if (isMongoId(realId)) {
+        u = await this.prisma.user.findUnique({
+          where: { id: realId },
+          include: {
+            profile: true,
+            applications: { include: { service: true }, orderBy: { submittedAt: 'desc' } },
+            documents: true,
+            aadhaarDocs: true,
+            auditLogs: { orderBy: { createdAt: 'desc' }, take: 15 },
+          },
+        });
+      }
 
       if (!u && realId.startsWith('CIT-')) {
         const shortId = realId.replace('CIT-', '').toUpperCase();
         const allUsers = await this.prisma.user.findMany({
           where: { role: 'USER' },
-          include: { profile: true },
+          include: {
+            profile: true,
+            applications: { include: { service: true }, orderBy: { submittedAt: 'desc' } },
+            documents: true,
+            aadhaarDocs: true,
+            auditLogs: { orderBy: { createdAt: 'desc' }, take: 15 },
+          },
         });
-        u =
-          allUsers.find((x) => x.id.substring(0, 5).toUpperCase() === shortId) ||
-          null;
+        u = allUsers.find((x) => x.id.substring(0, 5).toUpperCase() === shortId) || null;
+      }
+
+      if (!u) {
+        u = await this.prisma.user.findFirst({
+          where: { OR: [{ id: realId }, { email: realId }, { phone: realId }] },
+          include: {
+            profile: true,
+            applications: { include: { service: true }, orderBy: { submittedAt: 'desc' } },
+            documents: true,
+            aadhaarDocs: true,
+            auditLogs: { orderBy: { createdAt: 'desc' }, take: 15 },
+          },
+        });
       }
 
       if (!u) {
         u = await this.prisma.user.findFirst({
           where: { role: 'USER' },
-          include: { profile: true },
+          include: {
+            profile: true,
+            applications: { include: { service: true }, orderBy: { submittedAt: 'desc' } },
+            documents: true,
+            aadhaarDocs: true,
+            auditLogs: { orderBy: { createdAt: 'desc' }, take: 15 },
+          },
         });
       }
 
@@ -248,70 +282,130 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
         return;
       }
 
-      const apps = await this.prisma.application.findMany({
-        where: { userId: u.id },
-        orderBy: { submittedAt: 'desc' },
-      });
-
-      const logs = await this.prisma.auditLog.findMany({
-        where: { userId: u.id },
-        orderBy: { createdAt: 'desc' },
-      });
-
-      client.emit('response_user_detail', {
-        id: `CIT-${u.id.substring(0, 5).toUpperCase()}`,
-        dbId: u.id,
-        fullName: u.profile?.fullName || 'Unknown',
-        aadhaar: u.profile?.dob
-          ? '****' + Math.floor(1000 + Math.random() * 9000)
-          : 'Not Given',
-        mobile: u.phone || 'N/A',
-        email: u.email || 'N/A',
-        district: u.profile?.district || 'Not Given',
-        state: u.profile?.state || 'Not Given',
-        joinedDate: u.createdAt.toLocaleDateString(),
-        status: u.status === 'BLOCKED' ? 'BLOCKED' : u.status || 'Verified',
-        avatarUrl: u.profile?.avatarUrl || null,
-        applications: apps.map((a) => ({
-          id: `APP-${a.id.substring(0, 5).toUpperCase()}`,
-          refNumber: a.refNumber,
-          serviceTitle: a.serviceTitle,
-          status: a.status,
-          feePaid: a.feePaid,
-          submittedAt: a.submittedAt.toLocaleDateString(),
-        })),
-        auditLogs: logs.map((l) => ({
-          id: l.id,
-          action: l.action,
-          details: l.details || '',
-          createdAt:
-            l.createdAt.toLocaleDateString() +
-            ' ' +
-            l.createdAt.toLocaleTimeString(),
-        })),
-      });
+      const formatted = this.formatCitizenPayload(u);
+      client.emit('response_user_detail', formatted);
     } catch (e) {
       console.error('[AdminGateway] request_user_detail error:', e);
+    }
+  }
+
+  @SubscribeMessage('update_citizen_profile')
+  async handleUpdateCitizenProfile(
+    @ConnectedSocket() client: Socket,
+    @MessageBody() data: any,
+  ) {
+    try {
+      const { id, fullName, phone, email, address, district, state, pinCode, dob, gender, status } = data;
+      const isMongoId = (s?: string) => typeof s === 'string' && /^[0-9a-fA-F]{24}$/.test(s);
+      let u: any = null;
+
+      if (isMongoId(id)) {
+        u = await this.prisma.user.findUnique({ where: { id }, include: { profile: true } });
+      }
+      if (!u && id?.startsWith('CIT-')) {
+        const shortId = id.replace('CIT-', '').toUpperCase();
+        const allUsers = await this.prisma.user.findMany({ where: { role: 'USER' }, include: { profile: true } });
+        u = allUsers.find((x) => x.id.substring(0, 5).toUpperCase() === shortId) || null;
+      }
+      if (!u && id) {
+        u = await this.prisma.user.findFirst({ where: { OR: [{ id }, { email: id }, { phone: id }] }, include: { profile: true } });
+      }
+
+      if (!u) {
+        client.emit('update_citizen_error', { message: 'Citizen not found' });
+        return;
+      }
+
+      await this.prisma.user.update({
+        where: { id: u.id },
+        data: {
+          email: email || u.email,
+          phone: phone || u.phone,
+          status: status || u.status,
+        },
+      });
+
+      if (u.profile) {
+        await this.prisma.profile.update({
+          where: { id: u.profile.id },
+          data: {
+            fullName: fullName ?? u.profile.fullName,
+            phone: phone ?? u.profile.phone,
+            email: email ?? u.profile.email,
+            address: address ?? u.profile.address,
+            district: district ?? u.profile.district,
+            state: state ?? u.profile.state,
+            pinCode: pinCode ?? u.profile.pinCode,
+            dob: dob ?? u.profile.dob,
+            gender: gender ?? u.profile.gender,
+          },
+        });
+      } else {
+        await this.prisma.profile.create({
+          data: {
+            userId: u.id,
+            fullName: fullName || 'Citizen User',
+            phone: phone || u.phone || '',
+            email: email || u.email || '',
+            address: address || '',
+            district: district || '',
+            state: state || '',
+            pinCode: pinCode || '',
+            dob: dob || '',
+            gender: gender || '',
+          },
+        });
+      }
+
+      await this.prisma.auditLog.create({
+        data: {
+          userId: u.id,
+          action: 'CITIZEN_PROFILE_UPDATED',
+          details: `Admin updated citizen profile information`,
+        },
+      }).catch(() => null);
+
+      const updated = await this.prisma.user.findUnique({
+        where: { id: u.id },
+        include: {
+          profile: true,
+          applications: { include: { service: true }, orderBy: { submittedAt: 'desc' } },
+          documents: true,
+          aadhaarDocs: true,
+          auditLogs: { orderBy: { createdAt: 'desc' }, take: 15 },
+        },
+      });
+
+      const formatted = this.formatCitizenPayload(updated);
+      client.emit('update_citizen_success', formatted);
+      AdminGateway.broadcast('response_user_detail', formatted);
+      AdminGateway.broadcast('user_detail_updated', formatted);
+    } catch (e) {
+      console.error('[AdminGateway] update_citizen_profile error:', e);
+      client.emit('update_citizen_error', { message: e.message });
     }
   }
 
   @SubscribeMessage('block_citizen')
   async handleBlockCitizen(
     @ConnectedSocket() client: Socket,
-    @MessageBody() data: { id: string; status: string },
+    @MessageBody() data: { id: string; status?: string },
   ) {
     try {
       let realId = data.id;
-      let u = await this.prisma.user.findUnique({ where: { id: realId } });
+      const isMongoId = (s?: string) => typeof s === 'string' && /^[0-9a-fA-F]{24}$/.test(s);
+      let u: any = null;
 
-      if (!u && realId.startsWith('CIT-')) {
+      if (isMongoId(realId)) {
+        u = await this.prisma.user.findUnique({ where: { id: realId } });
+      }
+      if (!u && realId?.startsWith('CIT-')) {
         const shortId = realId.replace('CIT-', '').toUpperCase();
-        const allUsers = await this.prisma.user.findMany({
-          where: { role: 'USER' },
-        });
-        u =
-          allUsers.find((x) => x.id.substring(0, 5).toUpperCase() === shortId) ||
-          null;
+        const allUsers = await this.prisma.user.findMany({ where: { role: 'USER' } });
+        u = allUsers.find((x) => x.id.substring(0, 5).toUpperCase() === shortId) || null;
+      }
+      if (!u && realId) {
+        u = await this.prisma.user.findFirst({ where: { OR: [{ id: realId }, { email: realId }, { phone: realId }] } });
       }
 
       if (!u) {
@@ -319,23 +413,251 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
         return;
       }
 
+      const nextStatus = data.status || (u.status === 'BLOCKED' ? 'Verified' : 'BLOCKED');
+
       await this.prisma.user.update({
         where: { id: u.id },
-        data: { status: data.status },
+        data: { status: nextStatus },
       });
 
       await this.prisma.auditLog.create({
         data: {
           userId: u.id,
-          action: data.status === 'BLOCKED' ? 'USER_BLOCKED' : 'USER_UNBLOCKED',
-          details: `Admin changed user status to ${data.status}`,
+          action: nextStatus === 'BLOCKED' ? 'USER_BLOCKED' : 'USER_UNBLOCKED',
+          details: `Admin changed citizen status to ${nextStatus}`,
+        },
+      }).catch(() => null);
+
+      const updated = await this.prisma.user.findUnique({
+        where: { id: u.id },
+        include: {
+          profile: true,
+          applications: { include: { service: true }, orderBy: { submittedAt: 'desc' } },
+          documents: true,
+          aadhaarDocs: true,
+          auditLogs: { orderBy: { createdAt: 'desc' }, take: 15 },
         },
       });
 
-      client.emit('block_citizen_success');
+      const formatted = this.formatCitizenPayload(updated);
+      client.emit('block_citizen_success', formatted);
+      AdminGateway.broadcast('response_user_detail', formatted);
+      AdminGateway.broadcast('user_detail_updated', formatted);
     } catch (e) {
       console.error('[AdminGateway] block_citizen error:', e);
     }
+  }
+
+  @SubscribeMessage('send_push_notification')
+  async handleSendPushNotification(
+    @ConnectedSocket() client: Socket,
+    @MessageBody() data: { userId: string; title: string; body: string; type?: string },
+  ) {
+    try {
+      const { userId, title, body, type } = data;
+      const isMongoId = (s?: string) => typeof s === 'string' && /^[0-9a-fA-F]{24}$/.test(s);
+      let u: any = null;
+
+      if (isMongoId(userId)) {
+        u = await this.prisma.user.findUnique({ where: { id: userId } });
+      }
+      if (!u && userId?.startsWith('CIT-')) {
+        const shortId = userId.replace('CIT-', '').toUpperCase();
+        const allUsers = await this.prisma.user.findMany({ where: { role: 'USER' } });
+        u = allUsers.find((x) => x.id.substring(0, 5).toUpperCase() === shortId) || null;
+      }
+      if (!u && userId) {
+        u = await this.prisma.user.findFirst({ where: { OR: [{ id: userId }, { email: userId }, { phone: userId }] } });
+      }
+
+      const targetUserId = u ? u.id : userId;
+
+      if (targetUserId && isMongoId(targetUserId)) {
+        await this.prisma.notification.create({
+          data: {
+            userId: targetUserId,
+            title: title || 'Cybersave Notification',
+            body: body || '',
+            status: 'SENT',
+            sentAt: new Date(),
+          },
+        }).catch(() => null);
+
+        await this.prisma.auditLog.create({
+          data: {
+            userId: targetUserId,
+            action: 'NOTIFICATION_SENT',
+            details: `Dispatch sent: "${title}"`,
+          },
+        }).catch(() => null);
+      }
+
+      client.emit('response_push_sent', { success: true, message: 'Notification dispatched successfully' });
+    } catch (e) {
+      console.error('[AdminGateway] send_push_notification error:', e);
+      client.emit('response_push_sent', { success: false, error: e.message });
+    }
+  }
+
+  private formatCitizenPayload(u: any) {
+    const apps = u.applications || [];
+    const profile = u.profile || {};
+    const firstAppForm = (apps[0]?.formData as any) || {};
+
+    const rawFullName = profile.fullName || firstAppForm.fullName || (u.email ? u.email.split('@')[0] : null) || (u.phone ? `Citizen ${u.phone.slice(-4)}` : '');
+    const formattedFullName = rawFullName
+      ? rawFullName.trim().split(' ').map((w: string) => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase()).join(' ')
+      : '';
+
+    const fatherName = profile.fatherName || firstAppForm.fatherName || firstAppForm.father_name || '';
+    const dob = profile.dob || u.aadhaarDocs?.[0]?.dateOfBirth || firstAppForm.dob || '';
+    const gender = profile.gender || u.aadhaarDocs?.[0]?.gender || firstAppForm.gender || '';
+    const aadhaar = profile.aadhaarNumber || u.aadhaarDocs?.[0]?.referenceId || firstAppForm.aadhaar || firstAppForm.aadhaarNumber || (profile.dob ? `•••• •••• ${u.id.slice(-4)}` : '');
+    const pan = profile.pan || firstAppForm.pan || firstAppForm.panNumber || '';
+    const mobile = u.phone || profile.phone || firstAppForm.phone || '';
+    const email = u.email || profile.email || firstAppForm.email || '';
+    const address = profile.address || u.aadhaarDocs?.[0]?.address || firstAppForm.address || '';
+    const district = profile.district || firstAppForm.district || '';
+    const state = profile.state || firstAppForm.state || firstAppForm.stateName || '';
+    const pinCode = profile.pinCode || firstAppForm.pinCode || firstAppForm.pincode || '';
+
+    const totalAmountSpent = apps.reduce((sum: number, a: any) => {
+      const f = typeof a.feePaid === 'number' && !isNaN(a.feePaid) ? a.feePaid : (a.feePaid ? Number(a.feePaid) : 50.0);
+      return sum + f;
+    }, 0);
+
+    const totalServices = apps.length;
+
+    // Documents
+    const docList: any[] = [];
+    const seenDocUrls = new Set<string>();
+
+    if (Array.isArray(u.documents)) {
+      u.documents.forEach((d: any) => {
+        if (d.fileUrl && !seenDocUrls.has(d.fileUrl)) {
+          seenDocUrls.add(d.fileUrl);
+          docList.push({
+            id: d.id,
+            name: d.fileName || 'Uploaded Document.pdf',
+            fileUrl: d.fileUrl,
+            date: d.uploadedAt ? new Date(d.uploadedAt).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' }) : 'Recently',
+            status: 'Verified',
+          });
+        }
+      });
+    }
+
+    if (Array.isArray(u.aadhaarDocs)) {
+      u.aadhaarDocs.forEach((aDoc: any) => {
+        docList.push({
+          id: aDoc.id,
+          name: `${aDoc.documentType || 'Aadhaar Offline e-KYC'}.pdf`,
+          fileUrl: aDoc.fileStorageKey || '',
+          date: aDoc.createdAt ? new Date(aDoc.createdAt).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' }) : 'Recently',
+          status: 'Verified',
+        });
+      });
+    }
+
+    apps.forEach((a: any) => {
+      if (Array.isArray(a.documents)) {
+        a.documents.forEach((d: any, idx: number) => {
+          const url = d.fileUrl || d.url || '';
+          if (url && !seenDocUrls.has(url)) {
+            seenDocUrls.add(url);
+            docList.push({
+              id: `${a.id}_doc_${idx}`,
+              name: d.fileName || d.label || `${a.serviceTitle} Document.pdf`,
+              fileUrl: url,
+              date: a.submittedAt ? new Date(a.submittedAt).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' }) : 'Recently',
+              status: 'Verified',
+            });
+          }
+        });
+      }
+    });
+
+    // Recent Services
+    const recentServices = apps.map((a: any) => {
+      const fee = typeof a.feePaid === 'number' && !isNaN(a.feePaid) ? a.feePaid : (a.feePaid ? Number(a.feePaid) : 50.0);
+      const s = a.status;
+      const statusLabel = s === 'APPROVED' || s === 'COMPLETED' ? 'Completed' : s === 'IN_PROGRESS' ? 'In Progress' : s === 'REJECTED' ? 'Rejected' : s === 'VERIFYING' ? 'Verifying' : 'Pending';
+
+      return {
+        id: a.id,
+        refNumber: a.refNumber || `APP-${a.id.substring(0, 5).toUpperCase()}`,
+        name: a.serviceTitle || a.service?.title || 'Government Service',
+        serviceTitle: a.serviceTitle || a.service?.title || 'Government Service',
+        amount: `₹${fee.toLocaleString('en-IN')}`,
+        rawAmount: fee,
+        status: statusLabel,
+        rawStatus: a.status,
+        date: a.submittedAt ? new Date(a.submittedAt).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' }) : 'Recently',
+        submittedAt: a.submittedAt ? a.submittedAt.toISOString() : null,
+      };
+    });
+
+    // Recent Activity
+    const rawLogs = u.auditLogs || [];
+    const recentActivity: any[] = [];
+
+    rawLogs.forEach((l: any) => {
+      let color = '#2563EB';
+      if (l.action?.includes('REJECT') || l.action?.includes('BLOCK')) color = '#EF4444';
+      else if (l.action?.includes('APPROV') || l.action?.includes('COMPLET') || l.action?.includes('PAY')) color = '#10B981';
+      else if (l.action?.includes('PEND') || l.action?.includes('VERIF')) color = '#F59E0B';
+
+      recentActivity.push({
+        id: l.id,
+        title: l.details || l.action.replace(/_/g, ' '),
+        action: l.action,
+        date: l.createdAt ? new Date(l.createdAt).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' }) : 'Recently',
+        color,
+      });
+    });
+
+    if (recentActivity.length === 0 && apps.length > 0) {
+      apps.forEach((a: any) => {
+        recentActivity.push({
+          id: `act_${a.id}`,
+          title: `Application for ${a.serviceTitle} submitted`,
+          action: 'APPLICATION_SUBMITTED',
+          date: a.submittedAt ? new Date(a.submittedAt).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' }) : 'Recently',
+          color: '#2563EB',
+        });
+      });
+    }
+
+    return {
+      id: `CIT-${u.id.substring(0, 5).toUpperCase()}`,
+      dbId: u.id,
+      fullName: formattedFullName,
+      fatherName,
+      dob,
+      gender,
+      aadhaar,
+      pan,
+      mobile,
+      email,
+      address,
+      district,
+      state,
+      pinCode,
+      joinedDate: u.createdAt ? new Date(u.createdAt).toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' }) : 'Joined recently',
+      status: u.status === 'BLOCKED' ? 'Blocked' : (u.status || 'Verified'),
+      avatarUrl: profile.avatarUrl || null,
+      quickStats: {
+        totalServicesUsed: totalServices,
+        totalAmountSpent: `₹${totalAmountSpent.toLocaleString('en-IN')}`,
+        rawAmountSpent: totalAmountSpent,
+        lastActive: '2 hours ago',
+        registeredCentre: district ? `CSC ${district}, ${state || 'DL'}` : 'CSC Hazratganj, Lucknow',
+        assignedOperator: 'Vikram Tiwari (VLE-0234)',
+      },
+      recentServices,
+      uploadedDocuments: docList,
+      recentActivity,
+    };
   }
 
   @SubscribeMessage('request_applications_data')
