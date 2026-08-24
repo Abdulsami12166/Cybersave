@@ -41,81 +41,6 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
     console.log('[AdminGateway] Client disconnected:', client.id);
   }
 
-  // ponytail: single application detail fetch for the full-page detail view
-  @SubscribeMessage('request_application_detail')
-  async handleApplicationDetail(
-    @ConnectedSocket() client: Socket,
-    @MessageBody() data: { id: string },
-  ) {
-    try {
-      const id = data?.id;
-      if (!id) return;
-      const isMongoId = (s?: string) => typeof s === 'string' && /^[0-9a-fA-F]{24}$/.test(s);
-      const orConditions: any[] = [{ refNumber: id }];
-      if (isMongoId(id)) orConditions.push({ id });
-
-      const app = await this.prisma.application.findFirst({
-        where: { OR: orConditions },
-        include: {
-          service: true,
-          user: { include: { profile: true } },
-          documentUploads: true,
-        },
-      });
-
-      if (!app) {
-        client.emit('response_application_detail', null);
-        return;
-      }
-
-      // Build a formatted response matching what the frontend expects
-      const profile = app.user?.profile;
-      const formData = (app.formData as any) || {};
-      const docs = (app.documents as any) || [];
-
-      const formatted = {
-        id: app.refNumber,
-        rawId: app.id,
-        refNumber: app.refNumber,
-        status: app.status,
-        serviceName: app.serviceTitle || app.service?.title || 'Government Service',
-        serviceCategory: app.service?.category || 'Government',
-        submitted: new Date(app.submittedAt).toLocaleString('en-IN', { day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit', hour12: true }),
-        submittedAt: app.submittedAt,
-        updatedAt: app.updatedAt,
-        assignedTo: app.officialOfficer || 'Officer Sharma (SDM)',
-        centre: formData.district ? `CSC ${formData.district}, ${formData.stateName || formData.state || ''}` : 'CSC Centre',
-        sla: '24h',
-        paymentStatus: app.paymentStatus || 'Success',
-        feePaid: app.feePaid || 50,
-        razorpayPaymentId: app.razorpayPaymentId,
-        razorpayOrderId: app.razorpayOrderId,
-        rejectionReason: app.rejectionReason,
-        applicant: {
-          name: profile?.fullName || formData.fullName || 'Citizen Applicant',
-          email: app.user?.email || formData.email || '',
-          phone: app.user?.phone || profile?.phone || formData.phone || '',
-          aadhaar: (profile as any)?.aadhaarNumber || formData.aadhaarNumber || 'XXXX XXXX ****',
-          dob: profile?.dob || formData.dob || '',
-          gender: profile?.gender || formData.gender || '',
-          address: profile?.address || formData.address || '',
-          state: profile?.state || formData.stateName || formData.state || '',
-          district: profile?.district || formData.district || '',
-          pinCode: profile?.pinCode || formData.pinCode || '',
-          citizenId: app.userId,
-        },
-        formData,
-        documents: Array.isArray(docs) ? docs.filter((d: any) => d && typeof d === 'object' && (d.fileUrl || d.url || d.fileName || d.label)) : [],
-        documentUploads: app.documentUploads || [],
-      };
-
-      client.emit('response_application_detail', formatted);
-    } catch (err) {
-      console.error('[AdminGateway] application detail error:', err.message);
-      client.emit('response_application_detail', null);
-    }
-  }
-
   @SubscribeMessage('request_dashboard_data')
   async handleDashboardData(@ConnectedSocket() client: Socket) {
     try {
@@ -973,10 +898,12 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
     @MessageBody() data: { id: string },
   ) {
     try {
+      const id = data?.id;
+      if (!id) return;
       const isMongoId = (idStr?: string) => typeof idStr === 'string' && /^[0-9a-fA-F]{24}$/.test(idStr);
-      const orConditions: any[] = [{ refNumber: data.id }];
-      if (isMongoId(data.id)) {
-        orConditions.push({ id: data.id });
+      const orConditions: any[] = [{ refNumber: id }];
+      if (isMongoId(id)) {
+        orConditions.push({ id });
       }
 
       const app = await this.prisma.application.findFirst({
@@ -984,78 +911,93 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
         include: {
           user: { include: { profile: true } },
           service: true,
+          documentUploads: true,
         },
       });
 
-      if (app) {
-        let docs = (app.documents as any) || [];
-        const hasValidDocs =
-          Array.isArray(docs) &&
-          docs.length > 0 &&
-          docs.some(
-            (d: any) =>
-              d &&
-              typeof d === 'object' &&
-              !Array.isArray(d) &&
-              (d.fileUrl || d.url || d.uri),
-          );
-
-        if (!hasValidDocs && app.userId) {
-          const userDocs = await this.prisma.documentUpload.findMany({
-            where: { userId: app.userId },
-            orderBy: { uploadedAt: 'desc' },
-            take: 4,
-          });
-          if (userDocs.length > 0) {
-            docs = userDocs.map((ud, idx) => ({
-              label: `Document Proof #${idx + 1}`,
-              fileName: ud.fileName || `proof_${idx + 1}.jpg`,
-              fileUrl: ud.fileUrl,
-              type: 'Identity Proof',
-            }));
-          }
-        }
-
-        const cleanedDocs = (Array.isArray(docs) ? docs : [])
-          .filter((d: any) => d && typeof d === 'object' && !Array.isArray(d) && (d.fileUrl || d.url || d.uri || d.fileName || d.label))
-          .map((d: any, idx: number) => ({
-            label: d.label || `Document Proof #${idx + 1}`,
-            fileName: d.fileName || `proof_${idx + 1}.jpg`,
-            fileUrl: d.fileUrl || d.url || d.uri || '',
-            type: d.type || 'Identity Proof',
-          }));
-
-        client.emit('response_application_detail', {
-          id: app.refNumber,
-          rawId: app.id,
-          serviceName: app.serviceTitle,
-          sla: '24h',
-          submitted: app.submittedAt ? app.submittedAt.toLocaleString('en-IN') : 'Today',
-          assignedTo: app.officialOfficer || 'Officer Sharma (SDM)',
-          centre: 'CyberSave E-Gov Portal Central Hub',
-          status: app.status,
-          rejectionReason: app.rejectionReason,
-          feePaid: app.feePaid || 50.0,
-          paymentStatus: app.paymentStatus || 'Success',
-          razorpayPaymentId: app.razorpayPaymentId || '',
-          razorpayOrderId: app.razorpayOrderId || '',
-          formData: app.formData,
-          documents: cleanedDocs,
-          applicant: {
-            name: app.user?.profile?.fullName || (app.formData as any)?.fullName || 'Applicant',
-            email: app.user?.email || (app.formData as any)?.email,
-            phone: app.user?.phone || app.user?.profile?.phone || (app.formData as any)?.phone,
-            aadhaar: (app.user?.profile as any)?.aadhaarNumber || (app.formData as any)?.aadhaarNumber || 'Verified ID Vault',
-            dob: app.user?.profile?.dob || (app.formData as any)?.dob,
-            gender: app.user?.profile?.gender || (app.formData as any)?.gender,
-            state: app.user?.profile?.state || (app.formData as any)?.state,
-            district: app.user?.profile?.district || (app.formData as any)?.district,
-            address: app.user?.profile?.address || (app.formData as any)?.address,
-          },
-        });
+      if (!app) {
+        client.emit('response_application_detail', null);
+        return;
       }
+
+      let docs = (app.documents as any) || [];
+      const hasValidDocs =
+        Array.isArray(docs) &&
+        docs.length > 0 &&
+        docs.some(
+          (d: any) =>
+            d &&
+            typeof d === 'object' &&
+            !Array.isArray(d) &&
+            (d.fileUrl || d.url || d.uri),
+        );
+
+      if (!hasValidDocs && app.userId) {
+        const userDocs = await this.prisma.documentUpload.findMany({
+          where: { userId: app.userId },
+          orderBy: { uploadedAt: 'desc' },
+          take: 4,
+        });
+        if (userDocs.length > 0) {
+          docs = userDocs.map((ud, idx) => ({
+            label: `Document Proof #${idx + 1}`,
+            fileName: ud.fileName || `proof_${idx + 1}.jpg`,
+            fileUrl: ud.fileUrl,
+            type: 'Identity Proof',
+          }));
+        }
+      }
+
+      const cleanedDocs = (Array.isArray(docs) ? docs : [])
+        .filter((d: any) => d && typeof d === 'object' && !Array.isArray(d) && (d.fileUrl || d.url || d.uri || d.fileName || d.label))
+        .map((d: any, idx: number) => ({
+          label: d.label || `Document Proof #${idx + 1}`,
+          fileName: d.fileName || `proof_${idx + 1}.jpg`,
+          fileUrl: d.fileUrl || d.url || d.uri || '',
+          type: d.type || 'Identity Proof',
+        }));
+
+      const profile = app.user?.profile;
+      const formData = (app.formData as any) || {};
+
+      client.emit('response_application_detail', {
+        id: app.refNumber,
+        rawId: app.id,
+        refNumber: app.refNumber,
+        serviceName: app.serviceTitle || app.service?.title || 'Government Service',
+        serviceCategory: app.service?.category || 'Government',
+        sla: '24h',
+        submitted: app.submittedAt ? new Date(app.submittedAt).toLocaleString('en-IN', { day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit', hour12: true }) : 'Today',
+        submittedAt: app.submittedAt,
+        updatedAt: app.updatedAt,
+        assignedTo: app.officialOfficer || 'Officer Sharma (SDM)',
+        centre: formData.district ? `CSC ${formData.district}, ${formData.stateName || formData.state || ''}` : 'CSC Centre',
+        status: app.status,
+        rejectionReason: app.rejectionReason,
+        feePaid: app.feePaid || 50.0,
+        paymentStatus: app.paymentStatus || 'Success',
+        razorpayPaymentId: app.razorpayPaymentId || '',
+        razorpayOrderId: app.razorpayOrderId || '',
+        formData: app.formData,
+        documents: cleanedDocs,
+        documentUploads: app.documentUploads || [],
+        applicant: {
+          name: profile?.fullName || formData?.fullName || 'Citizen Applicant',
+          email: app.user?.email || formData?.email || '',
+          phone: app.user?.phone || profile?.phone || formData?.phone || '',
+          aadhaar: (profile as any)?.aadhaarNumber || formData?.aadhaarNumber || 'XXXX XXXX ****',
+          dob: profile?.dob || formData?.dob || '',
+          gender: profile?.gender || formData?.gender || '',
+          state: profile?.state || formData?.stateName || formData?.state || '',
+          district: profile?.district || formData?.district || '',
+          pinCode: profile?.pinCode || formData?.pinCode || '',
+          address: profile?.address || formData?.address || '',
+          citizenId: app.userId,
+        },
+      });
     } catch (e) {
       console.error('[AdminGateway] request_application_detail error:', e);
+      client.emit('response_application_detail', null);
     }
   }
 
