@@ -41,6 +41,81 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
     console.log('[AdminGateway] Client disconnected:', client.id);
   }
 
+  // ponytail: single application detail fetch for the full-page detail view
+  @SubscribeMessage('request_application_detail')
+  async handleApplicationDetail(
+    @ConnectedSocket() client: Socket,
+    @MessageBody() data: { id: string },
+  ) {
+    try {
+      const id = data?.id;
+      if (!id) return;
+      const isMongoId = (s?: string) => typeof s === 'string' && /^[0-9a-fA-F]{24}$/.test(s);
+      const orConditions: any[] = [{ refNumber: id }];
+      if (isMongoId(id)) orConditions.push({ id });
+
+      const app = await this.prisma.application.findFirst({
+        where: { OR: orConditions },
+        include: {
+          service: true,
+          user: { include: { profile: true } },
+          documentUploads: true,
+        },
+      });
+
+      if (!app) {
+        client.emit('response_application_detail', null);
+        return;
+      }
+
+      // Build a formatted response matching what the frontend expects
+      const profile = app.user?.profile;
+      const formData = (app.formData as any) || {};
+      const docs = (app.documents as any) || [];
+
+      const formatted = {
+        id: app.refNumber,
+        rawId: app.id,
+        refNumber: app.refNumber,
+        status: app.status,
+        serviceName: app.serviceTitle || app.service?.title || 'Government Service',
+        serviceCategory: app.service?.category || 'Government',
+        submitted: new Date(app.submittedAt).toLocaleString('en-IN', { day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit', hour12: true }),
+        submittedAt: app.submittedAt,
+        updatedAt: app.updatedAt,
+        assignedTo: app.officialOfficer || 'Officer Sharma (SDM)',
+        centre: formData.district ? `CSC ${formData.district}, ${formData.stateName || formData.state || ''}` : 'CSC Centre',
+        sla: '24h',
+        paymentStatus: app.paymentStatus || 'Success',
+        feePaid: app.feePaid || 50,
+        razorpayPaymentId: app.razorpayPaymentId,
+        razorpayOrderId: app.razorpayOrderId,
+        rejectionReason: app.rejectionReason,
+        applicant: {
+          name: profile?.fullName || formData.fullName || 'Citizen Applicant',
+          email: app.user?.email || formData.email || '',
+          phone: app.user?.phone || profile?.phone || formData.phone || '',
+          aadhaar: (profile as any)?.aadhaarNumber || formData.aadhaarNumber || 'XXXX XXXX ****',
+          dob: profile?.dob || formData.dob || '',
+          gender: profile?.gender || formData.gender || '',
+          address: profile?.address || formData.address || '',
+          state: profile?.state || formData.stateName || formData.state || '',
+          district: profile?.district || formData.district || '',
+          pinCode: profile?.pinCode || formData.pinCode || '',
+          citizenId: app.userId,
+        },
+        formData,
+        documents: Array.isArray(docs) ? docs.filter((d: any) => d && typeof d === 'object' && (d.fileUrl || d.url || d.fileName || d.label)) : [],
+        documentUploads: app.documentUploads || [],
+      };
+
+      client.emit('response_application_detail', formatted);
+    } catch (err) {
+      console.error('[AdminGateway] application detail error:', err.message);
+      client.emit('response_application_detail', null);
+    }
+  }
+
   @SubscribeMessage('request_dashboard_data')
   async handleDashboardData(@ConnectedSocket() client: Socket) {
     try {

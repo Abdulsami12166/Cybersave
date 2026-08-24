@@ -291,6 +291,7 @@ export class ApplicationsService {
       include: { 
         service: true,
         user: { include: { profile: true } },
+        documentUploads: true,
       },
     });
 
