@@ -106,8 +106,8 @@ export class AuthService {
       throw new UnauthorizedException('Invalid email or password');
     }
 
-    if (user.status === 'BLOCKED') {
-      throw new UnauthorizedException('Your account has been blocked by the Administrator.');
+    if (user.status === 'BLOCKED' || user.status === 'SUSPENDED') {
+      throw new UnauthorizedException('Your account has been suspended/blocked by an Administrator. Please contact support.');
     }
 
     if (password && user.passwordHash) {

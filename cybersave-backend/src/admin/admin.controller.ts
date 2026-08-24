@@ -17,6 +17,7 @@ import { ApiTags, ApiOperation } from '@nestjs/swagger';
 import { PrismaService } from '../database/prisma.service';
 import { JwtService } from '@nestjs/jwt';
 import { CloudinaryService } from '../common/services/cloudinary.service';
+import { AdminGateway } from './admin.gateway';
 import * as bcrypt from 'bcrypt';
 
 @ApiTags('Admin Portal')
@@ -146,6 +147,10 @@ export class AdminController {
 
     if (!user || !user.passwordHash) {
       throw new UnauthorizedException('Invalid credentials or not an admin');
+    }
+
+    if (user.status === 'SUSPENDED' || user.status === 'BLOCKED') {
+      throw new UnauthorizedException('Your account has been suspended/blocked by an Administrator. Please contact support.');
     }
 
     const isMatch = await bcrypt.compare(password, user.passwordHash);
@@ -1061,6 +1066,13 @@ export class AdminController {
       },
     }).catch(() => null);
 
+    // If suspended, forcefully disconnect / log out the operator
+    if (targetStatus === 'SUSPENDED') {
+      AdminGateway.broadcast('force_logout', { userId: user.id, message: 'Your account has been suspended by an Administrator.' });
+      AdminGateway.broadcast('operator_suspended', { userId: user.id });
+    }
+    AdminGateway.broadcast('operators_updated');
+
     return { success: true, status: targetStatus };
   }
 
@@ -1089,6 +1101,36 @@ export class AdminController {
     }).catch(() => null);
 
     return { success: true, message: 'Password has been reset successfully' };
+  }
+
+  @Post(['api/v1/operators/:id/request-document-update', 'api/admin/operators/:id/request-document-update'])
+  @ApiOperation({ summary: 'Send Document Update Request to Operator' })
+  async requestDocumentUpdate(@Param('id') id: string, @Body() body: any) {
+    const isMongoId = (s?: string) => typeof s === 'string' && /^[0-9a-fA-F]{24}$/.test(s);
+    const user = isMongoId(id) ? await this.prisma.user.findUnique({ where: { id } }) : await this.prisma.user.findFirst({ where: { email: id } });
+    if (!user) throw new NotFoundException(`Operator ${id} not found`);
+
+    await this.prisma.notification.create({
+      data: {
+        userId: user.id,
+        title: 'Document Update Required',
+        body: 'Administrator has requested an immediate update/re-upload of your identity and credential compliance documents.',
+        type: 'SECURITY',
+        status: 'PENDING',
+      },
+    }).catch(() => null);
+
+    await this.prisma.auditLog.create({
+      data: {
+        userId: user.id,
+        action: 'DOCUMENT_UPDATE_REQUESTED',
+        details: 'Administrator dispatched document update compliance request to operator',
+      },
+    }).catch(() => null);
+
+    AdminGateway.broadcast('operator_document_update_requested', { userId: user.id });
+
+    return { success: true, message: 'Document update request dispatched to operator successfully' };
   }
 
   private async formatOperatorDetail(o: any) {
