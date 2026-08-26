@@ -64,4 +64,20 @@ export class ApplicationsController {
   ) {
     return this.applicationsService.updateStatus(id, 'REJECTED', body?.rejectionReason);
   }
+
+  @Post(':id/assign')
+  async assignApplicationPost(
+    @Param('id') id: string,
+    @Body() body: { operatorName: string; operatorId?: string },
+  ) {
+    return this.applicationsService.assignOperator(id, body.operatorName, body.operatorId);
+  }
+
+  @Put(':id/assign')
+  async assignApplicationPut(
+    @Param('id') id: string,
+    @Body() body: { operatorName: string; operatorId?: string },
+  ) {
+    return this.applicationsService.assignOperator(id, body.operatorName, body.operatorId);
+  }
 }

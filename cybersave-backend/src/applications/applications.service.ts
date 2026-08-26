@@ -372,4 +372,53 @@ export class ApplicationsService {
 
     return updated;
   }
+
+  async assignOperator(id: string, operatorName: string, operatorId?: string) {
+    const isMongoId = (idStr?: string) => typeof idStr === 'string' && /^[0-9a-fA-F]{24}$/.test(idStr);
+    const orConditions: any[] = [{ refNumber: id }];
+    if (isMongoId(id)) {
+      orConditions.push({ id });
+    }
+
+    const app = await this.prisma.application.findFirst({
+      where: { OR: orConditions },
+    });
+
+    if (!app) {
+      throw new NotFoundException(`Application ${id} not found`);
+    }
+
+    const updated = await this.prisma.application.update({
+      where: { id: app.id },
+      data: {
+        officialOfficer: operatorName,
+        updatedAt: new Date(),
+      },
+      include: {
+        user: { include: { profile: true } },
+        service: true,
+      },
+    });
+
+    await this.prisma.auditLog.create({
+      data: {
+        userId: app.userId,
+        action: 'APPLICATION_ASSIGNED_TO_OPERATOR',
+        details: `Application #${app.refNumber} assigned to Sub-Admin / Operator: ${operatorName}`,
+      },
+    }).catch(() => null);
+
+    try {
+      AdminGateway.broadcast('applications_updated', updated);
+      AdminGateway.broadcast('application_assigned', { applicationId: app.id, assignedTo: operatorName });
+    } catch (wsErr) {
+      this.logger.warn(`WS broadcast error: ${wsErr.message}`);
+    }
+
+    return {
+      success: true,
+      message: `Application successfully assigned to ${operatorName}`,
+      application: updated,
+    };
+  }
 }
