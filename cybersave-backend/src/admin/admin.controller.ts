@@ -184,8 +184,10 @@ export class AdminController {
         id: user.id,
         email: user.email || normalizedEmail,
         name: user.profile?.fullName || (user.email === 'admin@cybersave.com' ? 'Super Administrator' : (user.email ? user.email.split('@')[0] : 'Operator')),
-        role: user.email === 'admin@cybersave.com' ? 'Super Admin' : 'Sub-Admin / Operator',
-        permissions: user.permissions || [],
+        role: user.email === 'admin@cybersave.com' || user.role === 'ADMIN' ? 'Super Admin' : 'Sub-Admin / Operator',
+        permissions: (user.permissions && user.permissions.length > 0)
+          ? user.permissions
+          : ['ALL', 'DASHBOARD', 'USERS', 'APPLICATIONS', 'OPERATORS', 'SETTINGS', 'REPORTS'],
       },
     };
   }
