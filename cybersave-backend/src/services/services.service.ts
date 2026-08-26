@@ -127,9 +127,13 @@ export class ServicesService implements OnModuleInit {
       if (category && category !== 'All') {
         return await this.prisma.service.findMany({
           where: { category, isActive: true },
+          orderBy: { updatedAt: 'desc' },
         });
       }
-      return await this.prisma.service.findMany({ where: { isActive: true } });
+      return await this.prisma.service.findMany({
+        where: { isActive: true },
+        orderBy: { updatedAt: 'desc' },
+      });
     } catch (error) {
       this.logger.warn(
         `Database query fallback for services: ${error.message}`,
