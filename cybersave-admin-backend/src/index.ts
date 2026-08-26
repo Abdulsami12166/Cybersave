@@ -595,6 +595,88 @@ app.get('/api/admin/operators', async (req, res) => {
   } catch (e) { res.status(500).json({ error: e }); }
 });
 
+// --- Services REST Endpoints ---
+app.get(['/api/v1/services', '/api/services'], async (req: any, res: any) => {
+  try {
+    const category = req.query.category;
+    let whereClause: any = { isActive: true };
+    if (category && category !== 'All') {
+      whereClause.category = category;
+    }
+    const services = await prisma.service.findMany({ where: whereClause });
+    res.json(services);
+  } catch (e) {
+    res.status(500).json({ error: (e as any).message });
+  }
+});
+
+app.get(['/api/v1/services/:id', '/api/services/:id'], async (req: any, res: any) => {
+  try {
+    const idOrSlug = req.params.id;
+    const isMongoId = /^[0-9a-fA-F]{24}$/.test(idOrSlug);
+    let s: any = null;
+    if (isMongoId) {
+      s = await prisma.service.findUnique({ where: { id: idOrSlug } });
+    }
+    if (!s) {
+      s = await prisma.service.findFirst({
+        where: {
+          OR: [{ slug: idOrSlug }, { title: { equals: idOrSlug, mode: 'insensitive' } }],
+        },
+      });
+    }
+    if (!s) {
+      return res.status(404).json({ message: 'Service not found' });
+    }
+    res.json(s);
+  } catch (e) {
+    res.status(500).json({ error: (e as any).message });
+  }
+});
+
+app.post(['/api/v1/services', '/api/services'], async (req: any, res: any) => {
+  try {
+    const data = req.body;
+    const rawTitle = data.title || data.name || 'Custom Service';
+    const slug = (data.slug || rawTitle).toLowerCase().trim().replace(/[^a-z0-9]+/g, '-');
+    const feeVal = typeof data.fee === 'number'
+      ? data.fee
+      : (typeof data.pricing?.fee === 'number' ? data.pricing.fee : (parseFloat(data.fee || '50.0') || 50.0));
+
+    const updateData: any = {
+      title: rawTitle,
+      description: data.description || data.shortDescription || 'Government certified digital service workflow.',
+      category: data.category || 'Government',
+      department: data.department || data.departmentRole || 'ID Processing & Verification (ID-V)',
+      fee: feeVal,
+      processingTime: data.tat || data.processingTime || '5-7 working days',
+      subServices: data.subServices || [],
+      formDataSchema: data.formElements || data.formDataSchema || [],
+      requiredDocs: data.documents || data.requiredDocs || [],
+      pricingConfig: data.pricing || data.pricingConfig || { fee: feeVal },
+      iconName: data.iconName || 'file-document-outline',
+      colorHex: data.colorHex || '#2563eb',
+      isActive: data.status === 'Active' || data.isActive === true || data.status === undefined,
+    };
+
+    const newService = await prisma.service.upsert({
+      where: { slug },
+      update: updateData,
+      create: {
+        slug,
+        ...updateData,
+        eligibility: data.eligibility || ['Citizen of India', 'Valid ID verification credentials'],
+      }
+    });
+
+    io.emit('services_updated', newService);
+    res.status(201).json(newService);
+  } catch (e) {
+    res.status(500).json({ error: (e as any).message });
+  }
+});
+
 server.listen(PORT, () => {
   console.log(`Admin backend running on http://localhost:${PORT}`);
 });
+

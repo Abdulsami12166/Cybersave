@@ -138,12 +138,25 @@ export class ServicesService implements OnModuleInit {
     }
   }
 
-  async getServiceBySlug(slug: string) {
+  async getServiceByIdOrSlug(idOrSlug: string) {
     try {
-      return await this.prisma.service.findUnique({ where: { slug } });
+      const isMongoId = /^[0-9a-fA-F]{24}$/.test(idOrSlug);
+      if (isMongoId) {
+        const byId = await this.prisma.service.findUnique({ where: { id: idOrSlug } });
+        if (byId) return byId;
+      }
+      return await this.prisma.service.findFirst({
+        where: {
+          OR: [{ slug: idOrSlug }, { title: { equals: idOrSlug, mode: 'insensitive' } }],
+        },
+      });
     } catch (error) {
       return null;
     }
+  }
+
+  async getServiceBySlug(slug: string) {
+    return this.getServiceByIdOrSlug(slug);
   }
 
   async createOrUpdateService(data: any) {

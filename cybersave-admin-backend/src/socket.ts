@@ -399,7 +399,7 @@ export function setupSockets(io: Server) {
       try {
         const totalServices = await prisma.service.count();
         const activeServices = await prisma.service.count({ where: { isActive: true } });
-        const services = await prisma.service.findMany({ take: 50 });
+        const services = await prisma.service.findMany({ take: 100 });
         
         // Group services by category
         const groups: Record<string, any> = {};
@@ -412,15 +412,54 @@ export function setupSockets(io: Server) {
             };
           }
           groups[s.category].subServices.push({
-            id: s.id, name: s.title, category: s.category, sla: s.processingTime, fee: s.fee, status: s.isActive ? 'Active' : 'Inactive'
+            id: s.id,
+            name: s.title,
+            title: s.title,
+            slug: s.slug,
+            category: s.category,
+            department: s.department,
+            sla: s.processingTime || '5-7 Days',
+            processingTime: s.processingTime || '5-7 Days',
+            fee: s.fee || 50,
+            description: s.description,
+            subServices: s.subServices || [],
+            formDataSchema: s.formDataSchema || [],
+            requiredDocs: s.requiredDocs || [],
+            pricingConfig: s.pricingConfig || { fee: s.fee || 50 },
+            iconName: s.iconName || 'file-document-outline',
+            colorHex: s.colorHex || '#2563eb',
+            status: s.isActive ? 'Active' : 'Inactive',
+            isActive: s.isActive
           });
         });
 
         socket.emit('response_services_data', {
           stats: { totalServices, active: activeServices, offline: 0, drafts: 0 },
-          services: Object.values(groups)
+          services: Object.values(groups),
+          rawServices: services,
         });
       } catch (e) { console.error(e); }
+    });
+
+    socket.on('request_service_detail', async (data: { id: string }) => {
+      try {
+        const isMongoId = /^[0-9a-fA-F]{24}$/.test(data.id);
+        let s: any = null;
+        if (isMongoId) {
+          s = await prisma.service.findUnique({ where: { id: data.id } });
+        }
+        if (!s) {
+          s = await prisma.service.findFirst({
+            where: {
+              OR: [{ slug: data.id }, { title: { equals: data.id, mode: 'insensitive' } }],
+            },
+          });
+        }
+        socket.emit('response_service_detail', s);
+      } catch (e) {
+        console.error('[Socket] request_service_detail error:', e);
+        socket.emit('response_service_detail', null);
+      }
     });
 
     socket.on('edit_service', async (data: { id: string, name: string }) => {
@@ -430,6 +469,7 @@ export function setupSockets(io: Server) {
           data: { title: data.name }
         });
         socket.emit('edit_service_success');
+        io.emit('services_updated');
       } catch (e) { console.error(e); }
     });
 
@@ -450,7 +490,8 @@ export function setupSockets(io: Server) {
           }
         });
         socket.emit('create_application_success');
-        io.emit('applications_updated'); // Optional: tell clients to refresh
+        io.emit('applications_updated');
+        io.emit('services_updated');
       } catch (e) {
         console.error('Failed to create application workflow:', e);
       }
@@ -458,27 +499,42 @@ export function setupSockets(io: Server) {
 
     socket.on('save_service_config', async (data: any) => {
       try {
-        const newService = await prisma.service.create({
-          data: {
-            slug: data.name.toLowerCase().replace(/\s+/g, '-'),
-            title: data.name,
-            description: data.description,
-            category: data.category,
-            department: data.departmentRole || 'ID Processing & Verification (ID-V)',
-            fee: data.pricing?.fee || 0.0,
-            processingTime: '5-7 working days',
-            subServices: data.subServices,
-            formDataSchema: data.formElements,
-            requiredDocs: data.documents,
-            pricingConfig: data.pricing,
-            iconName: 'file-text',
-            colorHex: '#2563eb',
-            isActive: true
+        const rawTitle = data.name || data.title || 'Custom Service';
+        const slug = (data.slug || rawTitle).toLowerCase().trim().replace(/[^a-z0-9]+/g, '-');
+        const feeVal = typeof data.pricing?.fee === 'number' ? data.pricing.fee : (parseFloat(data.fee || '50.0') || 50.0);
+
+        const updateData: any = {
+          title: rawTitle,
+          description: data.description || data.shortDescription || 'Government certified digital service workflow.',
+          category: data.category || 'Government',
+          department: data.departmentRole || data.department || 'ID Processing & Verification (ID-V)',
+          fee: feeVal,
+          processingTime: data.tat || data.processingTime || '5-7 working days',
+          subServices: data.subServices || [],
+          formDataSchema: data.formElements || data.formDataSchema || [],
+          requiredDocs: data.documents || data.requiredDocs || [],
+          pricingConfig: data.pricing || data.pricingConfig || { fee: feeVal },
+          iconName: data.iconName || 'file-document-outline',
+          colorHex: data.colorHex || '#2563eb',
+          isActive: data.status === 'Active' || data.isActive === true || data.status === undefined,
+        };
+
+        const newService = await prisma.service.upsert({
+          where: { slug },
+          update: updateData,
+          create: {
+            slug,
+            ...updateData,
+            eligibility: data.eligibility || ['Citizen of India', 'Valid ID verification credentials'],
           }
         });
-        console.log('Service configuration saved:', newService.id);
+
+        console.log('[Socket] Service configuration saved and published:', newService.id);
+        socket.emit('save_service_config_success', newService);
+        io.emit('services_updated', newService);
       } catch (e) {
         console.error('Failed to save service config:', e);
+        socket.emit('save_service_config_error', { error: (e as any).message });
       }
     });
 
