@@ -1196,6 +1196,12 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
       const slug = (data.slug || rawTitle).toLowerCase().trim().replace(/[^a-z0-9]+/g, '-');
       const feeVal = typeof data.pricing?.fee === 'number' ? data.pricing.fee : (parseFloat(data.fee || '50.0') || 50.0);
 
+      const resolvedIcon = data.iconUrl || data.imageUrl || data.iconName || 'file-document-outline';
+      const pricingObj = {
+        ...(typeof data.pricing === 'object' ? data.pricing : (typeof data.pricingConfig === 'object' ? data.pricingConfig : { fee: feeVal })),
+        iconUrl: data.iconUrl || data.imageUrl || (resolvedIcon.startsWith('http') ? resolvedIcon : undefined),
+      };
+
       const updateData: any = {
         title: rawTitle,
         description: data.description || data.shortDescription || 'Government certified digital service workflow.',
@@ -1206,8 +1212,8 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
         subServices: data.subServices || [],
         formDataSchema: data.formElements || data.formDataSchema || [],
         requiredDocs: data.documents || data.requiredDocs || [],
-        pricingConfig: data.pricing || data.pricingConfig || { fee: feeVal },
-        iconName: data.iconName || 'file-document-outline',
+        pricingConfig: pricingObj,
+        iconName: resolvedIcon,
         colorHex: data.colorHex || '#2563eb',
         isActive: data.status === 'Active' || data.isActive === true || data.status === undefined,
       };

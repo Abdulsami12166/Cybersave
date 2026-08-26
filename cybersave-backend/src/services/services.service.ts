@@ -188,6 +188,12 @@ export class ServicesService implements OnModuleInit {
       { label: 'PIN Code', type: 'text', required: true },
     ];
 
+    const resolvedIcon = data.iconUrl || data.imageUrl || data.iconName || 'file-document-outline';
+    const pricingObj = {
+      ...(typeof data.pricingConfig === 'object' ? data.pricingConfig : (typeof data.pricing === 'object' ? data.pricing : { fee: feeVal })),
+      iconUrl: data.iconUrl || data.imageUrl || (resolvedIcon.startsWith('http') ? resolvedIcon : undefined),
+    };
+
     const service = await this.prisma.service.upsert({
       where: { slug },
       update: {
@@ -201,8 +207,8 @@ export class ServicesService implements OnModuleInit {
         requiredDocs: data.requiredDocs || data.documents || defaultDocs,
         subServices: data.subServices || [],
         formDataSchema: data.formDataSchema || data.formElements || defaultSchema,
-        pricingConfig: data.pricingConfig || data.pricing || { fee: feeVal },
-        iconName: data.iconName || 'file-document-outline',
+        pricingConfig: pricingObj,
+        iconName: resolvedIcon,
         colorHex: data.colorHex || '#2563eb',
         isActive: data.isActive !== undefined ? data.isActive : true,
       },
@@ -218,8 +224,8 @@ export class ServicesService implements OnModuleInit {
         requiredDocs: data.requiredDocs || data.documents || defaultDocs,
         subServices: data.subServices || [],
         formDataSchema: data.formDataSchema || data.formElements || defaultSchema,
-        pricingConfig: data.pricingConfig || data.pricing || { fee: feeVal },
-        iconName: data.iconName || 'file-document-outline',
+        pricingConfig: pricingObj,
+        iconName: resolvedIcon,
         colorHex: data.colorHex || '#2563eb',
         isActive: data.isActive !== undefined ? data.isActive : true,
       },

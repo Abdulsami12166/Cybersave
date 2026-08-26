@@ -29,17 +29,18 @@ export class AdminController {
     private readonly cloudinaryService: CloudinaryService,
   ) {}
 
-  @Post(['api/admin/upload', 'admin/upload', 'api/upload'])
+  @Post(['api/admin/upload', 'admin/upload', 'api/upload', 'api/v1/upload', 'api/v1/services/upload', 'api/services/upload', 'services/upload'])
   @UseInterceptors(FileInterceptor('file'))
-  @ApiOperation({ summary: 'Multer Cloudinary Image Upload' })
+  @ApiOperation({ summary: 'Multer Cloudinary Image / Icon Upload' })
   async uploadAdminImage(@UploadedFile() file: any, @Body() body: any) {
+    const folder = body?.folder || 'cybersave/services';
     if (file && file.buffer) {
-      const url = await this.cloudinaryService.uploadImage(file.buffer, 'cybersave/avatars');
+      const url = await this.cloudinaryService.uploadImage(file.buffer, folder);
       return { success: true, url, secure_url: url };
     }
-    if (body?.image || body?.avatar || body?.file) {
-      const img = body.image || body.avatar || body.file;
-      const url = await this.cloudinaryService.uploadBase64Image(img, 'cybersave/avatars');
+    if (body?.image || body?.avatar || body?.file || body?.icon) {
+      const img = body.image || body.avatar || body.file || body.icon;
+      const url = await this.cloudinaryService.uploadBase64Image(img, folder);
       return { success: true, url, secure_url: url };
     }
     throw new BadRequestException('No image file or buffer provided');
