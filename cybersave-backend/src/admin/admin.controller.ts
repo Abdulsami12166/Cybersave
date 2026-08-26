@@ -177,14 +177,21 @@ export class AdminController {
       role: user.role,
     });
 
+    const settingsDoc = await this.prisma.systemSetting.findUnique({
+      where: { key: 'admin_operational_settings' },
+    }).catch(() => null);
+    const extra = (settingsDoc?.value as any)?.profileExtra || {};
+
     return {
       token,
       accessToken: token,
       admin: {
         id: user.id,
-        email: user.email || normalizedEmail,
-        name: user.profile?.fullName || (user.email === 'admin@cybersave.com' ? 'Super Administrator' : (user.email ? user.email.split('@')[0] : 'Operator')),
+        email: extra.email || user.email || normalizedEmail,
+        name: extra.name || user.profile?.fullName || (user.email === 'admin@cybersave.com' ? 'Super Administrator' : (user.email ? user.email.split('@')[0] : 'Operator')),
         role: user.email === 'admin@cybersave.com' || user.role === 'ADMIN' ? 'Super Admin' : 'Sub-Admin / Operator',
+        phone: extra.phone || user.phone || user.profile?.phone || '',
+        avatarUrl: extra.avatarUrl !== undefined ? extra.avatarUrl : (user.profile?.avatarUrl || ''),
         permissions: (user.permissions && user.permissions.length > 0)
           ? user.permissions
           : ['ALL', 'DASHBOARD', 'USERS', 'APPLICATIONS', 'OPERATORS', 'SETTINGS', 'REPORTS'],
@@ -792,28 +799,16 @@ export class AdminController {
     }).catch(() => null);
     const extra = (settingsDoc?.value as any)?.profileExtra || {};
 
-    if (!adminUser) {
-      return {
-        name: 'Suresh Kumar Sharma',
-        email: 'officer.admin@cybersave.gov.in',
-        role: 'Super Admin',
-        phone: '+91 98450 19823',
-        kendraId: 'CSC-DEL-8841',
-        designation: 'Principal Verification Officer (SDM)',
-        district: 'Central Delhi, NCT of Delhi',
-        avatarUrl: `https://ui-avatars.com/api/?name=Suresh+Sharma&background=1E40AF&color=fff`,
-      };
-    }
     return {
-      id: adminUser.id,
-      name: adminUser.profile?.fullName || (adminUser.email === 'admin@cybersave.com' ? 'Suresh Kumar Sharma' : 'Administrator'),
-      email: adminUser.email,
-      role: adminUser.role === 'ADMIN' ? 'Super Admin' : 'Sub-Admin / Operator',
-      phone: adminUser.phone || adminUser.profile?.phone || '+91 98450 19823',
-      avatarUrl: adminUser.profile?.avatarUrl || '',
-      kendraId: extra.kendraId || adminUser.profile?.state || 'CSC-DEL-8841',
+      id: adminUser?.id || 'admin-root-01',
+      name: extra.name || adminUser?.profile?.fullName || (adminUser?.email === 'admin@cybersave.com' ? 'Super Administrator' : 'Administrator'),
+      email: extra.email || adminUser?.email || 'admin@cybersave.com',
+      role: adminUser?.role === 'ADMIN' ? 'Super Admin' : 'Sub-Admin / Operator',
+      phone: extra.phone || adminUser?.phone || adminUser?.profile?.phone || '+91 98450 19823',
+      avatarUrl: extra.avatarUrl !== undefined ? extra.avatarUrl : (adminUser?.profile?.avatarUrl || ''),
+      kendraId: extra.kendraId || adminUser?.profile?.state || 'CSC-DEL-8841',
       designation: extra.designation || 'Principal Verification Officer (SDM)',
-      district: adminUser.profile?.district || extra.district || 'Central Delhi, NCT of Delhi',
+      district: extra.district || adminUser?.profile?.district || 'Central Delhi, NCT of Delhi',
     };
   }
 
@@ -821,61 +816,36 @@ export class AdminController {
   @ApiOperation({ summary: 'Update Admin Profile' })
   async updateAdminProfile(@Body() body: any) {
     const { name, email, phone, avatarUrl, role, kendraId, designation, district } = body;
-    let adminUser = await this.prisma.user.findFirst({
+    
+    // 1. Update all admin users and profiles in MongoDB
+    const allAdmins = await this.prisma.user.findMany({
       where: { role: 'ADMIN' },
       include: { profile: true },
     });
 
-    if (!adminUser) {
-      const salt = await bcrypt.genSalt(10);
-      const passwordHash = await bcrypt.hash('admin123', salt);
-      adminUser = await this.prisma.user.create({
+    for (const adm of allAdmins) {
+      await this.prisma.user.update({
+        where: { id: adm.id },
         data: {
-          email: email || 'officer.admin@cybersave.gov.in',
-          phone: phone || '+91 98450 19823',
-          passwordHash,
-          role: 'ADMIN',
-          permissions: ['ALL'],
-          profile: {
-            create: {
-              fullName: name || 'Suresh Kumar Sharma',
-              phone: phone || '+91 98450 19823',
-              email: email || 'officer.admin@cybersave.gov.in',
-              district: district || 'Central Delhi, NCT of Delhi',
-              avatarUrl: avatarUrl || '',
-            },
-          },
+          phone: phone || adm.phone,
         },
-        include: { profile: true },
-      });
-    } else {
-      if (email && email !== adminUser.email) {
-        await this.prisma.user.update({
-          where: { id: adminUser.id },
-          data: { email, phone: phone || adminUser.phone },
-        }).catch(() => null);
-      } else if (phone) {
-        await this.prisma.user.update({
-          where: { id: adminUser.id },
-          data: { phone },
-        }).catch(() => null);
-      }
+      }).catch(() => null);
 
-      if (adminUser.profile) {
+      if (adm.profile) {
         await this.prisma.profile.update({
-          where: { id: adminUser.profile.id },
+          where: { id: adm.profile.id },
           data: {
-            fullName: name || adminUser.profile.fullName,
-            phone: phone || adminUser.profile.phone,
-            district: district || adminUser.profile.district,
-            avatarUrl: avatarUrl || adminUser.profile.avatarUrl,
+            fullName: name || adm.profile.fullName,
+            phone: phone || adm.profile.phone,
+            district: district || adm.profile.district,
+            avatarUrl: avatarUrl !== undefined ? avatarUrl : adm.profile.avatarUrl,
           },
         }).catch(() => null);
       } else {
         await this.prisma.profile.create({
           data: {
-            userId: adminUser.id,
-            fullName: name || 'Suresh Kumar Sharma',
+            userId: adm.id,
+            fullName: name || 'Super Administrator',
             phone: phone || '+91 98450 19823',
             district: district || 'Central Delhi, NCT of Delhi',
             avatarUrl: avatarUrl || '',
@@ -884,58 +854,51 @@ export class AdminController {
       }
     }
 
-    // Persist extra metadata (kendraId, designation, etc.)
+    // 2. Persist full profile configuration in SystemSetting so it survives logouts and server restarts
     const existingDoc = await this.prisma.systemSetting.findUnique({
       where: { key: 'admin_operational_settings' },
     }).catch(() => null);
     const existingVal = (existingDoc?.value as any) || {};
+
+    const updatedProfileExtra = {
+      name: name || existingVal.profileExtra?.name || 'Super Administrator',
+      email: email || existingVal.profileExtra?.email || 'admin@cybersave.com',
+      phone: phone || existingVal.profileExtra?.phone || '+91 98450 19823',
+      avatarUrl: avatarUrl !== undefined ? avatarUrl : (existingVal.profileExtra?.avatarUrl || ''),
+      kendraId: kendraId || existingVal.profileExtra?.kendraId || 'CSC-DEL-8841',
+      designation: designation || existingVal.profileExtra?.designation || 'Principal Verification Officer (SDM)',
+      district: district || existingVal.profileExtra?.district || 'Central Delhi, NCT of Delhi',
+    };
 
     await this.prisma.systemSetting.upsert({
       where: { key: 'admin_operational_settings' },
       update: {
         value: {
           ...existingVal,
-          profileExtra: {
-            kendraId: kendraId || existingVal.profileExtra?.kendraId || 'CSC-DEL-8841',
-            designation: designation || existingVal.profileExtra?.designation || 'Principal Verification Officer (SDM)',
-            district: district || existingVal.profileExtra?.district || 'Central Delhi, NCT of Delhi',
-          },
+          profileExtra: updatedProfileExtra,
         },
       },
       create: {
         key: 'admin_operational_settings',
         value: {
-          profileExtra: {
-            kendraId: kendraId || 'CSC-DEL-8841',
-            designation: designation || 'Principal Verification Officer (SDM)',
-            district: district || 'Central Delhi, NCT of Delhi',
-          },
+          profileExtra: updatedProfileExtra,
         },
       },
     }).catch(() => null);
 
+    const firstAdminId = allAdmins[0]?.id || 'admin-root-01';
     await this.prisma.auditLog.create({
       data: {
-        userId: adminUser.id,
+        userId: firstAdminId,
         action: 'ADMIN_PROFILE_UPDATED',
-        details: `Administrator updated profile coordinates for ${name || adminUser.email}`,
+        details: `Administrator profile coordinates updated: ${name} (${email})`,
       },
     }).catch(() => null);
 
     return {
       success: true,
       message: 'Admin profile updated and saved permanently',
-      admin: {
-        id: adminUser.id,
-        name: name || adminUser?.profile?.fullName || 'Suresh Kumar Sharma',
-        email: email || adminUser?.email || 'officer.admin@cybersave.gov.in',
-        role: role || 'Super Admin',
-        phone: phone || adminUser?.phone || '+91 98450 19823',
-        avatarUrl: avatarUrl || adminUser?.profile?.avatarUrl || '',
-        kendraId: kendraId || 'CSC-DEL-8841',
-        designation: designation || 'Principal Verification Officer (SDM)',
-        district: district || 'Central Delhi, NCT of Delhi',
-      },
+      profile: updatedProfileExtra,
     };
   }
 
@@ -1097,6 +1060,11 @@ export class AdminController {
       ops = [createdOp];
     }
 
+    const settingsDoc = await this.prisma.systemSetting.findUnique({
+      where: { key: 'admin_operational_settings' },
+    }).catch(() => null);
+    const extra = (settingsDoc?.value as any)?.profileExtra || {};
+
     const totalOps = ops.length;
     const active = ops.filter((o) => o.status !== 'SUSPENDED').length;
     const suspended = ops.filter((o) => o.status === 'SUSPENDED').length;
@@ -1104,19 +1072,20 @@ export class AdminController {
 
     const formattedOps = ops.map((o, idx) => {
       const profile = o.profile;
+      const isSuperAdmin = o.email === 'admin@cybersave.com' || (o.role === 'ADMIN' && idx === 0);
       return {
         id: o.id,
         employeeId: `OPS-${new Date(o.createdAt).getFullYear()}-${o.id.slice(-4).toUpperCase()}`,
-        name: profile?.fullName || (o.email ? o.email.split('@')[0] : `Operator ${idx + 1}`),
-        role: 'Senior Field Operator',
-        department: 'Operations',
+        name: isSuperAdmin && extra.name ? extra.name : (profile?.fullName || (o.email ? o.email.split('@')[0] : `Operator ${idx + 1}`)),
+        role: isSuperAdmin ? (extra.designation || 'Super Administrator') : (profile?.dob ? 'Senior Field Operator' : 'Field Operator'),
+        department: isSuperAdmin && extra.district ? extra.district : (profile?.district ? `${profile.district} Seva Kendra` : 'Operations'),
         joinedDate: new Date(o.createdAt).toLocaleDateString('en-GB'),
         lastActive: 'Active recently',
         status: o.status === 'SUSPENDED' ? 'Suspended' : 'Active',
         permissions: o.permissions || [],
-        email: o.email || '',
-        phone: o.phone || profile?.phone || '+91 98765 43210',
-        avatarUrl: profile?.avatarUrl || `https://i.pravatar.cc/150?img=${idx + 11}`,
+        email: isSuperAdmin && extra.email ? extra.email : (o.email || ''),
+        phone: isSuperAdmin && extra.phone ? extra.phone : (o.phone || profile?.phone || '+91 98450 19823'),
+        avatarUrl: isSuperAdmin && extra.avatarUrl !== undefined ? extra.avatarUrl : (profile?.avatarUrl || ''),
       };
     });
 
@@ -1382,36 +1351,41 @@ export class AdminController {
       fileUrl: d.fileUrl || '',
     }));
 
-    // 5. Supervisor
-    const superAdmin = await this.prisma.user.findFirst({
-      where: { role: 'ADMIN', email: 'admin@cybersave.com' },
-      include: { profile: true },
+    const settingsDoc = await this.prisma.systemSetting.findUnique({
+      where: { key: 'admin_operational_settings' },
     }).catch(() => null);
+    const extra = (settingsDoc?.value as any)?.profileExtra || {};
 
-    const supervisorName = superAdmin?.profile?.fullName || (superAdmin?.email ? superAdmin.email.split('@')[0] : 'Super Administrator');
+    const isSuperAdmin = o.email === 'admin@cybersave.com' || o.role === 'ADMIN';
+
+    // 5. Supervisor
+    const supervisorName = extra.name || (o.email === 'admin@cybersave.com' ? 'Ministry Directorate' : 'Super Administrator');
 
     return {
       id: o.id,
       employeeId: `OPS-${new Date(o.createdAt).getFullYear()}-${o.id.slice(-4).toUpperCase()}`,
-      name: profile.fullName || (o.email ? o.email.split('@')[0] : 'Operator'),
+      name: isSuperAdmin && extra.name ? extra.name : (profile.fullName || (o.email ? o.email.split('@')[0] : 'Operator')),
       status: o.status === 'SUSPENDED' ? 'Suspended' : (o.status === 'PENDING' ? 'Pending' : 'Active'),
-      role: profile.dob ? 'Senior Field Operator' : 'Field Operator',
-      department: profile.district ? 'Operations' : 'Administration',
+      role: isSuperAdmin ? (extra.designation || 'Super Administrator') : (profile.dob ? 'Senior Field Operator' : 'Field Operator'),
+      department: isSuperAdmin && extra.district ? extra.district : (profile.district ? `${profile.district} Seva Kendra` : 'Operations'),
       joinedDate: new Date(o.createdAt).toLocaleDateString('en-GB'),
-      email: o.email || '',
-      phone: o.phone || profile.phone || '',
+      email: isSuperAdmin && extra.email ? extra.email : (o.email || ''),
+      phone: isSuperAdmin && extra.phone ? extra.phone : (o.phone || profile.phone || '+91 98450 19823'),
       dob: profile.dob || '',
-      address: profile.address || (profile.district ? `${profile.district}, ${profile.state || ''} - ${profile.pinCode || ''}` : ''),
-      district: profile.district || '',
-      state: profile.state || '',
-      pinCode: profile.pinCode || '',
+      address: profile.address || (isSuperAdmin && extra.district ? `${extra.district}, India` : (profile.district ? `${profile.district}, ${profile.state || ''} - ${profile.pinCode || ''}` : '')),
+      district: isSuperAdmin && extra.district ? extra.district : (profile.district || 'Central Delhi, NCT of Delhi'),
+      state: profile.state || (isSuperAdmin ? 'NCT of Delhi' : ''),
+      pinCode: profile.pinCode || (isSuperAdmin ? '110001' : ''),
+      kendraId: isSuperAdmin && extra.kendraId ? extra.kendraId : (profile.state || 'CSC-DEL-8841'),
+      designation: isSuperAdmin && extra.designation ? extra.designation : 'Principal Verification Officer (SDM)',
+      avatarUrl: isSuperAdmin && extra.avatarUrl !== undefined ? extra.avatarUrl : (profile.avatarUrl || ''),
       twoFactorEnabled: false,
       lastLogin: o.updatedAt ? new Date(o.updatedAt).toLocaleString('en-IN', {
         day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit', hour12: true,
       }) : 'Never logged in',
       activeSessions: o.status === 'ACTIVE' ? '1 open session (Admin Portal / Chrome)' : '0 active sessions',
       ipWhitelisting: o.status === 'ACTIVE' ? 'Enabled (Corporate Subnet)' : 'Disabled',
-      permissions: o.permissions && o.permissions.length > 0 ? o.permissions : ['DASHBOARD'],
+      permissions: o.permissions && o.permissions.length > 0 ? o.permissions : ['ALL', 'DASHBOARD', 'APPLICATIONS', 'USERS', 'OPERATORS', 'SETTINGS', 'REPORTS'],
       metrics: {
         tasksCompleted,
         tasksMom: tasksCompleted > 0 ? '+ 12% MoM' : '0% MoM',
