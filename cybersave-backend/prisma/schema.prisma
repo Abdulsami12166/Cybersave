@@ -59,6 +59,8 @@ model User {
   deletedAt     DateTime?
   permissions   String[]  @default([]) // ponytail: dynamic access control array
   status        String    @default("ACTIVE")
+  isOnline      Boolean?  @default(false)
+  lastSeenAt    DateTime?
 
   profile       Profile?
   wallet        Wallet?

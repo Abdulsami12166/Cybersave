@@ -579,6 +579,184 @@ export class AdminController {
     return { success: true, status: nextStatus === 'BLOCKED' ? 'Blocked' : 'Verified' };
   }
 
+  @Post(['api/admin/users/:id/notify', 'api/v1/users/:id/notify', 'admin/users/:id/notify'])
+  @ApiOperation({ summary: 'Dispatch direct targeted push notification to specific citizen' })
+  async sendCitizenNotification(@Param('id') id: string, @Body() body: any) {
+    const { title, body: messageBody, type } = body;
+    if (!title || !messageBody) {
+      throw new BadRequestException('Title and message body are required');
+    }
+
+    const isMongoId = (s?: string) => typeof s === 'string' && /^[0-9a-fA-F]{24}$/.test(s);
+    let targetUser: any = null;
+
+    if (isMongoId(id)) {
+      targetUser = await this.prisma.user.findUnique({ where: { id }, include: { profile: true } });
+    }
+    if (!targetUser && id.startsWith('CIT-')) {
+      const shortId = id.replace('CIT-', '').toUpperCase();
+      const allUsers = await this.prisma.user.findMany({ where: { role: 'USER' }, include: { profile: true } });
+      targetUser = allUsers.find((x) => x.id.substring(0, 5).toUpperCase() === shortId) || null;
+    }
+    if (!targetUser) {
+      targetUser = await this.prisma.user.findFirst({
+        where: { OR: [{ id }, { email: id }, { phone: id }] },
+        include: { profile: true },
+      });
+    }
+
+    if (!targetUser) {
+      throw new NotFoundException(`Citizen ${id} not found`);
+    }
+
+    // 1. Create DB notification
+    const notif = await this.prisma.notification.create({
+      data: {
+        userId: targetUser.id,
+        title: title.trim(),
+        body: messageBody.trim(),
+        type: (type as any) || 'SYSTEM',
+        status: 'SENT',
+        sentAt: new Date(),
+      },
+    }).catch(() => null);
+
+    // 2. Create Audit Log
+    await this.prisma.auditLog.create({
+      data: {
+        userId: targetUser.id,
+        action: 'NOTIFICATION_SENT',
+        details: `Direct Push Notification sent: "${title.trim()}" - ${messageBody.trim().substring(0, 55)}${messageBody.length > 55 ? '...' : ''}`,
+      },
+    }).catch(() => null);
+
+    // 3. Emit live WebSocket to citizen mobile device
+    AdminGateway.emitToUser(targetUser.id, 'user_push_notification', {
+      id: notif?.id || `notif_${Date.now()}`,
+      title: title.trim(),
+      body: messageBody.trim(),
+      type: type || 'SYSTEM',
+      createdAt: new Date().toISOString(),
+    });
+
+    AdminGateway.emitToUser(targetUser.id, 'new_notification', {
+      id: notif?.id || `notif_${Date.now()}`,
+      title: title.trim(),
+      body: messageBody.trim(),
+      type: type || 'SYSTEM',
+      createdAt: new Date().toISOString(),
+    });
+
+    // 4. Update admin dashboards
+    AdminGateway.broadcast('user_activity_updated', { userId: targetUser.id });
+    AdminGateway.broadcast('audit_log_added');
+
+    return {
+      success: true,
+      message: `Notification successfully pushed to ${targetUser.profile?.fullName || targetUser.phone || targetUser.email || 'Citizen'}`,
+      notification: notif,
+    };
+  }
+
+  @Post(['api/v1/users/fcm-token', 'api/users/fcm-token', 'users/fcm-token'])
+  @ApiOperation({ summary: 'Register mobile device FCM token for user' })
+  async registerUserFcmToken(@Body() body: any) {
+    const { userId, fcmToken } = body;
+    if (!userId || !fcmToken) {
+      throw new BadRequestException('userId and fcmToken are required');
+    }
+
+    const isMongoId = (s?: string) => typeof s === 'string' && /^[0-9a-fA-F]{24}$/.test(s);
+    let targetUserId = userId;
+
+    if (!isMongoId(targetUserId)) {
+      const u = await this.prisma.user.findFirst({
+        where: { OR: [{ email: userId }, { phone: userId }] },
+      });
+      if (u) targetUserId = u.id;
+    }
+
+    if (isMongoId(targetUserId)) {
+      await this.prisma.user.update({
+        where: { id: targetUserId },
+        data: { fcmToken, isOnline: true, lastSeenAt: new Date() },
+      }).catch(() => null);
+
+      AdminGateway.broadcast('user_status_changed', {
+        userId: targetUserId,
+        isOnline: true,
+        lastSeenAt: new Date().toISOString(),
+      });
+    }
+
+    return { success: true, message: 'FCM Token registered successfully' };
+  }
+
+  @Post(['api/v1/users/heartbeat', 'api/users/heartbeat', 'users/heartbeat'])
+  @ApiOperation({ summary: 'Record citizen app activity heartbeat' })
+  async citizenHeartbeat(@Body() body: any) {
+    const { userId } = body;
+    if (userId && /^[0-9a-fA-F]{24}$/.test(userId)) {
+      await this.prisma.user.update({
+        where: { id: userId },
+        data: { isOnline: true, lastSeenAt: new Date() },
+      }).catch(() => null);
+
+      AdminGateway.broadcast('user_status_changed', {
+        userId,
+        isOnline: true,
+        lastSeenAt: new Date().toISOString(),
+      });
+    }
+    return { success: true, active: true };
+  }
+
+  @Get(['api/v1/users', 'api/admin/users', 'admin/users'])
+  @ApiOperation({ summary: 'Get all citizens with real-time active status' })
+  async getAllCitizens() {
+    const users = await this.prisma.user.findMany({
+      where: { role: 'USER' },
+      include: { profile: true, applications: true },
+      orderBy: { createdAt: 'desc' },
+    });
+
+    return users.map((u) => {
+      const isOnline = AdminGateway.isUserOnline(u.id) || u.isOnline === true;
+      let lastActive = 'Active Now';
+      if (!isOnline) {
+        const lastTime = u.lastSeenAt || u.updatedAt || u.createdAt;
+        if (lastTime) {
+          const diffSec = Math.floor((Date.now() - new Date(lastTime).getTime()) / 1000);
+          if (diffSec < 60) lastActive = 'Just now';
+          else if (diffSec < 3600) lastActive = `${Math.floor(diffSec / 60)} mins ago`;
+          else if (diffSec < 86400) lastActive = `${Math.floor(diffSec / 3600)} hours ago`;
+          else lastActive = new Date(lastTime).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' });
+        } else {
+          lastActive = 'Offline';
+        }
+      }
+
+      return {
+        id: `CIT-${u.id.substring(0, 5).toUpperCase()}`,
+        dbId: u.id,
+        fullName: u.profile?.fullName || (u.email ? u.email.split('@')[0] : 'Citizen'),
+        aadhaar: u.profile?.dob
+          ? '****' + Math.floor(1000 + Math.random() * 9000)
+          : 'Not Given',
+        mobile: u.phone || u.profile?.phone || 'N/A',
+        phone: u.phone || u.profile?.phone || 'N/A',
+        email: u.email || 'N/A',
+        district: u.profile?.district || 'Central Delhi, DL',
+        servicesUsed: u.applications?.length || 0,
+        status: u.status === 'BLOCKED' ? 'Blocked' : (u.status || 'Verified'),
+        avatarUrl: u.profile?.avatarUrl || null,
+        isOnline,
+        lastActive,
+        lastSeenAt: u.lastSeenAt ? u.lastSeenAt.toISOString() : null,
+      };
+    });
+  }
+
   private formatCitizenData(u: any) {
     const apps = u.applications || [];
     const profile = u.profile || {};

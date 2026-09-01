@@ -22,6 +22,8 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
   server: Server;
 
   static instance: AdminGateway | null = null;
+  static userSockets = new Map<string, Set<string>>();
+  static socketToUser = new Map<string, string>();
 
   constructor(private readonly prisma: PrismaService) {
     AdminGateway.instance = this;
@@ -33,12 +35,114 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
     }
   }
 
+  static isUserOnline(userId: string): boolean {
+    const s = AdminGateway.userSockets.get(userId);
+    return !!(s && s.size > 0);
+  }
+
+  static emitToUser(userId: string, event: string, data: any): boolean {
+    if (!AdminGateway.instance?.server) return false;
+    AdminGateway.instance.server.to(`user_${userId}`).emit(event, data);
+    const sockets = AdminGateway.userSockets.get(userId);
+    if (sockets && sockets.size > 0) {
+      sockets.forEach((sId) => {
+        AdminGateway.instance?.server?.to(sId).emit(event, data);
+      });
+      return true;
+    }
+    return false;
+  }
+
   handleConnection(client: Socket) {
     console.log('[AdminGateway] Client connected:', client.id);
   }
 
-  handleDisconnect(client: Socket) {
+  async handleDisconnect(client: Socket) {
     console.log('[AdminGateway] Client disconnected:', client.id);
+    const userId = AdminGateway.socketToUser.get(client.id);
+    if (userId) {
+      AdminGateway.socketToUser.delete(client.id);
+      const userSet = AdminGateway.userSockets.get(userId);
+      if (userSet) {
+        userSet.delete(client.id);
+        if (userSet.size === 0) {
+          AdminGateway.userSockets.delete(userId);
+          try {
+            await this.prisma.user.update({
+              where: { id: userId },
+              data: { isOnline: false, lastSeenAt: new Date() },
+            }).catch(() => null);
+          } catch {}
+          AdminGateway.broadcast('user_status_changed', {
+            userId,
+            isOnline: false,
+            lastSeenAt: new Date().toISOString(),
+          });
+        }
+      }
+    }
+  }
+
+  @SubscribeMessage('user_connected')
+  @SubscribeMessage('citizen_heartbeat')
+  async handleUserConnected(
+    @ConnectedSocket() client: Socket,
+    @MessageBody() data: { userId: string; fcmToken?: string },
+  ) {
+    try {
+      const { userId, fcmToken } = data || {};
+      if (!userId) return;
+
+      let resolvedId = userId;
+      if (resolvedId.startsWith('CIT-')) {
+        const short = resolvedId.replace('CIT-', '').toUpperCase();
+        const u = await this.prisma.user.findFirst({ where: { role: 'USER' } });
+        if (u) resolvedId = u.id;
+      }
+
+      client.join(`user_${resolvedId}`);
+      AdminGateway.socketToUser.set(client.id, resolvedId);
+      if (!AdminGateway.userSockets.has(resolvedId)) {
+        AdminGateway.userSockets.set(resolvedId, new Set());
+      }
+      AdminGateway.userSockets.get(resolvedId)!.add(client.id);
+
+      const updateData: any = { isOnline: true, lastSeenAt: new Date() };
+      if (fcmToken) updateData.fcmToken = fcmToken;
+
+      if (/^[0-9a-fA-F]{24}$/.test(resolvedId)) {
+        await this.prisma.user.update({
+          where: { id: resolvedId },
+          data: updateData,
+        }).catch(() => null);
+      }
+
+      AdminGateway.broadcast('user_status_changed', {
+        userId: resolvedId,
+        isOnline: true,
+        lastSeenAt: new Date().toISOString(),
+      });
+    } catch (e) {
+      console.error('[AdminGateway] user_connected error:', e);
+    }
+  }
+
+  @SubscribeMessage('register_fcm_token')
+  async handleRegisterFcmToken(
+    @ConnectedSocket() client: Socket,
+    @MessageBody() data: { userId: string; fcmToken: string },
+  ) {
+    try {
+      const { userId, fcmToken } = data;
+      if (userId && fcmToken && /^[0-9a-fA-F]{24}$/.test(userId)) {
+        await this.prisma.user.update({
+          where: { id: userId },
+          data: { fcmToken },
+        }).catch(() => null);
+      }
+    } catch (e) {
+      console.error('[AdminGateway] register_fcm_token error:', e);
+    }
   }
 
   @SubscribeMessage('request_dashboard_data')
@@ -184,20 +288,40 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
         orderBy: { createdAt: 'desc' },
       });
 
-      const formattedUsers = users.map((u) => ({
-        id: `CIT-${u.id.substring(0, 5).toUpperCase()}`,
-        dbId: u.id,
-        fullName: u.profile?.fullName || 'Unknown',
-        aadhaar: u.profile?.dob
-          ? '****' + Math.floor(1000 + Math.random() * 9000)
-          : 'Not Given',
-        mobile: u.phone || 'N/A',
-        district: u.profile?.district || 'Not Given',
-        servicesUsed: u.applications?.length || 0,
-        status: u.status === 'BLOCKED' ? 'BLOCKED' : u.status || 'Verified',
-        avatarUrl: u.profile?.avatarUrl || null,
-        lastActive: 'Active recently',
-      }));
+      const formattedUsers = users.map((u) => {
+        const isOnline = AdminGateway.isUserOnline(u.id) || u.isOnline === true;
+        let lastActive = 'Active Now';
+        if (!isOnline) {
+          const lastTime = u.lastSeenAt || u.updatedAt || u.createdAt;
+          if (lastTime) {
+            const diffSec = Math.floor((Date.now() - new Date(lastTime).getTime()) / 1000);
+            if (diffSec < 60) lastActive = 'Just now';
+            else if (diffSec < 3600) lastActive = `${Math.floor(diffSec / 60)} mins ago`;
+            else if (diffSec < 86400) lastActive = `${Math.floor(diffSec / 3600)} hours ago`;
+            else lastActive = new Date(lastTime).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' });
+          } else {
+            lastActive = 'Offline';
+          }
+        }
+
+        return {
+          id: `CIT-${u.id.substring(0, 5).toUpperCase()}`,
+          dbId: u.id,
+          fullName: u.profile?.fullName || (u.email ? u.email.split('@')[0] : 'Citizen'),
+          aadhaar: u.profile?.dob
+            ? '****' + Math.floor(1000 + Math.random() * 9000)
+            : 'Not Given',
+          mobile: u.phone || u.profile?.phone || 'N/A',
+          email: u.email || 'N/A',
+          district: u.profile?.district || 'Central Delhi, DL',
+          servicesUsed: u.applications?.length || 0,
+          status: u.status === 'BLOCKED' ? 'Blocked' : (u.status || 'Verified'),
+          avatarUrl: u.profile?.avatarUrl || null,
+          isOnline,
+          lastActive,
+          lastSeenAt: u.lastSeenAt ? u.lastSeenAt.toISOString() : null,
+        };
+      });
 
       client.emit('response_users_data', {
         stats: {
@@ -459,47 +583,124 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
   ) {
     try {
       const { userId, title, body, type } = data;
+      if (!title || !body) {
+        client.emit('response_push_sent', { success: false, error: 'Subject title and message body are required' });
+        return;
+      }
+
       const isMongoId = (s?: string) => typeof s === 'string' && /^[0-9a-fA-F]{24}$/.test(s);
-      let u: any = null;
+      let targetUser: any = null;
 
       if (isMongoId(userId)) {
-        u = await this.prisma.user.findUnique({ where: { id: userId } });
+        targetUser = await this.prisma.user.findUnique({ where: { id: userId }, include: { profile: true } });
       }
-      if (!u && userId?.startsWith('CIT-')) {
+      if (!targetUser && userId?.startsWith('CIT-')) {
         const shortId = userId.replace('CIT-', '').toUpperCase();
-        const allUsers = await this.prisma.user.findMany({ where: { role: 'USER' } });
-        u = allUsers.find((x) => x.id.substring(0, 5).toUpperCase() === shortId) || null;
+        const allUsers = await this.prisma.user.findMany({ where: { role: 'USER' }, include: { profile: true } });
+        targetUser = allUsers.find((x) => x.id.substring(0, 5).toUpperCase() === shortId) || null;
       }
-      if (!u && userId) {
-        u = await this.prisma.user.findFirst({ where: { OR: [{ id: userId }, { email: userId }, { phone: userId }] } });
-      }
-
-      const targetUserId = u ? u.id : userId;
-
-      if (targetUserId && isMongoId(targetUserId)) {
-        await this.prisma.notification.create({
-          data: {
-            userId: targetUserId,
-            title: title || 'Cybersave Notification',
-            body: body || '',
-            status: 'SENT',
-            sentAt: new Date(),
-          },
-        }).catch(() => null);
-
-        await this.prisma.auditLog.create({
-          data: {
-            userId: targetUserId,
-            action: 'NOTIFICATION_SENT',
-            details: `Dispatch sent: "${title}"`,
-          },
-        }).catch(() => null);
+      if (!targetUser && userId) {
+        targetUser = await this.prisma.user.findFirst({
+          where: { OR: [{ id: userId }, { email: userId }, { phone: userId }] },
+          include: { profile: true },
+        });
       }
 
-      client.emit('response_push_sent', { success: true, message: 'Notification dispatched successfully' });
-    } catch (e) {
+      if (!targetUser) {
+        client.emit('response_push_sent', { success: false, error: `Citizen target '${userId}' not found in records` });
+        return;
+      }
+
+      // 1. Create Notification record in Database
+      const notifRecord = await this.prisma.notification.create({
+        data: {
+          userId: targetUser.id,
+          title: title.trim(),
+          body: body.trim(),
+          type: (type as any) || 'SYSTEM',
+          status: 'SENT',
+          sentAt: new Date(),
+        },
+      }).catch((err) => {
+        console.warn('[AdminGateway] DB Notification create note:', err);
+        return null;
+      });
+
+      // 2. Log in AuditTrail
+      await this.prisma.auditLog.create({
+        data: {
+          userId: targetUser.id,
+          action: 'NOTIFICATION_SENT',
+          details: `Direct Push Notification sent: "${title.trim()}" - ${body.trim().substring(0, 55)}${body.length > 55 ? '...' : ''}`,
+        },
+      }).catch(() => null);
+
+      // 3. Send FCM push notification to specific device token
+      let fcmSent = false;
+      if (targetUser.fcmToken && messaging) {
+        try {
+          await messaging.send({
+            token: targetUser.fcmToken,
+            notification: {
+              title: title.trim(),
+              body: body.trim(),
+            },
+            data: {
+              title: title.trim(),
+              body: body.trim(),
+              type: type || 'SYSTEM',
+              userId: targetUser.id,
+              notificationId: notifRecord?.id || '',
+            },
+            android: {
+              priority: 'high',
+              notification: {
+                channelId: 'default',
+                sound: 'default',
+                priority: 'max',
+                visibility: 'public',
+                clickAction: 'OPEN_ACTIVITY',
+              },
+            },
+          });
+          fcmSent = true;
+          console.log(`[AdminGateway] FCM Push sent to user ${targetUser.id}`);
+        } catch (firebaseErr: any) {
+          console.warn('[AdminGateway] Firebase FCM note:', firebaseErr?.message || firebaseErr);
+        }
+      }
+
+      // 4. Send targeted WebSocket event directly to citizen's active mobile socket & room
+      const socketDispatched = AdminGateway.emitToUser(targetUser.id, 'user_push_notification', {
+        id: notifRecord?.id || `notif_${Date.now()}`,
+        title: title.trim(),
+        body: body.trim(),
+        type: type || 'SYSTEM',
+        createdAt: new Date().toISOString(),
+      });
+
+      AdminGateway.emitToUser(targetUser.id, 'new_notification', {
+        id: notifRecord?.id || `notif_${Date.now()}`,
+        title: title.trim(),
+        body: body.trim(),
+        type: type || 'SYSTEM',
+        createdAt: new Date().toISOString(),
+      });
+
+      // 5. Notify admin client
+      client.emit('response_push_sent', {
+        success: true,
+        message: `Notification successfully pushed to ${targetUser.profile?.fullName || targetUser.phone || targetUser.email || 'Citizen'}.`,
+        fcmSent,
+        socketDispatched,
+      });
+
+      // 6. Broadcast updates to Admin Dashboards
+      AdminGateway.broadcast('user_activity_updated', { userId: targetUser.id });
+      AdminGateway.broadcast('audit_log_added');
+    } catch (e: any) {
       console.error('[AdminGateway] send_push_notification error:', e);
-      client.emit('response_push_sent', { success: false, error: e.message });
+      client.emit('response_push_sent', { success: false, error: e.message || 'Failed to send notification' });
     }
   }
 
@@ -667,6 +868,22 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
       });
     }
 
+    const isOnline = AdminGateway.isUserOnline(u.id) || u.isOnline === true;
+    let lastActive = 'Active Now';
+    if (!isOnline) {
+      const lastTime = u.lastSeenAt || u.updatedAt || u.createdAt;
+      if (lastTime) {
+        const diffMs = Date.now() - new Date(lastTime).getTime();
+        const diffSec = Math.floor(diffMs / 1000);
+        if (diffSec < 60) lastActive = 'Just now';
+        else if (diffSec < 3600) lastActive = `${Math.floor(diffSec / 60)} mins ago`;
+        else if (diffSec < 86400) lastActive = `${Math.floor(diffSec / 3600)} hours ago`;
+        else lastActive = new Date(lastTime).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' });
+      } else {
+        lastActive = 'Offline';
+      }
+    }
+
     return {
       id: `CIT-${u.id.substring(0, 5).toUpperCase()}`,
       dbId: u.id,
@@ -685,11 +902,14 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
       joinedDate: u.createdAt ? new Date(u.createdAt).toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' }) : 'Joined recently',
       status: u.status === 'BLOCKED' ? 'Blocked' : (u.status || 'Verified'),
       avatarUrl: profile.avatarUrl || null,
+      isOnline,
+      lastActive,
+      lastSeenAt: u.lastSeenAt ? u.lastSeenAt.toISOString() : null,
       quickStats: {
         totalServicesUsed: totalServices,
         totalAmountSpent: `₹${totalAmountSpent.toLocaleString('en-IN')}`,
         rawAmountSpent: totalAmountSpent,
-        lastActive: '2 hours ago',
+        lastActive,
         registeredCentre: district ? `CSC ${district}, ${state || 'DL'}` : 'CSC Hazratganj, Lucknow',
         assignedOperator: 'Vikram Tiwari (VLE-0234)',
       },
@@ -1511,52 +1731,7 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
     }
   }
 
-  @SubscribeMessage('send_push_notification')
-  async handlePushNotification(
-    @ConnectedSocket() client: Socket,
-    @MessageBody()
-    data: { userId: string; title: string; body: string; type: string },
-  ) {
-    try {
-      const { userId, title, body, type } = data;
-      const user = await this.prisma.user.findUnique({ where: { id: userId } });
 
-      await this.prisma.notification
-        .create({
-          data: {
-            userId: user ? user.id : 'default-system-user',
-            title,
-            body,
-            type: (type as any) || 'SYSTEM',
-            status: 'SENT',
-          },
-        })
-        .catch(() => null);
-
-      if (user && user.fcmToken && messaging) {
-        try {
-          await messaging.send({
-            token: user.fcmToken,
-            notification: { title, body },
-            data: { type },
-          });
-        } catch (firebaseErr) {
-          console.error('[AdminGateway] Firebase send error:', firebaseErr);
-        }
-      }
-
-      client.emit('response_push_sent', {
-        success: true,
-        message: 'Notification queued and sent.',
-      });
-    } catch (e) {
-      console.error('[AdminGateway] send_push_notification error:', e);
-      client.emit('response_push_sent', {
-        success: false,
-        error: 'Failed to send',
-      });
-    }
-  }
 
   @SubscribeMessage('send_global_push')
   async handleGlobalPush(
