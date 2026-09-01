@@ -2257,4 +2257,122 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
       console.error('[AdminGateway] request_user_feedbacks error:', e);
     }
   }
+
+  @SubscribeMessage('request_admin_profile')
+  async handleRequestAdminProfile(@ConnectedSocket() client: Socket) {
+    try {
+      const settingsDoc = await this.prisma.systemSetting.findUnique({
+        where: { key: 'admin_operational_settings' },
+      }).catch(() => null);
+      const extra = (settingsDoc?.value as any)?.profileExtra || {};
+
+      const adminUser = await this.prisma.user.findFirst({
+        where: { OR: [{ role: 'ADMIN' }, { email: 'admin@cybersave.com' }] },
+        include: { profile: true },
+      });
+
+      const phone = extra.phone !== undefined && extra.phone !== null && extra.phone !== ''
+        ? extra.phone
+        : (adminUser?.phone || adminUser?.profile?.phone || '+91 98450 19823');
+
+      const profile = {
+        id: adminUser?.id || 'admin-root-01',
+        name: extra.name || adminUser?.profile?.fullName || (adminUser?.email === 'admin@cybersave.com' ? 'Super Administrator' : 'Administrator'),
+        email: extra.email || adminUser?.email || 'admin@cybersave.com',
+        role: adminUser?.role === 'ADMIN' ? 'Super Admin' : 'Sub-Admin / Operator',
+        phone,
+        avatarUrl: extra.avatarUrl !== undefined ? extra.avatarUrl : (adminUser?.profile?.avatarUrl || ''),
+        kendraId: extra.kendraId || 'CSC-DEL-8841',
+        designation: extra.designation || 'Principal Verification Officer (SDM)',
+        district: extra.district || adminUser?.profile?.district || 'Central Delhi, NCT of Delhi',
+      };
+
+      client.emit('response_admin_profile', profile);
+    } catch (e) {
+      console.error('[AdminGateway] request_admin_profile error:', e);
+    }
+  }
+
+  @SubscribeMessage('update_admin_profile')
+  async handleUpdateAdminProfile(
+    @ConnectedSocket() client: Socket,
+    @MessageBody() data: any,
+  ) {
+    try {
+      const { name, email, phone, avatarUrl, kendraId, designation, district } = data || {};
+      const normalizedPhone = phone !== undefined && phone !== null ? String(phone).trim() : undefined;
+
+      const allAdmins = await this.prisma.user.findMany({
+        where: { OR: [{ role: 'ADMIN' }, { email: 'admin@cybersave.com' }] },
+        include: { profile: true },
+      });
+
+      for (const adm of allAdmins) {
+        await this.prisma.user.update({
+          where: { id: adm.id },
+          data: {
+            phone: normalizedPhone !== undefined ? normalizedPhone : adm.phone,
+          },
+        }).catch(() => null);
+
+        if (adm.profile) {
+          await this.prisma.profile.update({
+            where: { id: adm.profile.id },
+            data: {
+              fullName: name || adm.profile.fullName,
+              phone: normalizedPhone !== undefined ? normalizedPhone : adm.profile.phone,
+              district: district || adm.profile.district,
+              avatarUrl: avatarUrl !== undefined ? avatarUrl : adm.profile.avatarUrl,
+            },
+          }).catch(() => null);
+        } else {
+          await this.prisma.profile.create({
+            data: {
+              userId: adm.id,
+              fullName: name || 'Super Administrator',
+              phone: normalizedPhone || '+91 98450 19823',
+              district: district || 'Central Delhi, NCT of Delhi',
+              avatarUrl: avatarUrl || '',
+            },
+          }).catch(() => null);
+        }
+      }
+
+      const existingDoc = await this.prisma.systemSetting.findUnique({
+        where: { key: 'admin_operational_settings' },
+      }).catch(() => null);
+      const existingVal = (existingDoc?.value as any) || {};
+
+      const updatedProfileExtra = {
+        name: name || existingVal.profileExtra?.name || 'Super Administrator',
+        email: email || existingVal.profileExtra?.email || 'admin@cybersave.com',
+        phone: normalizedPhone !== undefined ? normalizedPhone : (existingVal.profileExtra?.phone || '+91 98450 19823'),
+        avatarUrl: avatarUrl !== undefined ? avatarUrl : (existingVal.profileExtra?.avatarUrl || ''),
+        kendraId: kendraId || existingVal.profileExtra?.kendraId || 'CSC-DEL-8841',
+        designation: designation || existingVal.profileExtra?.designation || 'Principal Verification Officer (SDM)',
+        district: district || existingVal.profileExtra?.district || 'Central Delhi, NCT of Delhi',
+      };
+
+      await this.prisma.systemSetting.upsert({
+        where: { key: 'admin_operational_settings' },
+        update: {
+          value: {
+            ...existingVal,
+            profileExtra: updatedProfileExtra,
+          },
+        },
+        create: {
+          key: 'admin_operational_settings',
+          value: {
+            profileExtra: updatedProfileExtra,
+          },
+        },
+      }).catch(() => null);
+
+      AdminGateway.broadcast('admin_profile_updated', updatedProfileExtra);
+      client.emit('update_admin_profile_success', updatedProfileExtra);
+    } catch (e) {
+      console.error('[AdminGateway] update_admin_profile error:', e);
+    }
+  }
 }

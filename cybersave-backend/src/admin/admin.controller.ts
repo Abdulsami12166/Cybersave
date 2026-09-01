@@ -1045,24 +1045,28 @@ export class AdminController {
   @Get(['api/admin/profile', 'admin/profile'])
   @ApiOperation({ summary: 'Get Admin Profile' })
   async getAdminProfile() {
-    const adminUser = await this.prisma.user.findFirst({
-      where: { role: 'ADMIN' },
-      include: { profile: true },
-    });
-
     const settingsDoc = await this.prisma.systemSetting.findUnique({
       where: { key: 'admin_operational_settings' },
     }).catch(() => null);
     const extra = (settingsDoc?.value as any)?.profileExtra || {};
+
+    const adminUser = await this.prisma.user.findFirst({
+      where: { OR: [{ role: 'ADMIN' }, { email: 'admin@cybersave.com' }] },
+      include: { profile: true },
+    });
+
+    const phone = extra.phone !== undefined && extra.phone !== null && extra.phone !== ''
+      ? extra.phone
+      : (adminUser?.phone || adminUser?.profile?.phone || '+91 98450 19823');
 
     return {
       id: adminUser?.id || 'admin-root-01',
       name: extra.name || adminUser?.profile?.fullName || (adminUser?.email === 'admin@cybersave.com' ? 'Super Administrator' : 'Administrator'),
       email: extra.email || adminUser?.email || 'admin@cybersave.com',
       role: adminUser?.role === 'ADMIN' ? 'Super Admin' : 'Sub-Admin / Operator',
-      phone: extra.phone || adminUser?.phone || adminUser?.profile?.phone || '+91 98450 19823',
+      phone,
       avatarUrl: extra.avatarUrl !== undefined ? extra.avatarUrl : (adminUser?.profile?.avatarUrl || ''),
-      kendraId: extra.kendraId || adminUser?.profile?.state || 'CSC-DEL-8841',
+      kendraId: extra.kendraId || 'CSC-DEL-8841',
       designation: extra.designation || 'Principal Verification Officer (SDM)',
       district: extra.district || adminUser?.profile?.district || 'Central Delhi, NCT of Delhi',
     };
@@ -1075,15 +1079,17 @@ export class AdminController {
     
     // 1. Update all admin users and profiles in MongoDB
     const allAdmins = await this.prisma.user.findMany({
-      where: { role: 'ADMIN' },
+      where: { OR: [{ role: 'ADMIN' }, { email: 'admin@cybersave.com' }] },
       include: { profile: true },
     });
+
+    const normalizedPhone = phone !== undefined && phone !== null ? String(phone).trim() : undefined;
 
     for (const adm of allAdmins) {
       await this.prisma.user.update({
         where: { id: adm.id },
         data: {
-          phone: phone || adm.phone,
+          phone: normalizedPhone !== undefined ? normalizedPhone : adm.phone,
         },
       }).catch(() => null);
 
@@ -1092,7 +1098,7 @@ export class AdminController {
           where: { id: adm.profile.id },
           data: {
             fullName: name || adm.profile.fullName,
-            phone: phone || adm.profile.phone,
+            phone: normalizedPhone !== undefined ? normalizedPhone : adm.profile.phone,
             district: district || adm.profile.district,
             avatarUrl: avatarUrl !== undefined ? avatarUrl : adm.profile.avatarUrl,
           },
@@ -1102,7 +1108,7 @@ export class AdminController {
           data: {
             userId: adm.id,
             fullName: name || 'Super Administrator',
-            phone: phone || '+91 98450 19823',
+            phone: normalizedPhone || '+91 98450 19823',
             district: district || 'Central Delhi, NCT of Delhi',
             avatarUrl: avatarUrl || '',
           },
@@ -1119,7 +1125,7 @@ export class AdminController {
     const updatedProfileExtra = {
       name: name || existingVal.profileExtra?.name || 'Super Administrator',
       email: email || existingVal.profileExtra?.email || 'admin@cybersave.com',
-      phone: phone || existingVal.profileExtra?.phone || '+91 98450 19823',
+      phone: normalizedPhone !== undefined ? normalizedPhone : (existingVal.profileExtra?.phone || '+91 98450 19823'),
       avatarUrl: avatarUrl !== undefined ? avatarUrl : (existingVal.profileExtra?.avatarUrl || ''),
       kendraId: kendraId || existingVal.profileExtra?.kendraId || 'CSC-DEL-8841',
       designation: designation || existingVal.profileExtra?.designation || 'Principal Verification Officer (SDM)',
@@ -1142,12 +1148,15 @@ export class AdminController {
       },
     }).catch(() => null);
 
+    // 3. Broadcast real-time update event
+    AdminGateway.broadcast('admin_profile_updated', updatedProfileExtra);
+
     const firstAdminId = allAdmins[0]?.id || 'admin-root-01';
     await this.prisma.auditLog.create({
       data: {
         userId: firstAdminId,
         action: 'ADMIN_PROFILE_UPDATED',
-        details: `Administrator profile coordinates updated: ${name} (${email})`,
+        details: `Administrator profile coordinates updated: ${name || 'Admin'} (${normalizedPhone || phone})`,
       },
     }).catch(() => null);
 
