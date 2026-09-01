@@ -1,0 +1,163 @@
+version: '3.8'
+
+services:
+  # ----------------------------------------------------
+  # 1. Unified API Gateway (Public Entrypoint)
+  # ----------------------------------------------------
+  api-gateway:
+    build:
+      context: ./cybersave-backend
+      dockerfile: Dockerfile
+    command: node dist/microservices/gateway/gateway.js
+    container_name: cybersave-api-gateway
+    restart: always
+    ports:
+      - "3000:3000"
+    environment:
+      - NODE_ENV=production
+      - GATEWAY_PORT=3000
+      - AUTH_SERVICE_URL=http://auth-service:3001
+      - APPLICATION_SERVICE_URL=http://application-service:3002
+      - PAYMENT_SERVICE_URL=http://payment-service:3003
+      - DOCUMENT_SERVICE_URL=http://document-service:3004
+      - AI_SERVICE_URL=http://ai-service:3005
+      - ADMIN_SERVICE_URL=http://admin-service:3006
+    depends_on:
+      - auth-service
+      - application-service
+      - payment-service
+      - document-service
+      - ai-service
+      - admin-service
+    networks:
+      - cybersave-net
+
+  # ----------------------------------------------------
+  # 2. Auth & Identity Microservice
+  # ----------------------------------------------------
+  auth-service:
+    build:
+      context: ./cybersave-backend
+      dockerfile: Dockerfile
+    command: node dist/microservices/auth/auth.service.app.js
+    container_name: cybersave-auth-service
+    restart: always
+    ports:
+      - "3001:3001"
+    env_file:
+      - ./cybersave-backend/.env
+    environment:
+      - AUTH_SERVICE_PORT=3001
+    networks:
+      - cybersave-net
+
+  # ----------------------------------------------------
+  # 3. Application & Scheme Microservice
+  # ----------------------------------------------------
+  application-service:
+    build:
+      context: ./cybersave-backend
+      dockerfile: Dockerfile
+    command: node dist/microservices/application/application.service.app.js
+    container_name: cybersave-application-service
+    restart: always
+    ports:
+      - "3002:3002"
+    env_file:
+      - ./cybersave-backend/.env
+    environment:
+      - APPLICATION_SERVICE_PORT=3002
+    networks:
+      - cybersave-net
+
+  # ----------------------------------------------------
+  # 4. Payment & Wallet Microservice
+  # ----------------------------------------------------
+  payment-service:
+    build:
+      context: ./cybersave-backend
+      dockerfile: Dockerfile
+    command: node dist/microservices/payment/payment.service.app.js
+    container_name: cybersave-payment-service
+    restart: always
+    ports:
+      - "3003:3003"
+    env_file:
+      - ./cybersave-backend/.env
+    environment:
+      - PAYMENT_SERVICE_PORT=3003
+    networks:
+      - cybersave-net
+
+  # ----------------------------------------------------
+  # 5. Document & KYC Vault Microservice
+  # ----------------------------------------------------
+  document-service:
+    build:
+      context: ./cybersave-backend
+      dockerfile: Dockerfile
+    command: node dist/microservices/document/document.service.app.js
+    container_name: cybersave-document-service
+    restart: always
+    ports:
+      - "3004:3004"
+    env_file:
+      - ./cybersave-backend/.env
+    environment:
+      - DOCUMENT_SERVICE_PORT=3004
+    networks:
+      - cybersave-net
+
+  # ----------------------------------------------------
+  # 6. AI Assistant Microservice
+  # ----------------------------------------------------
+  ai-service:
+    build:
+      context: ./cybersave-backend
+      dockerfile: Dockerfile
+    command: node dist/microservices/ai/ai.service.app.js
+    container_name: cybersave-ai-service
+    restart: always
+    ports:
+      - "3005:3005"
+    env_file:
+      - ./cybersave-backend/.env
+    environment:
+      - AI_SERVICE_PORT=3005
+    networks:
+      - cybersave-net
+
+  # ----------------------------------------------------
+  # 7. Admin & Real-Time Gateway Microservice
+  # ----------------------------------------------------
+  admin-service:
+    build:
+      context: ./cybersave-backend
+      dockerfile: Dockerfile
+    command: node dist/microservices/admin/admin.service.app.js
+    container_name: cybersave-admin-service
+    restart: always
+    ports:
+      - "3006:3006"
+    env_file:
+      - ./cybersave-backend/.env
+    environment:
+      - ADMIN_SERVICE_PORT=3006
+    networks:
+      - cybersave-net
+
+  # ----------------------------------------------------
+  # 8. Redis Event Bus & Job Queue
+  # ----------------------------------------------------
+  redis:
+    image: redis:7-alpine
+    container_name: cybersave-redis
+    restart: always
+    ports:
+      - "6379:6379"
+    networks:
+      - cybersave-net
+
+networks:
+  cybersave-net:
+    driver: bridge
