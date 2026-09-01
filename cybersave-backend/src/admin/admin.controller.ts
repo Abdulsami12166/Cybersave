@@ -92,7 +92,85 @@ export class AdminController {
   @Post(['api/v1/support/feedback', 'api/support/feedback', 'support/feedback'])
   @ApiOperation({ summary: 'Submit Customer Feedback from Mobile' })
   async submitFeedbackRest(@Body() body: any) {
-    return { success: true, message: 'Feedback recorded successfully' };
+    const { userId, rating, improvementCategory, feedbackText, imageUrl, attachmentUrl } = body;
+    const finalImageUrl = imageUrl || attachmentUrl || null;
+    const numericRating = typeof rating === 'number' ? rating : parseInt(rating, 10) || 5;
+
+    let resolvedUserId = userId;
+    // ponytail: resolve user by mongo ID or phone/email if non-standard ID provided
+    if (resolvedUserId && !/^[0-9a-fA-F]{24}$/.test(resolvedUserId)) {
+      const user = await this.prisma.user.findFirst({
+        where: {
+          OR: [{ email: resolvedUserId }, { phone: resolvedUserId }],
+        },
+      });
+      if (user) resolvedUserId = user.id;
+      else resolvedUserId = null;
+    }
+
+    if (!resolvedUserId) {
+      const firstUser = await this.prisma.user.findFirst({ where: { role: 'USER' } });
+      resolvedUserId = firstUser?.id || null;
+    }
+
+    const feedback = await (this.prisma as any).feedback.create({
+      data: {
+        userId: resolvedUserId,
+        rating: numericRating,
+        improvementCategory: improvementCategory || 'App Experience',
+        feedbackText: feedbackText || '',
+        imageUrl: finalImageUrl,
+      },
+    });
+
+    // Record real-time user activity in AuditLog
+    if (resolvedUserId) {
+      const truncatedComment = (feedbackText || '').substring(0, 60);
+      const imgNote = finalImageUrl ? ' [Image Attached]' : '';
+      await this.prisma.auditLog.create({
+        data: {
+          userId: resolvedUserId,
+          action: 'FEEDBACK_SUBMITTED',
+          details: `Submitted ${numericRating}-Star Feedback (${improvementCategory || 'General'}): "${truncatedComment}${feedbackText && feedbackText.length > 60 ? '...' : ''}"${imgNote}`,
+        },
+      });
+    }
+
+    // Broadcast live event to admin dashboard
+    AdminGateway.broadcast('new_user_feedback', {
+      userId: resolvedUserId,
+      feedback: {
+        id: feedback.id,
+        rating: feedback.rating,
+        category: feedback.improvementCategory,
+        feedbackText: feedback.feedbackText,
+        imageUrl: feedback.imageUrl,
+        date: new Date().toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' }),
+      },
+    });
+
+    AdminGateway.broadcast('admin_notification', {
+      type: 'FEEDBACK',
+      title: `New ${numericRating}★ Feedback Received`,
+      message: `${(feedbackText || '').substring(0, 60)}...`,
+      time: 'Just now',
+    });
+
+    return {
+      success: true,
+      message: 'Feedback recorded successfully',
+      feedback,
+    };
+  }
+
+  @Get(['api/v1/support/feedbacks', 'api/support/feedbacks', 'support/feedbacks'])
+  @ApiOperation({ summary: 'List all Customer Feedbacks' })
+  async getFeedbacksList() {
+    return (this.prisma as any).feedback.findMany({
+      include: { user: { include: { profile: true } } },
+      orderBy: { createdAt: 'desc' },
+      take: 50,
+    });
   }
 
   // Handles both /api/auth/login and /auth/login for the admin portal

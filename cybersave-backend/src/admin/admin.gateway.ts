@@ -231,7 +231,8 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
             applications: { include: { service: true }, orderBy: { submittedAt: 'desc' } },
             documents: true,
             aadhaarDocs: true,
-            auditLogs: { orderBy: { createdAt: 'desc' }, take: 15 },
+            auditLogs: { orderBy: { createdAt: 'desc' }, take: 20 },
+            feedbacks: { orderBy: { createdAt: 'desc' } },
           },
         });
       }
@@ -245,7 +246,8 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
             applications: { include: { service: true }, orderBy: { submittedAt: 'desc' } },
             documents: true,
             aadhaarDocs: true,
-            auditLogs: { orderBy: { createdAt: 'desc' }, take: 15 },
+            auditLogs: { orderBy: { createdAt: 'desc' }, take: 20 },
+            feedbacks: { orderBy: { createdAt: 'desc' } },
           },
         });
         u = allUsers.find((x) => x.id.substring(0, 5).toUpperCase() === shortId) || null;
@@ -259,7 +261,8 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
             applications: { include: { service: true }, orderBy: { submittedAt: 'desc' } },
             documents: true,
             aadhaarDocs: true,
-            auditLogs: { orderBy: { createdAt: 'desc' }, take: 15 },
+            auditLogs: { orderBy: { createdAt: 'desc' }, take: 20 },
+            feedbacks: { orderBy: { createdAt: 'desc' } },
           },
         });
       }
@@ -272,7 +275,8 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
             applications: { include: { service: true }, orderBy: { submittedAt: 'desc' } },
             documents: true,
             aadhaarDocs: true,
-            auditLogs: { orderBy: { createdAt: 'desc' }, take: 15 },
+            auditLogs: { orderBy: { createdAt: 'desc' }, take: 20 },
+            feedbacks: { orderBy: { createdAt: 'desc' } },
           },
         });
       }
@@ -597,15 +601,50 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
       };
     });
 
+    // Feedbacks & Reviews
+    const feedbacks = (u.feedbacks || []).map((fb: any) => ({
+      id: fb.id,
+      rating: fb.rating || 5,
+      improvementCategory: fb.improvementCategory || 'App Experience',
+      feedbackText: fb.feedbackText || '',
+      imageUrl: fb.imageUrl || null,
+      date: fb.createdAt ? new Date(fb.createdAt).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' }) : 'Recently',
+      dateTime: fb.createdAt ? new Date(fb.createdAt).toLocaleString('en-IN', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' }) : 'Recently',
+      createdAt: fb.createdAt ? fb.createdAt.toISOString() : null,
+    }));
+
     // Recent Activity
     const rawLogs = u.auditLogs || [];
     const recentActivity: any[] = [];
+    const seenLogDetails = new Set<string>();
+
+    // ponytail: merge feedbacks directly into citizen recent activity
+    feedbacks.forEach((fb: any) => {
+      const starStr = '★'.repeat(fb.rating) + '☆'.repeat(5 - fb.rating);
+      const title = `${starStr} (${fb.rating}/5) Feedback: "${fb.feedbackText.substring(0, 50)}${fb.feedbackText.length > 50 ? '...' : ''}"`;
+      seenLogDetails.add(fb.id);
+      recentActivity.push({
+        id: `fb_${fb.id}`,
+        title,
+        action: 'FEEDBACK_SUBMITTED',
+        rating: fb.rating,
+        category: fb.improvementCategory,
+        feedbackText: fb.feedbackText,
+        imageUrl: fb.imageUrl,
+        date: fb.date,
+        color: '#FFB800',
+      });
+    });
 
     rawLogs.forEach((l: any) => {
       let color = '#2563EB';
       if (l.action?.includes('REJECT') || l.action?.includes('BLOCK')) color = '#EF4444';
       else if (l.action?.includes('APPROV') || l.action?.includes('COMPLET') || l.action?.includes('PAY')) color = '#10B981';
+      else if (l.action?.includes('FEEDBACK')) color = '#FFB800';
       else if (l.action?.includes('PEND') || l.action?.includes('VERIF')) color = '#F59E0B';
+
+      // Avoid duplicate feedback logs if already merged above
+      if (l.action === 'FEEDBACK_SUBMITTED' && feedbacks.length > 0) return;
 
       recentActivity.push({
         id: l.id,
@@ -657,6 +696,7 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
       recentServices,
       uploadedDocuments: docList,
       recentActivity,
+      feedbacks,
     };
   }
 
@@ -2021,6 +2061,25 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
       client.emit('reset_operator_password_success', { id: data.id });
     } catch (e) {
       console.error('[AdminGateway] reset_operator_password error:', e);
+    }
+  }
+
+  @SubscribeMessage('request_user_feedbacks')
+  async handleRequestUserFeedbacks(
+    @ConnectedSocket() client: Socket,
+    @MessageBody() data?: { userId?: string },
+  ) {
+    try {
+      const whereClause = data?.userId ? { userId: data.userId } : {};
+      const feedbacks = await (this.prisma as any).feedback.findMany({
+        where: whereClause,
+        include: { user: { include: { profile: true } } },
+        orderBy: { createdAt: 'desc' },
+        take: 50,
+      });
+      client.emit('response_user_feedbacks', feedbacks);
+    } catch (e) {
+      console.error('[AdminGateway] request_user_feedbacks error:', e);
     }
   }
 }
