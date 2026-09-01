@@ -172,9 +172,19 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
       }, 0);
 
       const appsToday = todayApps.length;
-      const pendingApps = allApps.filter((a) => a.status === 'PENDING' || a.status === 'SUBMITTED' || a.status === 'VERIFYING' || a.status === 'IN_PROGRESS').length;
-      const completedAppsToday = todayApps.filter((a) => a.status === 'COMPLETED' || a.status === 'APPROVED').length;
-      const rejectedAppsToday = todayApps.filter((a) => a.status === 'REJECTED').length;
+      const pendingApps = allApps.filter((a) => {
+        const st = (a.status || '').toUpperCase();
+        return st === 'PENDING' || st === 'SUBMITTED' || st === 'VERIFYING' || st === 'IN_PROGRESS';
+      }).length;
+      const completedAppsToday = todayApps.filter((a) => {
+        const st = (a.status || '').toUpperCase();
+        return st === 'COMPLETED' || st === 'APPROVED';
+      }).length;
+      const totalApproved = allApps.filter((a) => {
+        const st = (a.status || '').toUpperCase();
+        return st === 'COMPLETED' || st === 'APPROVED';
+      }).length;
+      const rejectedAppsToday = todayApps.filter((a) => (a.status || '').toUpperCase() === 'REJECTED').length;
 
       const activeCentres = await this.prisma.user.count({
         where: { role: 'ADMIN' },
@@ -205,9 +215,15 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
           const fee = typeof a.feePaid === 'number' && !isNaN(a.feePaid) ? a.feePaid : (a.feePaid ? Number(a.feePaid) : 55.0);
           return acc + fee;
         }, 0);
-        const dayComp = dayApps.filter((a) => a.status === 'COMPLETED' || a.status === 'APPROVED').length;
-        const dayPend = dayApps.filter((a) => a.status === 'PENDING' || a.status === 'SUBMITTED' || a.status === 'VERIFYING' || a.status === 'IN_PROGRESS').length;
-        const dayRej = dayApps.filter((a) => a.status === 'REJECTED').length;
+        const dayComp = dayApps.filter((a) => {
+          const st = (a.status || '').toUpperCase();
+          return st === 'COMPLETED' || st === 'APPROVED';
+        }).length;
+        const dayPend = dayApps.filter((a) => {
+          const st = (a.status || '').toUpperCase();
+          return st === 'PENDING' || st === 'SUBMITTED' || st === 'VERIFYING' || st === 'IN_PROGRESS';
+        }).length;
+        const dayRej = dayApps.filter((a) => (a.status || '').toUpperCase() === 'REJECTED').length;
 
         revenueOverview.push({
           day: dayShort,
@@ -232,6 +248,8 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
           totalApps: allApps.length,
           pendingApps: pendingApps,
           completedAppsToday: completedAppsToday,
+          totalApproved: totalApproved,
+          approvedApps: totalApproved,
           rejectedAppsToday: rejectedAppsToday,
           activeCentres: activeCentres || 1,
         },
