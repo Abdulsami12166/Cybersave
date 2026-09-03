@@ -6,6 +6,7 @@ import {
   Patch,
   Param,
   Body,
+  Query,
   UnauthorizedException,
   BadRequestException,
   NotFoundException,
@@ -63,15 +64,51 @@ export class AdminController {
   }
 
   @Post(['api/v1/support/tickets', 'api/support/tickets', 'support/tickets'])
-  @ApiOperation({ summary: 'Create Support Ticket from Mobile or Web' })
+  @ApiOperation({ summary: 'Create Support Ticket / Grievance from Mobile or Web' })
   async createSupportTicketRest(@Body() body: any) {
     const { category, subject, description, priority, userId, attachmentUrl } = body;
 
     let resolvedUserId = userId;
-    if (!resolvedUserId) {
-      const defaultUser = await this.prisma.user.findFirst();
-      resolvedUserId = defaultUser?.id || '';
+    const isMongoId = (s?: string) => typeof s === 'string' && /^[0-9a-fA-F]{24}$/.test(s);
+    let userObj: any = null;
+
+    if (resolvedUserId && isMongoId(resolvedUserId)) {
+      userObj = await this.prisma.user.findUnique({
+        where: { id: resolvedUserId },
+        include: { profile: true },
+      }).catch(() => null);
     }
+
+    if (!userObj && resolvedUserId) {
+      userObj = await this.prisma.user.findFirst({
+        where: { OR: [{ email: resolvedUserId }, { phone: resolvedUserId }] },
+        include: { profile: true },
+      }).catch(() => null);
+      if (userObj) resolvedUserId = userObj.id;
+    }
+
+    if (!userObj) {
+      userObj = await this.prisma.user.findFirst({
+        where: { role: 'USER' },
+        include: { profile: true },
+      }).catch(() => null);
+      resolvedUserId = userObj?.id || null;
+    }
+
+    const citizenName = userObj?.profile?.fullName || (userObj?.email ? userObj.email.split('@')[0] : 'Citizen');
+    const nowTimeStr = new Date().toLocaleString('en-IN', { dateStyle: 'medium', timeStyle: 'short' });
+
+    const initialMessages = [
+      {
+        id: `msg-${Date.now()}`,
+        senderId: resolvedUserId || 'citizen',
+        senderName: citizenName,
+        role: 'USER',
+        text: description || subject || 'Citizen reported an operational issue.',
+        attachmentUrl: attachmentUrl || null,
+        time: nowTimeStr,
+      },
+    ];
 
     const ticket = await this.prisma.supportTicket.create({
       data: {
@@ -83,10 +120,248 @@ export class AdminController {
         priority: priority || 'Medium',
         status: 'OPEN',
         userId: resolvedUserId,
+        messages: initialMessages as any,
+      },
+      include: { user: { include: { profile: true } } },
+    });
+
+    AdminGateway.broadcast('support_tickets_updated');
+    AdminGateway.broadcast('new_support_ticket', ticket);
+
+    return { success: true, ticket };
+  }
+
+  @Post(['api/v1/support/tickets/:id/reply', 'api/support/tickets/:id/reply', 'support/tickets/:id/reply'])
+  @ApiOperation({ summary: 'Admin Sends Official Response to Citizen Grievance' })
+  async replyToSupportTicketRest(@Param('id') id: string, @Body() body: any) {
+    const { text, adminName, adminEmail, adminId, adminRole } = body;
+    if (!text || !text.trim()) {
+      throw new BadRequestException('Response text cannot be empty');
+    }
+
+    const isMongoId = (s?: string) => typeof s === 'string' && /^[0-9a-fA-F]{24}$/.test(s);
+    const orConditions: any[] = [{ refNumber: id }, { refNumber: `TKT-${id}` }];
+    if (isMongoId(id)) {
+      orConditions.push({ id });
+    }
+
+    const ticket = await this.prisma.supportTicket.findFirst({
+      where: { OR: orConditions },
+      include: { user: { include: { profile: true } } },
+    });
+
+    if (!ticket) {
+      throw new NotFoundException(`Grievance / Ticket ${id} not found`);
+    }
+
+    const actingName = adminName || (adminEmail ? adminEmail.split('@')[0] : 'Support Officer (SDM)');
+    const actingRole = adminRole || (adminEmail === 'admin@cybersave.com' ? 'Super Administrator' : 'Sub-Admin / Operator');
+    const nowTimeStr = new Date().toLocaleString('en-IN', { dateStyle: 'medium', timeStyle: 'short' });
+
+    const existingMsgs = Array.isArray(ticket.messages) ? (ticket.messages as any[]) : [];
+    const replyMsg = {
+      id: `msg-${Date.now()}`,
+      senderId: adminId || 'admin',
+      senderName: `${actingName} (${actingRole})`,
+      role: 'AGENT',
+      text: text.trim(),
+      time: nowTimeStr,
+    };
+
+    const updatedMsgs = [...existingMsgs, replyMsg];
+
+    const updatedTicket = await this.prisma.supportTicket.update({
+      where: { id: ticket.id },
+      data: {
+        messages: updatedMsgs as any,
+        status: 'IN_PROGRESS',
+        updatedAt: new Date(),
+      },
+      include: { user: { include: { profile: true } } },
+    });
+
+    // 1. Notify that particular citizen
+    if (ticket.userId) {
+      await this.prisma.notification.create({
+        data: {
+          userId: ticket.userId,
+          title: `Official Response on Ticket #${ticket.refNumber}`,
+          body: text.length > 80 ? `${text.slice(0, 80)}...` : text,
+          type: 'INFO',
+          status: 'SENT',
+        },
+      }).catch(() => null);
+
+      // Real-time broadcast directly to that user's mobile app
+      AdminGateway.broadcast('user_grievance_reply', {
+        userId: ticket.userId,
+        ticketId: ticket.refNumber,
+        ticketTitle: ticket.title,
+        message: replyMsg,
+      });
+    }
+
+    // 2. Record in Audit Log
+    await AdminGateway.logActivity(this.prisma, {
+      userId: adminId,
+      userEmail: adminEmail,
+      userName: actingName,
+      action: 'GRIEVANCE_REPLY_SENT',
+      details: `Official response dispatched to citizen ${(ticket.user as any)?.profile?.fullName || ticket.user?.email || 'User'} on ticket #${ticket.refNumber}: "${text.slice(0, 70)}"`,
+    });
+
+    // 3. Broadcast to Admin Console
+    AdminGateway.broadcast('support_tickets_updated');
+    AdminGateway.broadcast('response_ticket_thread', {
+      id: ticket.refNumber,
+      title: ticket.title,
+      description: ticket.description,
+      attachmentUrl: ticket.attachmentUrl,
+      category: ticket.category,
+      priority: ticket.priority,
+      status: updatedTicket.status,
+      createdOn: ticket.createdAt.toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' }),
+      lastUpdated: new Date().toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' }),
+      assignedTo: { id: adminId || 'admin1', name: actingName },
+      reporter: {
+        id: ticket.userId || 'user1',
+        name: (ticket.user as any)?.profile?.fullName || ticket.user?.email || 'Citizen User',
+      },
+      messages: updatedMsgs,
+      notes: [],
+    });
+
+    return {
+      success: true,
+      message: 'Official response sent to citizen successfully',
+      ticket: updatedTicket,
+      reply: replyMsg,
+    };
+  }
+
+  @Get(['api/v1/support/user-tickets', 'api/support/user-tickets', 'support/user-tickets'])
+  @ApiOperation({ summary: 'Get Grievances and Admin Replies for Specific Mobile User' })
+  async getUserSupportTicketsRest(@Query('userId') userId?: string) {
+    let resolvedUserId = userId;
+    const isMongoId = (s?: string) => typeof s === 'string' && /^[0-9a-fA-F]{24}$/.test(s);
+
+    if (resolvedUserId && !isMongoId(resolvedUserId)) {
+      const user = await this.prisma.user.findFirst({
+        where: { OR: [{ email: resolvedUserId }, { phone: resolvedUserId }] },
+      }).catch(() => null);
+      if (user) resolvedUserId = user.id;
+    }
+
+    if (!resolvedUserId) {
+      return { success: true, tickets: [] };
+    }
+
+    const tickets = await this.prisma.supportTicket.findMany({
+      where: { userId: resolvedUserId },
+      orderBy: { updatedAt: 'desc' },
+      include: { user: { include: { profile: true } } },
+    });
+
+    const formatted = tickets.map((t) => {
+      const msgs = Array.isArray(t.messages) ? (t.messages as any[]) : [];
+      const adminReplies = msgs.filter((m) => m.role === 'AGENT');
+      const latestAdminReply = adminReplies[adminReplies.length - 1] || null;
+
+      return {
+        id: t.id,
+        refNumber: t.refNumber,
+        title: t.title,
+        description: t.description,
+        category: t.category,
+        priority: t.priority,
+        status: t.status,
+        attachmentUrl: t.attachmentUrl,
+        createdAt: t.createdAt.toISOString(),
+        updatedAt: t.updatedAt.toISOString(),
+        messages: msgs,
+        hasAdminReply: adminReplies.length > 0,
+        latestAdminReply,
+      };
+    });
+
+    return {
+      success: true,
+      tickets: formatted,
+      count: formatted.length,
+    };
+  }
+
+  @Post(['api/v1/support/user-reply', 'api/support/user-reply', 'support/user-reply'])
+  @ApiOperation({ summary: 'Citizen Sends Follow-up Message from Mobile' })
+  async postUserSupportReplyRest(@Body() body: any) {
+    const { ticketId, text, userId } = body;
+    if (!text || !text.trim() || !ticketId) {
+      throw new BadRequestException('Ticket ID and message text are required');
+    }
+
+    const isMongoId = (s?: string) => typeof s === 'string' && /^[0-9a-fA-F]{24}$/.test(s);
+    const orConditions: any[] = [{ refNumber: ticketId }, { refNumber: `TKT-${ticketId}` }];
+    if (isMongoId(ticketId)) {
+      orConditions.push({ id: ticketId });
+    }
+
+    const ticket = await this.prisma.supportTicket.findFirst({
+      where: { OR: orConditions },
+      include: { user: { include: { profile: true } } },
+    });
+
+    if (!ticket) {
+      throw new NotFoundException(`Ticket ${ticketId} not found`);
+    }
+
+    const citizenName = (ticket.user as any)?.profile?.fullName || ticket.user?.email?.split('@')[0] || 'Citizen';
+    const nowTimeStr = new Date().toLocaleString('en-IN', { dateStyle: 'medium', timeStyle: 'short' });
+
+    const existingMsgs = Array.isArray(ticket.messages) ? (ticket.messages as any[]) : [];
+    const newMsg = {
+      id: `msg-${Date.now()}`,
+      senderId: userId || ticket.userId || 'citizen',
+      senderName: citizenName,
+      role: 'USER',
+      text: text.trim(),
+      time: nowTimeStr,
+    };
+
+    const updatedMsgs = [...existingMsgs, newMsg];
+
+    const updatedTicket = await this.prisma.supportTicket.update({
+      where: { id: ticket.id },
+      data: {
+        messages: updatedMsgs as any,
+        updatedAt: new Date(),
       },
     });
 
-    return { success: true, ticket };
+    AdminGateway.broadcast('support_tickets_updated');
+    AdminGateway.broadcast('response_ticket_thread', {
+      id: ticket.refNumber,
+      title: ticket.title,
+      description: ticket.description,
+      attachmentUrl: ticket.attachmentUrl,
+      category: ticket.category,
+      priority: ticket.priority,
+      status: ticket.status,
+      createdOn: ticket.createdAt.toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' }),
+      lastUpdated: new Date().toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' }),
+      assignedTo: { id: 'admin1', name: 'Support Desk' },
+      reporter: {
+        id: ticket.userId || 'user1',
+        name: citizenName,
+      },
+      messages: updatedMsgs,
+      notes: [],
+    });
+
+    return {
+      success: true,
+      message: 'Follow-up message recorded',
+      ticket: updatedTicket,
+    };
   }
 
   @Post(['api/v1/support/feedback', 'api/support/feedback', 'support/feedback'])

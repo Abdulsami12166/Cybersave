@@ -2221,19 +2221,13 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
       const ticketDesc = foundTicket?.description || foundTicket?.title || 'Citizen raised an inquiry regarding portal operations.';
       const attachmentUrl = foundTicket?.attachmentUrl || null;
 
-      client.emit('response_ticket_thread', {
-        id: foundTicket?.refNumber || ticketId || 'TKT-2024-001',
-        title: ticketTitle,
-        description: ticketDesc,
-        attachmentUrl: attachmentUrl,
-        category: foundTicket?.category || 'Technical Support',
-        priority: foundTicket?.priority || 'Medium',
-        createdOn: foundTicket ? foundTicket.createdAt.toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' }) : 'Today',
-        lastUpdated: foundTicket ? foundTicket.updatedAt.toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' }) : 'Today',
-        assignedTo: { id: 'admin1', name: foundTicket?.assignedTo || 'Amit S. (Support Desk)' },
-        reporter: { id: reporterId, name: reporterName },
-        messages: [
+      let rawMessages: any[] = [];
+      if (Array.isArray(foundTicket?.messages) && foundTicket.messages.length > 0) {
+        rawMessages = foundTicket.messages;
+      } else {
+        rawMessages = [
           {
+            id: `msg-${foundTicket?.id || '1'}`,
             senderId: reporterId,
             senderName: reporterName,
             role: 'USER',
@@ -2241,25 +2235,135 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
             text: ticketDesc,
             attachmentUrl: attachmentUrl,
           },
-          {
-            senderId: 'admin1',
-            senderName: 'Support Officer (SDM)',
-            role: 'AGENT',
-            time: 'Just now',
-            text: 'Hello, our support team has received your ticket and verified the attached details. We are investigating and will update you shortly.',
-          },
-        ],
+        ];
+      }
+
+      client.emit('response_ticket_thread', {
+        id: foundTicket?.refNumber || ticketId || 'TKT-2024-001',
+        title: ticketTitle,
+        description: ticketDesc,
+        attachmentUrl: attachmentUrl,
+        category: foundTicket?.category || 'Technical Support',
+        priority: foundTicket?.priority || 'Medium',
+        status: foundTicket?.status || 'OPEN',
+        createdOn: foundTicket ? foundTicket.createdAt.toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' }) : 'Today',
+        lastUpdated: foundTicket ? foundTicket.updatedAt.toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' }) : 'Today',
+        assignedTo: { id: 'admin1', name: foundTicket?.assignedTo || 'Amit S. (Support Desk)' },
+        reporter: { id: reporterId, name: reporterName },
+        messages: rawMessages,
         notes: [
           {
-            title: 'Ticket Queued for Investigation',
+            title: 'Ticket Active in Governance Queue',
             author: 'Support Automation Desk',
             time: foundTicket ? foundTicket.createdAt.toLocaleString('en-IN', { dateStyle: 'medium', timeStyle: 'short' }) : 'Just now',
-            content: 'Customer issue logged and proof attachment verified via Cloudinary for administrative audit.',
+            content: 'Customer issue logged and verified via Cloudinary for administrative response.',
           },
         ],
       });
     } catch (e) {
       console.error('[AdminGateway] request_ticket_thread error:', e);
+    }
+  }
+
+  @SubscribeMessage('send_ticket_reply')
+  async handleSendTicketReply(
+    @ConnectedSocket() client: Socket,
+    @MessageBody() data: { id: string; text: string; adminId?: string; adminName?: string; adminRole?: string; adminEmail?: string },
+  ) {
+    try {
+      const ticketId = data?.id;
+      const text = data?.text;
+      if (!ticketId || !text || !text.trim()) return;
+
+      const isMongoId = (idStr?: string) => typeof idStr === 'string' && /^[0-9a-fA-F]{24}$/.test(idStr);
+      const orConditions: any[] = [{ refNumber: ticketId }, { refNumber: `TKT-${ticketId}` }];
+      if (isMongoId(ticketId)) {
+        orConditions.push({ id: ticketId });
+      }
+
+      const ticket = await this.prisma.supportTicket.findFirst({
+        where: { OR: orConditions },
+        include: { user: { include: { profile: true } } },
+      });
+
+      if (!ticket) return;
+
+      const actingName = data.adminName || (data.adminEmail ? data.adminEmail.split('@')[0] : 'Support Officer (SDM)');
+      const actingRole = data.adminRole || (data.adminEmail === 'admin@cybersave.com' ? 'Super Administrator' : 'Sub-Admin / Operator');
+      const nowTimeStr = new Date().toLocaleString('en-IN', { dateStyle: 'medium', timeStyle: 'short' });
+
+      const existingMsgs = Array.isArray(ticket.messages) ? (ticket.messages as any[]) : [];
+      const replyMsg = {
+        id: `msg-${Date.now()}`,
+        senderId: data.adminId || 'admin',
+        senderName: `${actingName} (${actingRole})`,
+        role: 'AGENT',
+        text: text.trim(),
+        time: nowTimeStr,
+      };
+
+      const updatedMsgs = [...existingMsgs, replyMsg];
+
+      await this.prisma.supportTicket.update({
+        where: { id: ticket.id },
+        data: {
+          messages: updatedMsgs as any,
+          status: 'IN_PROGRESS',
+          updatedAt: new Date(),
+        },
+      });
+
+      // 1. Notify that specific user only
+      if (ticket.userId) {
+        await this.prisma.notification.create({
+          data: {
+            userId: ticket.userId,
+            title: `Official Response on Ticket #${ticket.refNumber}`,
+            body: text.length > 80 ? `${text.slice(0, 80)}...` : text,
+            type: 'INFO',
+            status: 'SENT',
+          },
+        }).catch(() => null);
+
+        this.server.emit('user_grievance_reply', {
+          userId: ticket.userId,
+          ticketId: ticket.refNumber,
+          ticketTitle: ticket.title,
+          message: replyMsg,
+        });
+      }
+
+      // 2. Audit log
+      await AdminGateway.logActivity(this.prisma, {
+        userId: data.adminId,
+        userEmail: data.adminEmail,
+        userName: actingName,
+        action: 'GRIEVANCE_REPLY_SENT',
+        details: `Official response dispatched to citizen ${(ticket.user as any)?.profile?.fullName || ticket.user?.email || 'User'} on ticket #${ticket.refNumber}: "${text.slice(0, 70)}"`,
+      });
+
+      // 3. Broadcast updated thread
+      this.server.emit('support_tickets_updated');
+      this.server.emit('response_ticket_thread', {
+        id: ticket.refNumber,
+        title: ticket.title,
+        description: ticket.description,
+        attachmentUrl: ticket.attachmentUrl,
+        category: ticket.category,
+        priority: ticket.priority,
+        status: 'IN_PROGRESS',
+        createdOn: ticket.createdAt.toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' }),
+        lastUpdated: new Date().toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' }),
+        assignedTo: { id: data.adminId || 'admin1', name: actingName },
+        reporter: {
+          id: ticket.userId || 'user1',
+          name: (ticket.user as any)?.profile?.fullName || ticket.user?.email || 'Citizen User',
+        },
+        messages: updatedMsgs,
+        notes: [],
+      });
+    } catch (e) {
+      console.error('[AdminGateway] send_ticket_reply error:', e);
     }
   }
 

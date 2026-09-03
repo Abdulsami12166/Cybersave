@@ -254,6 +254,7 @@ model SupportTicket {
   priority      String   @default("Medium") // High, Medium, Low, Critical
   status        String   @default("OPEN") // OPEN, IN_PROGRESS, RESOLVED, ESCALATED
   assignedTo    String?
+  messages      Json?
   createdAt     DateTime @default(now())
   updatedAt     DateTime @updatedAt
 
