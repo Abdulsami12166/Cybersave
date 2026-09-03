@@ -227,6 +227,12 @@ export class ApplicationsService {
         status: application.status,
         serviceTitle: application.serviceTitle,
       });
+
+      await AdminGateway.logActivity(this.prisma, {
+        userId: application.userId,
+        action: 'APPLICATION_SUBMITTED',
+        details: `New citizen application #${refNumber} created & submitted for "${dto.serviceTitle}"`,
+      });
     } catch (wsErr) {
       this.logger.warn(`WS broadcast error: ${wsErr.message}`);
     }
@@ -352,6 +358,22 @@ export class ApplicationsService {
     try {
       AdminGateway.broadcast('applications_updated', updated);
       AdminGateway.broadcast('application_status_changed', updated);
+
+      let auditAct = `APPLICATION_${targetStatus}`;
+      let auditDet = `Application #${updated.refNumber} (${updated.serviceTitle}) status transitioned to ${targetStatus}`;
+      if (targetStatus === ApplicationStatus.APPROVED) {
+        auditAct = 'APPLICATION_APPROVED';
+        auditDet = `Application #${updated.refNumber} (${updated.serviceTitle}) verified & APPROVED by officer. Digital certificate authorization issued.`;
+      } else if (targetStatus === ApplicationStatus.REJECTED) {
+        auditAct = 'APPLICATION_REJECTED';
+        auditDet = `Application #${updated.refNumber} (${updated.serviceTitle}) REJECTED by officer. Reason: ${rejectionReason || 'Document verification issue'}`;
+      }
+
+      await AdminGateway.logActivity(this.prisma, {
+        userId: updated.userId,
+        action: auditAct,
+        details: auditDet,
+      });
     } catch (wsErr) {
       this.logger.warn(`WS broadcast error: ${wsErr.message}`);
     }
@@ -400,13 +422,11 @@ export class ApplicationsService {
       },
     });
 
-    await this.prisma.auditLog.create({
-      data: {
-        userId: app.userId,
-        action: 'APPLICATION_ASSIGNED_TO_OPERATOR',
-        details: `Application #${app.refNumber} assigned to Sub-Admin / Operator: ${operatorName}`,
-      },
-    }).catch(() => null);
+    await AdminGateway.logActivity(this.prisma, {
+      userId: app.userId,
+      action: 'APPLICATION_ASSIGNED',
+      details: `Application #${app.refNumber} (${app.serviceTitle || 'Citizen Application'}) assigned to verification officer: ${operatorName}`,
+    });
 
     try {
       AdminGateway.broadcast('applications_updated', updated);

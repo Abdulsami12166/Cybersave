@@ -35,6 +35,61 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
     }
   }
 
+  static async logActivity(
+    prisma: PrismaService,
+    params: {
+      userId?: string;
+      userEmail?: string;
+      action: string;
+      details: string;
+      ipAddress?: string;
+    },
+  ) {
+    try {
+      let resolvedUserId = params.userId;
+      if (!resolvedUserId && params.userEmail) {
+        const u = await prisma.user.findFirst({
+          where: { email: params.userEmail.toLowerCase().trim() },
+        }).catch(() => null);
+        if (u) resolvedUserId = u.id;
+      }
+
+      if (!resolvedUserId) {
+        const adminUser = await prisma.user.findFirst({
+          where: { OR: [{ email: 'admin@cybersave.com' }, { role: 'ADMIN' }] },
+        }).catch(() => null);
+        resolvedUserId = adminUser?.id;
+      }
+
+      const log = await prisma.auditLog.create({
+        data: {
+          userId: resolvedUserId,
+          action: params.action,
+          details: params.details,
+          ipAddress: params.ipAddress || '192.168.1.1',
+        },
+        include: { user: { include: { profile: true } } },
+      });
+
+      AdminGateway.broadcast('audit_logs_updated');
+      AdminGateway.broadcast('audit_log_added', {
+        id: log.id,
+        timestamp: log.createdAt.toLocaleString('en-IN', {
+          day: '2-digit', month: 'short', year: 'numeric',
+          hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: true
+        }),
+        user: log.user?.profile?.fullName || log.user?.email?.split('@')[0] || 'Administrator',
+        action: log.action,
+        resource: log.details || '-',
+        ipAddress: log.ipAddress || '192.168.1.1',
+        status: (log.action.includes('REJECT') || log.action.includes('SUSPEND') || log.action.includes('FAIL')) ? 'Failed' : 'Success',
+      });
+      return log;
+    } catch (err: any) {
+      console.warn('[AdminGateway.logActivity] Warning recording audit log:', err?.message);
+    }
+  }
+
   static isUserOnline(userId: string): boolean {
     const s = AdminGateway.userSockets.get(userId);
     return !!(s && s.size > 0);
@@ -1157,6 +1212,23 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
           rejectionReason: updated.rejectionReason,
         });
 
+        // Record in system audit log
+        let auditAction = `APPLICATION_${mappedStatus}`;
+        let auditDetails = `Application #${updated.refNumber} (${updated.serviceTitle || 'Citizen Service'}) transitioned to ${mappedStatus}`;
+        if (mappedStatus === 'APPROVED') {
+          auditAction = 'APPLICATION_APPROVED';
+          auditDetails = `Application #${updated.refNumber} (${updated.serviceTitle || 'Citizen Service'}) verified & APPROVED by verification officer. Digital certificate authorized.`;
+        } else if (mappedStatus === 'REJECTED') {
+          auditAction = 'APPLICATION_REJECTED';
+          auditDetails = `Application #${updated.refNumber} (${updated.serviceTitle || 'Citizen Service'}) REJECTED by officer. Reason: ${updated.rejectionReason || 'Document verification mismatch'}`;
+        }
+
+        await AdminGateway.logActivity(this.prisma, {
+          userId: updated.userId,
+          action: auditAction,
+          details: auditDetails,
+        });
+
         client.emit('update_application_status_success', {
           id: updated.id,
           refNumber: updated.refNumber,
@@ -1992,28 +2064,76 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
       const total = await this.prisma.auditLog.count();
       const logs = await this.prisma.auditLog.findMany({
         orderBy: { createdAt: 'desc' },
-        take: 10,
+        take: 200,
         include: { user: { include: { profile: true } } },
       });
 
-      const formatted = logs.map((l) => ({
-        timestamp: l.createdAt
-          .toISOString()
-          .replace('T', ' ')
-          .substring(0, 19),
-        user: l.user?.profile?.fullName || 'System',
-        action: l.action,
-        resource: l.details || '-',
-        ipAddress: l.ipAddress || '192.168.1.1',
-        status: 'Success',
-      }));
+      const loginActivities = await this.prisma.auditLog.count({
+        where: {
+          OR: [
+            { action: { contains: 'LOGIN' } },
+            { action: { contains: 'AUTH' } },
+            { action: { contains: 'PASSWORD' } },
+          ],
+        },
+      }).catch(() => 0);
+
+      const documentActions = await this.prisma.auditLog.count({
+        where: {
+          OR: [
+            { action: { contains: 'APPLICATION' } },
+            { action: { contains: 'DOCUMENT' } },
+            { action: { contains: 'APPROV' } },
+            { action: { contains: 'REJECT' } },
+            { action: { contains: 'SUBMIT' } },
+          ],
+        },
+      }).catch(() => 0);
+
+      const systemChanges = await this.prisma.auditLog.count({
+        where: {
+          OR: [
+            { action: { contains: 'OPERATOR' } },
+            { action: { contains: 'SERVICE' } },
+            { action: { contains: 'SETTING' } },
+            { action: { contains: 'ACCESS' } },
+            { action: { contains: 'SECURITY' } },
+          ],
+        },
+      }).catch(() => 0);
+
+      const formatted = logs.map((l) => {
+        const userName = l.user?.profile?.fullName || l.user?.email?.split('@')[0] || 'Administrator';
+        const act = (l.action || '').toUpperCase();
+        let status = 'Success';
+        if (act.includes('REJECT') || act.includes('FAIL') || act.includes('SUSPEND')) {
+          status = 'Failed';
+        } else if (act.includes('WARN') || act.includes('PENDING')) {
+          status = 'Warning';
+        }
+
+        return {
+          id: l.id,
+          timestamp: l.createdAt.toLocaleString('en-IN', {
+            day: '2-digit', month: 'short', year: 'numeric',
+            hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: true
+          }),
+          isoTimestamp: l.createdAt.toISOString(),
+          user: userName,
+          userEmail: l.user?.email || '',
+          action: l.action,
+          resource: l.details || '-',
+          ipAddress: l.ipAddress || '192.168.1.1',
+          status,
+        };
+      });
 
       client.emit('response_audit_logs', {
         stats: {
           totalEvents: total,
-          loginActivities: 0,
-          documentActions: total,
-          systemChanges: 0,
+          loginActivities,
+          documentActions,
+          systemChanges,
         },
         logs: formatted,
       });

@@ -1,5 +1,6 @@
 import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { PrismaService } from '../database/prisma.service';
+import { AdminGateway } from '../admin/admin.gateway';
 
 @Injectable()
 export class ServicesService implements OnModuleInit {
@@ -198,6 +199,8 @@ export class ServicesService implements OnModuleInit {
       iconUrl: data.iconUrl || data.imageUrl || (resolvedIcon.startsWith('http') ? resolvedIcon : undefined),
     };
 
+    const isExisting = await this.prisma.service.findUnique({ where: { slug } }).catch(() => null);
+
     const service = await this.prisma.service.upsert({
       where: { slug },
       update: {
@@ -234,6 +237,16 @@ export class ServicesService implements OnModuleInit {
         isActive: data.isActive !== undefined ? data.isActive : true,
       },
     });
+
+    try {
+      await AdminGateway.logActivity(this.prisma, {
+        action: isExisting ? 'SERVICE_SCHEME_UPDATED' : 'SERVICE_SCHEME_CREATED',
+        details: `${isExisting ? 'Updated' : 'Created'} e-governance service scheme "${rawTitle}" (Category: ${service.category}, Fee: ₹${feeVal}, SLA: ${service.processingTime})`,
+      });
+      AdminGateway.broadcast('services_updated', service);
+    } catch (auditErr: any) {
+      this.logger.warn(`Service audit log warning: ${auditErr?.message}`);
+    }
 
     this.logger.log(`Service created/updated: ${service.title} (${service.slug})`);
     return service;

@@ -1152,13 +1152,11 @@ export class AdminController {
     AdminGateway.broadcast('admin_profile_updated', updatedProfileExtra);
 
     const firstAdminId = superAdmin?.id || 'admin-root-01';
-    await this.prisma.auditLog.create({
-      data: {
-        userId: firstAdminId,
-        action: 'ADMIN_PROFILE_UPDATED',
-        details: `Administrator profile coordinates updated: ${name || 'Admin'} (${normalizedPhone || phone})`,
-      },
-    }).catch(() => null);
+    await AdminGateway.logActivity(this.prisma, {
+      userId: firstAdminId,
+      action: 'ADMIN_PROFILE_UPDATED',
+      details: `Administrator master coordinates updated: ${name || 'Super Admin'} (${normalizedPhone || phone || 'Official'}), District: ${district || 'National Hub'}`,
+    });
 
     return {
       success: true,
@@ -1216,15 +1214,11 @@ export class AdminController {
     });
 
     const adminUser = await this.prisma.user.findFirst({ where: { role: 'ADMIN' } });
-    if (adminUser) {
-      await this.prisma.auditLog.create({
-        data: {
-          userId: adminUser.id,
-          action: 'ADMIN_SETTINGS_UPDATED',
-          details: `Administrator updated operational SLA & governance policies (Session Timeout: ${body.sessionTimeout || existingVal.sessionTimeout || '30'}m)`,
-        },
-      }).catch(() => null);
-    }
+    await AdminGateway.logActivity(this.prisma, {
+      userId: adminUser?.id,
+      action: 'SYSTEM_SETTINGS_UPDATED',
+      details: `Operational settings & governance SLA policies updated (Resolution SLA: ${body.slaHours || existingVal.slaHours || '24'}h, Auto-Lock: ${body.sessionTimeout || existingVal.sessionTimeout || '30'}m, Settlement: ${body.settlementCycle || 'T+1'})`,
+    });
 
     return {
       success: true,
@@ -1281,13 +1275,11 @@ export class AdminController {
       data: { passwordHash: newPasswordHash },
     });
 
-    await this.prisma.auditLog.create({
-      data: {
-        userId: adminUser.id,
-        action: 'ADMIN_PASSWORD_CHANGED',
-        details: `Administrator credentials successfully changed and updated in database`,
-      },
-    }).catch(() => null);
+    await AdminGateway.logActivity(this.prisma, {
+      userId: adminUser.id,
+      action: 'PASSWORD_CHANGED',
+      details: `Security credentials and administrative password successfully changed for ${adminUser.email}`,
+    });
 
     return {
       success: true,
@@ -1406,6 +1398,12 @@ export class AdminController {
         },
       },
       include: { profile: true },
+    });
+
+    await AdminGateway.logActivity(this.prisma, {
+      userId: newOp.id,
+      action: 'OPERATOR_CREATED',
+      details: `Provisioned new Seva Kendra operator "${name.trim()}" (${cleanEmail}) with permissions: [${newOp.permissions.join(', ')}]`,
     });
 
     AdminGateway.broadcast('operators_updated');
@@ -1531,13 +1529,19 @@ export class AdminController {
       });
     }
 
-    await this.prisma.auditLog.create({
-      data: {
+    if (permissions !== undefined) {
+      await AdminGateway.logActivity(this.prisma, {
+        userId: o.id,
+        action: 'OPERATOR_ACCESS_UPDATED',
+        details: `Updated least-privilege feature access for operator "${fullName || o.profile?.fullName || o.email}" to [${updatedPermissions.join(', ')}]`,
+      });
+    } else {
+      await AdminGateway.logActivity(this.prisma, {
         userId: o.id,
         action: 'OPERATOR_PROFILE_UPDATED',
-        details: `Updated operator settings for ${fullName || o.email}`,
-      },
-    }).catch(() => null);
+        details: `Updated operator coordinates for "${fullName || o.profile?.fullName || o.email}" (District: ${district || o.profile?.district || 'Operations'})`,
+      });
+    }
 
     const updated = await this.prisma.user.findUnique({
       where: { id: o.id },
@@ -1564,13 +1568,11 @@ export class AdminController {
       data: { status: targetStatus },
     });
 
-    await this.prisma.auditLog.create({
-      data: {
-        userId: user.id,
-        action: targetStatus === 'SUSPENDED' ? 'OPERATOR_SUSPENDED' : 'OPERATOR_ACTIVATED',
-        details: `Operator account marked as ${targetStatus}`,
-      },
-    }).catch(() => null);
+    await AdminGateway.logActivity(this.prisma, {
+      userId: user.id,
+      action: targetStatus === 'SUSPENDED' ? 'OPERATOR_SUSPENDED' : 'OPERATOR_ACTIVATED',
+      details: `Operator account "${user.email}" marked as ${targetStatus}`,
+    });
 
     // If suspended, forcefully disconnect / log out the operator
     if (targetStatus === 'SUSPENDED') {
@@ -1743,6 +1745,88 @@ export class AdminController {
       },
       activityLogs,
       documents: formattedDocs,
+    };
+  }
+
+  @Get(['api/v1/audit-logs', 'api/admin/audit-logs', 'admin/audit-logs'])
+  @ApiOperation({ summary: 'Get Full System Audit Logs with Live Statistics' })
+  async getSystemAuditLogs() {
+    const total = await this.prisma.auditLog.count();
+    const logs = await this.prisma.auditLog.findMany({
+      orderBy: { createdAt: 'desc' },
+      take: 200,
+      include: { user: { include: { profile: true } } },
+    });
+
+    const loginActivities = await this.prisma.auditLog.count({
+      where: {
+        OR: [
+          { action: { contains: 'LOGIN' } },
+          { action: { contains: 'AUTH' } },
+          { action: { contains: 'PASSWORD' } },
+        ],
+      },
+    }).catch(() => 0);
+
+    const documentActions = await this.prisma.auditLog.count({
+      where: {
+        OR: [
+          { action: { contains: 'APPLICATION' } },
+          { action: { contains: 'DOCUMENT' } },
+          { action: { contains: 'APPROV' } },
+          { action: { contains: 'REJECT' } },
+          { action: { contains: 'SUBMIT' } },
+        ],
+      },
+    }).catch(() => 0);
+
+    const systemChanges = await this.prisma.auditLog.count({
+      where: {
+        OR: [
+          { action: { contains: 'OPERATOR' } },
+          { action: { contains: 'SERVICE' } },
+          { action: { contains: 'SETTING' } },
+          { action: { contains: 'ACCESS' } },
+          { action: { contains: 'SECURITY' } },
+        ],
+      },
+    }).catch(() => 0);
+
+    const formatted = logs.map((l) => {
+      const userName = l.user?.profile?.fullName || l.user?.email?.split('@')[0] || 'Administrator';
+      const act = (l.action || '').toUpperCase();
+      let status = 'Success';
+      if (act.includes('REJECT') || act.includes('FAIL') || act.includes('SUSPEND')) {
+        status = 'Failed';
+      } else if (act.includes('WARN') || act.includes('PENDING')) {
+        status = 'Warning';
+      }
+
+      return {
+        id: l.id,
+        timestamp: l.createdAt.toLocaleString('en-IN', {
+          day: '2-digit', month: 'short', year: 'numeric',
+          hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: true
+        }),
+        isoTimestamp: l.createdAt.toISOString(),
+        user: userName,
+        userEmail: l.user?.email || '',
+        action: l.action,
+        resource: l.details || '-',
+        ipAddress: l.ipAddress || '192.168.1.1',
+        status,
+      };
+    });
+
+    return {
+      success: true,
+      stats: {
+        totalEvents: total,
+        loginActivities,
+        documentActions,
+        systemChanges,
+      },
+      logs: formatted,
     };
   }
 }
