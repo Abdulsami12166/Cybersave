@@ -1236,7 +1236,7 @@ export class AdminController {
   @Post(['api/admin/change-password', 'admin/change-password', 'api/auth/change-password'])
   @ApiOperation({ summary: 'Admin Password Change with verification' })
   async changeAdminPassword(@Body() body: any) {
-    const { currentPassword, newPassword, confirmPassword } = body;
+    const { currentPassword, newPassword, confirmPassword, email, userId } = body;
     if (!newPassword || newPassword.length < 6) {
       throw new BadRequestException('New password must be at least 6 characters long');
     }
@@ -1244,9 +1244,22 @@ export class AdminController {
       throw new BadRequestException('New password and confirmation do not match');
     }
 
-    let adminUser = await this.prisma.user.findFirst({
-      where: { role: 'ADMIN' },
-    });
+    let adminUser: any = null;
+    if (userId) {
+      adminUser = await this.prisma.user.findUnique({ where: { id: userId } });
+    } else if (email) {
+      adminUser = await this.prisma.user.findFirst({ where: { email: email.trim().toLowerCase() } });
+    }
+    if (!adminUser) {
+      adminUser = await this.prisma.user.findFirst({
+        where: { email: 'admin@cybersave.com' },
+      });
+    }
+    if (!adminUser) {
+      adminUser = await this.prisma.user.findFirst({
+        where: { role: 'ADMIN' },
+      });
+    }
 
     if (!adminUser) {
       throw new NotFoundException('Administrator account not found');
