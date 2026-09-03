@@ -2327,6 +2327,8 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
 
         this.server.emit('user_grievance_reply', {
           userId: ticket.userId,
+          userEmail: (ticket.user as any)?.email,
+          userPhone: (ticket.user as any)?.phone,
           ticketId: ticket.refNumber,
           ticketTitle: ticket.title,
           message: replyMsg,

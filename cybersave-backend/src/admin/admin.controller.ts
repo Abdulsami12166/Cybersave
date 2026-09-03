@@ -195,6 +195,8 @@ export class AdminController {
       // Real-time broadcast directly to that user's mobile app
       AdminGateway.broadcast('user_grievance_reply', {
         userId: ticket.userId,
+        userEmail: (ticket.user as any)?.email,
+        userPhone: (ticket.user as any)?.phone,
         ticketId: ticket.refNumber,
         ticketTitle: ticket.title,
         message: replyMsg,
@@ -245,19 +247,31 @@ export class AdminController {
     let resolvedUserId = userId;
     const isMongoId = (s?: string) => typeof s === 'string' && /^[0-9a-fA-F]{24}$/.test(s);
 
-    if (resolvedUserId && !isMongoId(resolvedUserId)) {
-      const user = await this.prisma.user.findFirst({
+    let userRecord: any = null;
+    if (resolvedUserId && isMongoId(resolvedUserId)) {
+      userRecord = await this.prisma.user.findUnique({
+        where: { id: resolvedUserId },
+      }).catch(() => null);
+    }
+    if (!userRecord && resolvedUserId) {
+      userRecord = await this.prisma.user.findFirst({
         where: { OR: [{ email: resolvedUserId }, { phone: resolvedUserId }] },
       }).catch(() => null);
-      if (user) resolvedUserId = user.id;
+      if (userRecord) resolvedUserId = userRecord.id;
     }
 
-    if (!resolvedUserId) {
+    const orClauses: any[] = [];
+    if (resolvedUserId) orClauses.push({ userId: resolvedUserId });
+    if (userRecord?.id) orClauses.push({ userId: userRecord.id });
+    if (userRecord?.email) orClauses.push({ user: { email: userRecord.email } });
+    if (userRecord?.phone) orClauses.push({ user: { phone: userRecord.phone } });
+
+    if (orClauses.length === 0) {
       return { success: true, tickets: [] };
     }
 
     const tickets = await this.prisma.supportTicket.findMany({
-      where: { userId: resolvedUserId },
+      where: { OR: orClauses },
       orderBy: { updatedAt: 'desc' },
       include: { user: { include: { profile: true } } },
     });
