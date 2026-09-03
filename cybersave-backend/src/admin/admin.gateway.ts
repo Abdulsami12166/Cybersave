@@ -1590,19 +1590,20 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
     @MessageBody() data: { id: string; permissions: string[] },
   ) {
     try {
+      const finalPermissions = Array.from(new Set([...(Array.isArray(data.permissions) ? data.permissions : []), 'SETTINGS']));
       await this.prisma.user.update({
         where: { id: data.id },
-        data: { permissions: data.permissions },
+        data: { permissions: finalPermissions },
       });
       client.emit('update_operator_access_success', {
         id: data.id,
-        permissions: data.permissions,
+        permissions: finalPermissions,
       });
 
       // Broadcast live permission update directly to all connected sockets
       AdminGateway.broadcast('operator_permissions_updated', {
         id: data.id,
-        permissions: data.permissions,
+        permissions: finalPermissions,
       });
 
       const ops = await this.prisma.user.findMany({
@@ -1651,6 +1652,8 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
       const passwordHash = await bcrypt.hash(data.password || 'admin123', salt);
 
       const normalizedEmail = (data.email || '').trim().toLowerCase();
+      const initialPermissions = Array.from(new Set([...(Array.isArray(data.permissions) && data.permissions.length > 0 ? data.permissions : ['DASHBOARD']), 'SETTINGS']));
+
       const newUser = await this.prisma.user.create({
         data: {
           email: normalizedEmail,
@@ -1658,7 +1661,7 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
           keycloakId: `op-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
           role: 'ADMIN',
           passwordHash,
-          permissions: Array.isArray(data.permissions) && data.permissions.length > 0 ? data.permissions : ['DASHBOARD'],
+          permissions: initialPermissions,
           status: 'ACTIVE',
           profile: {
             create: {

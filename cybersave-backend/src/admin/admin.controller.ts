@@ -1383,7 +1383,7 @@ export class AdminController {
         keycloakId: `op-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
         role: 'ADMIN',
         passwordHash,
-        permissions: Array.isArray(permissions) && permissions.length > 0 ? permissions : ['DASHBOARD'],
+        permissions: Array.from(new Set([...(Array.isArray(permissions) && permissions.length > 0 ? permissions : ['DASHBOARD']), 'SETTINGS'])),
         status: 'ACTIVE',
         profile: {
           create: {
@@ -1464,15 +1464,27 @@ export class AdminController {
 
     const { fullName, email, phone, address, district, state, pinCode, dob, gender, permissions, status } = body;
 
+    const updatedPermissions = permissions !== undefined
+      ? Array.from(new Set([...(Array.isArray(permissions) ? permissions : []), 'SETTINGS']))
+      : o.permissions;
+
     await this.prisma.user.update({
       where: { id: o.id },
       data: {
         email: email || o.email,
         phone: phone || o.phone,
-        permissions: permissions || o.permissions,
+        permissions: updatedPermissions,
         status: status || o.status,
       },
     });
+
+    if (permissions !== undefined) {
+      AdminGateway.broadcast('operator_permissions_updated', {
+        id: o.id,
+        permissions: updatedPermissions,
+      });
+      AdminGateway.broadcast('operators_updated');
+    }
 
     if (o.profile) {
       await this.prisma.profile.update({
