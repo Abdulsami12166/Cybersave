@@ -260,19 +260,19 @@ export class AdminController {
     }).catch(() => null);
     const extra = (settingsDoc?.value as any)?.profileExtra || {};
 
+    const isSuperAdmin = user.email === 'admin@cybersave.com';
+
     return {
       token,
       accessToken: token,
       admin: {
         id: user.id,
-        email: extra.email || user.email || normalizedEmail,
-        name: extra.name || user.profile?.fullName || (user.email === 'admin@cybersave.com' ? 'Super Administrator' : (user.email ? user.email.split('@')[0] : 'Operator')),
-        role: user.email === 'admin@cybersave.com' || user.role === 'ADMIN' ? 'Super Admin' : 'Sub-Admin / Operator',
-        phone: extra.phone || user.phone || user.profile?.phone || '',
-        avatarUrl: extra.avatarUrl !== undefined ? extra.avatarUrl : (user.profile?.avatarUrl || ''),
-        permissions: (user.permissions && user.permissions.length > 0)
-          ? user.permissions
-          : ['ALL', 'DASHBOARD', 'USERS', 'APPLICATIONS', 'OPERATORS', 'SETTINGS', 'REPORTS'],
+        email: user.email || normalizedEmail,
+        name: isSuperAdmin && extra.name ? extra.name : (user.profile?.fullName || (user.email ? user.email.split('@')[0] : 'Operator')),
+        role: isSuperAdmin ? 'Super Admin' : 'Sub-Admin',
+        phone: isSuperAdmin && extra.phone ? extra.phone : (user.phone || user.profile?.phone || ''),
+        avatarUrl: isSuperAdmin && extra.avatarUrl !== undefined ? extra.avatarUrl : (user.profile?.avatarUrl || ''),
+        permissions: Array.isArray(user.permissions) ? user.permissions : (isSuperAdmin ? ['SUPER_ADMIN', 'ALL'] : []),
       },
     };
   }
@@ -1077,36 +1077,36 @@ export class AdminController {
   async updateAdminProfile(@Body() body: any) {
     const { name, email, phone, avatarUrl, role, kendraId, designation, district } = body;
     
-    // 1. Update all admin users and profiles in MongoDB
-    const allAdmins = await this.prisma.user.findMany({
-      where: { OR: [{ role: 'ADMIN' }, { email: 'admin@cybersave.com' }] },
+    // 1. Update only the primary Super Admin user in MongoDB, preserving individual operators
+    const superAdmin = await this.prisma.user.findFirst({
+      where: { email: 'admin@cybersave.com' },
       include: { profile: true },
     });
 
     const normalizedPhone = phone !== undefined && phone !== null ? String(phone).trim() : undefined;
 
-    for (const adm of allAdmins) {
+    if (superAdmin) {
       await this.prisma.user.update({
-        where: { id: adm.id },
+        where: { id: superAdmin.id },
         data: {
-          phone: normalizedPhone !== undefined ? normalizedPhone : adm.phone,
+          phone: normalizedPhone !== undefined ? normalizedPhone : superAdmin.phone,
         },
       }).catch(() => null);
 
-      if (adm.profile) {
+      if (superAdmin.profile) {
         await this.prisma.profile.update({
-          where: { id: adm.profile.id },
+          where: { id: superAdmin.profile.id },
           data: {
-            fullName: name || adm.profile.fullName,
-            phone: normalizedPhone !== undefined ? normalizedPhone : adm.profile.phone,
-            district: district || adm.profile.district,
-            avatarUrl: avatarUrl !== undefined ? avatarUrl : adm.profile.avatarUrl,
+            fullName: name || superAdmin.profile.fullName,
+            phone: normalizedPhone !== undefined ? normalizedPhone : superAdmin.profile.phone,
+            district: district || superAdmin.profile.district,
+            avatarUrl: avatarUrl !== undefined ? avatarUrl : superAdmin.profile.avatarUrl,
           },
         }).catch(() => null);
       } else {
         await this.prisma.profile.create({
           data: {
-            userId: adm.id,
+            userId: superAdmin.id,
             fullName: name || 'Super Administrator',
             phone: normalizedPhone || '+91 98450 19823',
             district: district || 'Central Delhi, NCT of Delhi',
@@ -1151,7 +1151,7 @@ export class AdminController {
     // 3. Broadcast real-time update event
     AdminGateway.broadcast('admin_profile_updated', updatedProfileExtra);
 
-    const firstAdminId = allAdmins[0]?.id || 'admin-root-01';
+    const firstAdminId = superAdmin?.id || 'admin-root-01';
     await this.prisma.auditLog.create({
       data: {
         userId: firstAdminId,
@@ -1337,7 +1337,7 @@ export class AdminController {
 
     const formattedOps = ops.map((o, idx) => {
       const profile = o.profile;
-      const isSuperAdmin = o.email === 'admin@cybersave.com' || (o.role === 'ADMIN' && idx === 0);
+      const isSuperAdmin = o.email === 'admin@cybersave.com';
       return {
         id: o.id,
         employeeId: `OPS-${new Date(o.createdAt).getFullYear()}-${o.id.slice(-4).toUpperCase()}`,
@@ -1347,8 +1347,8 @@ export class AdminController {
         joinedDate: new Date(o.createdAt).toLocaleDateString('en-GB'),
         lastActive: 'Active recently',
         status: o.status === 'SUSPENDED' ? 'Suspended' : 'Active',
-        permissions: o.permissions || [],
-        email: isSuperAdmin && extra.email ? extra.email : (o.email || ''),
+        permissions: Array.isArray(o.permissions) ? o.permissions : [],
+        email: o.email || '',
         phone: isSuperAdmin && extra.phone ? extra.phone : (o.phone || profile?.phone || '+91 98450 19823'),
         avatarUrl: isSuperAdmin && extra.avatarUrl !== undefined ? extra.avatarUrl : (profile?.avatarUrl || ''),
       };
@@ -1357,6 +1357,57 @@ export class AdminController {
     return {
       stats: { totalOps, active, pending, suspended },
       operators: formattedOps,
+    };
+  }
+
+  @Post(['api/v1/operators', 'api/admin/operators', 'admin/operators'])
+  @ApiOperation({ summary: 'Create new Operator / Sub-Admin' })
+  async createOperator(@Body() body: any) {
+    const { name, email, password, permissions, department, phone } = body;
+    if (!name || !email) {
+      throw new BadRequestException('Operator name and email are required');
+    }
+    const cleanEmail = email.trim().toLowerCase();
+    const existing = await this.prisma.user.findFirst({ where: { email: cleanEmail } });
+    if (existing) {
+      throw new BadRequestException('An account with this email already exists');
+    }
+
+    const salt = await bcrypt.genSalt(10);
+    const passwordHash = await bcrypt.hash(password || 'admin123', salt);
+
+    const newOp = await this.prisma.user.create({
+      data: {
+        email: cleanEmail,
+        phone: phone || `+9198765${Math.floor(10000 + Math.random() * 90000)}`,
+        keycloakId: `op-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
+        role: 'ADMIN',
+        passwordHash,
+        permissions: Array.isArray(permissions) && permissions.length > 0 ? permissions : ['DASHBOARD'],
+        status: 'ACTIVE',
+        profile: {
+          create: {
+            fullName: name.trim(),
+            district: department || 'Operations',
+          },
+        },
+      },
+      include: { profile: true },
+    });
+
+    AdminGateway.broadcast('operators_updated');
+
+    return {
+      success: true,
+      operator: {
+        id: newOp.id,
+        name: newOp.profile?.fullName || name,
+        email: newOp.email,
+        role: 'Field Operator',
+        department: department || 'Operations',
+        status: 'Active',
+        permissions: newOp.permissions,
+      },
     };
   }
 
@@ -1621,7 +1672,7 @@ export class AdminController {
     }).catch(() => null);
     const extra = (settingsDoc?.value as any)?.profileExtra || {};
 
-    const isSuperAdmin = o.email === 'admin@cybersave.com' || o.role === 'ADMIN';
+    const isSuperAdmin = o.email === 'admin@cybersave.com';
 
     // 5. Supervisor
     const supervisorName = extra.name || (o.email === 'admin@cybersave.com' ? 'Ministry Directorate' : 'Super Administrator');
@@ -1634,7 +1685,7 @@ export class AdminController {
       role: isSuperAdmin ? (extra.designation || 'Super Administrator') : (profile.dob ? 'Senior Field Operator' : 'Field Operator'),
       department: isSuperAdmin && extra.district ? extra.district : (profile.district ? `${profile.district} Seva Kendra` : 'Operations'),
       joinedDate: new Date(o.createdAt).toLocaleDateString('en-GB'),
-      email: isSuperAdmin && extra.email ? extra.email : (o.email || ''),
+      email: o.email || '',
       phone: isSuperAdmin && extra.phone ? extra.phone : (o.phone || profile.phone || '+91 98450 19823'),
       dob: profile.dob || '',
       address: profile.address || (isSuperAdmin && extra.district ? `${extra.district}, India` : (profile.district ? `${profile.district}, ${profile.state || ''} - ${profile.pinCode || ''}` : '')),
@@ -1650,7 +1701,7 @@ export class AdminController {
       }) : 'Never logged in',
       activeSessions: o.status === 'ACTIVE' ? '1 open session (Admin Portal / Chrome)' : '0 active sessions',
       ipWhitelisting: o.status === 'ACTIVE' ? 'Enabled (Corporate Subnet)' : 'Disabled',
-      permissions: o.permissions && o.permissions.length > 0 ? o.permissions : ['ALL', 'DASHBOARD', 'APPLICATIONS', 'USERS', 'OPERATORS', 'SETTINGS', 'REPORTS'],
+      permissions: Array.isArray(o.permissions) ? o.permissions : [],
       metrics: {
         tasksCompleted,
         tasksMom: tasksCompleted > 0 ? '+ 12% MoM' : '0% MoM',

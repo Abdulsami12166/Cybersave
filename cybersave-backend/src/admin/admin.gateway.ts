@@ -1558,20 +1558,22 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
       const active = ops.filter((o) => o.status !== 'SUSPENDED').length;
       const suspended = ops.filter((o) => o.status === 'SUSPENDED').length;
 
-      const formattedOps = ops.map((o, idx) => ({
+      const formatOps = (list: any[]) => list.map((o, idx) => ({
         id: o.id,
         employeeId: `OPS-${new Date(o.createdAt).getFullYear()}-${o.id.slice(-4).toUpperCase()}`,
         name: o.profile?.fullName || (o.email ? o.email.split('@')[0] : `Operator ${idx + 1}`),
-        role: 'Senior Field Operator',
-        department: 'Operations',
+        role: o.email === 'admin@cybersave.com' ? 'Super Administrator' : 'Field Operator',
+        department: o.profile?.district ? `${o.profile.district} Seva Kendra` : 'Operations',
         joinedDate: new Date(o.createdAt).toLocaleDateString('en-GB'),
         lastActive: 'Active recently',
         status: o.status === 'SUSPENDED' ? 'Suspended' : 'Active',
-        permissions: o.permissions || [],
+        permissions: Array.isArray(o.permissions) ? o.permissions : [],
         email: o.email || '',
         phone: o.phone || o.profile?.phone || '+91 98765 43210',
-        avatarUrl: o.profile?.avatarUrl || `https://i.pravatar.cc/150?img=${idx + 11}`,
+        avatarUrl: o.profile?.avatarUrl || '',
       }));
+
+      const formattedOps = formatOps(ops);
 
       client.emit('response_operators_data', {
         stats: { totalOps, active, pending: 0, suspended },
@@ -1597,24 +1599,36 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
         permissions: data.permissions,
       });
 
+      // Broadcast live permission update directly to all connected sockets
+      AdminGateway.broadcast('operator_permissions_updated', {
+        id: data.id,
+        permissions: data.permissions,
+      });
+
       const ops = await this.prisma.user.findMany({
         where: { role: 'ADMIN' },
         include: { profile: true },
+        orderBy: { createdAt: 'desc' },
       });
-      const formattedOps = ops.map((o) => ({
+      const formattedOps = ops.map((o, idx) => ({
         id: o.id,
-        name: o.profile?.fullName || 'Admin',
-        role: 'System Admin',
-        department: 'IT & Infrastructure',
-        joinedDate: o.createdAt.toLocaleDateString(),
+        employeeId: `OPS-${new Date(o.createdAt).getFullYear()}-${o.id.slice(-4).toUpperCase()}`,
+        name: o.profile?.fullName || (o.email ? o.email.split('@')[0] : `Operator ${idx + 1}`),
+        role: o.email === 'admin@cybersave.com' ? 'Super Administrator' : 'Field Operator',
+        department: o.profile?.district ? `${o.profile.district} Seva Kendra` : 'Operations',
+        joinedDate: new Date(o.createdAt).toLocaleDateString('en-GB'),
         lastActive: 'Active recently',
-        status: 'Active',
-        permissions: o.permissions || [],
+        status: o.status === 'SUSPENDED' ? 'Suspended' : 'Active',
+        permissions: Array.isArray(o.permissions) ? o.permissions : [],
+        email: o.email || '',
+        phone: o.phone || o.profile?.phone || '+91 98765 43210',
+        avatarUrl: o.profile?.avatarUrl || '',
       }));
       this.server.emit('response_operators_data', {
-        stats: { totalOps: ops.length, active: ops.length, pending: 0, suspended: 0 },
+        stats: { totalOps: ops.length, active: ops.filter(x => x.status !== 'SUSPENDED').length, pending: 0, suspended: ops.filter(x => x.status === 'SUSPENDED').length },
         operators: formattedOps,
       });
+      AdminGateway.broadcast('operators_updated');
     } catch (e) {
       console.error('[AdminGateway] update_operator_access error:', e);
     }
@@ -1629,6 +1643,7 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
       email: string;
       password?: string;
       permissions?: string[];
+      department?: string;
     },
   ) {
     try {
@@ -1643,10 +1658,12 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
           keycloakId: `op-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
           role: 'ADMIN',
           passwordHash,
-          permissions: data.permissions && data.permissions.length > 0 ? data.permissions : ['DASHBOARD', 'APPLICATIONS'],
+          permissions: Array.isArray(data.permissions) && data.permissions.length > 0 ? data.permissions : ['DASHBOARD'],
+          status: 'ACTIVE',
           profile: {
             create: {
-              fullName: data.name,
+              fullName: (data.name || '').trim(),
+              district: data.department || 'Operations',
             },
           },
         },
@@ -1655,21 +1672,27 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
       const ops = await this.prisma.user.findMany({
         where: { role: 'ADMIN' },
         include: { profile: true },
+        orderBy: { createdAt: 'desc' },
       });
-      const formattedOps = ops.map((o) => ({
+      const formattedOps = ops.map((o, idx) => ({
         id: o.id,
-        name: o.profile?.fullName || 'Admin',
-        role: 'System Admin',
-        department: 'IT & Infrastructure',
-        joinedDate: o.createdAt.toLocaleDateString(),
+        employeeId: `OPS-${new Date(o.createdAt).getFullYear()}-${o.id.slice(-4).toUpperCase()}`,
+        name: o.profile?.fullName || (o.email ? o.email.split('@')[0] : `Operator ${idx + 1}`),
+        role: o.email === 'admin@cybersave.com' ? 'Super Administrator' : 'Field Operator',
+        department: o.profile?.district ? `${o.profile.district} Seva Kendra` : 'Operations',
+        joinedDate: new Date(o.createdAt).toLocaleDateString('en-GB'),
         lastActive: 'Active recently',
-        status: 'Active',
-        permissions: o.permissions || [],
+        status: o.status === 'SUSPENDED' ? 'Suspended' : 'Active',
+        permissions: Array.isArray(o.permissions) ? o.permissions : [],
+        email: o.email || '',
+        phone: o.phone || o.profile?.phone || '+91 98765 43210',
+        avatarUrl: o.profile?.avatarUrl || '',
       }));
       this.server.emit('response_operators_data', {
-        stats: { totalOps: ops.length, active: ops.length, pending: 0, suspended: 0 },
+        stats: { totalOps: ops.length, active: ops.filter(x => x.status !== 'SUSPENDED').length, pending: 0, suspended: ops.filter(x => x.status === 'SUSPENDED').length },
         operators: formattedOps,
       });
+      AdminGateway.broadcast('operators_updated');
     } catch (e) {
       console.error('[AdminGateway] add_new_operator error:', e);
     }
