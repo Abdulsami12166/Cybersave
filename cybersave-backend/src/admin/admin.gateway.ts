@@ -40,6 +40,7 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
     params: {
       userId?: string;
       userEmail?: string;
+      userName?: string;
       action: string;
       details: string;
       ipAddress?: string;
@@ -47,18 +48,30 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
   ) {
     try {
       let resolvedUserId = params.userId;
-      if (!resolvedUserId && params.userEmail) {
-        const u = await prisma.user.findFirst({
-          where: { email: params.userEmail.toLowerCase().trim() },
+      const isMongoId = (s?: string) => typeof s === 'string' && /^[0-9a-fA-F]{24}$/.test(s);
+
+      let foundUser: any = null;
+      if (resolvedUserId && isMongoId(resolvedUserId)) {
+        foundUser = await prisma.user.findUnique({
+          where: { id: resolvedUserId },
+          include: { profile: true },
         }).catch(() => null);
-        if (u) resolvedUserId = u.id;
       }
 
-      if (!resolvedUserId) {
-        const adminUser = await prisma.user.findFirst({
-          where: { OR: [{ email: 'admin@cybersave.com' }, { role: 'ADMIN' }] },
+      if (!foundUser && params.userEmail) {
+        foundUser = await prisma.user.findFirst({
+          where: { email: params.userEmail.toLowerCase().trim() },
+          include: { profile: true },
         }).catch(() => null);
-        resolvedUserId = adminUser?.id;
+        if (foundUser) resolvedUserId = foundUser.id;
+      }
+
+      if (!foundUser) {
+        foundUser = await prisma.user.findFirst({
+          where: { OR: [{ email: 'admin@cybersave.com' }, { role: 'ADMIN' }] },
+          include: { profile: true },
+        }).catch(() => null);
+        if (foundUser) resolvedUserId = foundUser.id;
       }
 
       const log = await prisma.auditLog.create({
@@ -71,6 +84,9 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
         include: { user: { include: { profile: true } } },
       });
 
+      const officerName = params.userName || log.user?.profile?.fullName || log.user?.email?.split('@')[0] || 'Sub-Admin Operator';
+      const officerEmail = params.userEmail || log.user?.email || '';
+
       AdminGateway.broadcast('audit_logs_updated');
       AdminGateway.broadcast('audit_log_added', {
         id: log.id,
@@ -78,7 +94,8 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
           day: '2-digit', month: 'short', year: 'numeric',
           hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: true
         }),
-        user: log.user?.profile?.fullName || log.user?.email?.split('@')[0] || 'Administrator',
+        user: officerName,
+        userEmail: officerEmail,
         action: log.action,
         resource: log.details || '-',
         ipAddress: log.ipAddress || '192.168.1.1',
@@ -1144,7 +1161,17 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
   @SubscribeMessage('update_application_status')
   async handleUpdateApplicationStatus(
     @ConnectedSocket() client: Socket,
-    @MessageBody() data: { id?: string; applicationId?: string; refNumber?: string; status: string; rejectionReason?: string },
+    @MessageBody() data: {
+      id?: string;
+      applicationId?: string;
+      refNumber?: string;
+      status: string;
+      rejectionReason?: string;
+      adminId?: string;
+      adminEmail?: string;
+      adminName?: string;
+      adminRole?: string;
+    },
   ) {
     try {
       const targetId = data.id || data.applicationId || data.refNumber;
@@ -1212,19 +1239,26 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
           rejectionReason: updated.rejectionReason,
         });
 
+        const actingOfficerName = data.adminName || (data.adminEmail ? data.adminEmail.split('@')[0] : (updated.officialOfficer || 'Field Operator'));
+        const actingOfficerEmail = data.adminEmail || '';
+        const actingOfficerId = data.adminId;
+        const actingRole = data.adminRole || (actingOfficerEmail === 'admin@cybersave.com' ? 'Super Administrator' : 'Sub-Admin / Operator');
+
         // Record in system audit log
         let auditAction = `APPLICATION_${mappedStatus}`;
-        let auditDetails = `Application #${updated.refNumber} (${updated.serviceTitle || 'Citizen Service'}) transitioned to ${mappedStatus}`;
+        let auditDetails = `Application #${updated.refNumber} (${updated.serviceTitle || 'Citizen Service'}) transitioned to ${mappedStatus} by ${actingRole} ${actingOfficerName}`;
         if (mappedStatus === 'APPROVED') {
           auditAction = 'APPLICATION_APPROVED';
-          auditDetails = `Application #${updated.refNumber} (${updated.serviceTitle || 'Citizen Service'}) verified & APPROVED by verification officer. Digital certificate authorized.`;
+          auditDetails = `Application #${updated.refNumber} (${updated.serviceTitle || 'Citizen Service'}) verified & APPROVED by ${actingRole} ${actingOfficerName}. Digital certificate authorized.`;
         } else if (mappedStatus === 'REJECTED') {
           auditAction = 'APPLICATION_REJECTED';
-          auditDetails = `Application #${updated.refNumber} (${updated.serviceTitle || 'Citizen Service'}) REJECTED by officer. Reason: ${updated.rejectionReason || 'Document verification mismatch'}`;
+          auditDetails = `Application #${updated.refNumber} (${updated.serviceTitle || 'Citizen Service'}) REJECTED by ${actingRole} ${actingOfficerName}. Reason: ${updated.rejectionReason || 'Document verification mismatch'}`;
         }
 
         await AdminGateway.logActivity(this.prisma, {
-          userId: updated.userId,
+          userId: actingOfficerId,
+          userEmail: actingOfficerEmail,
+          userName: actingOfficerName,
           action: auditAction,
           details: auditDetails,
         });
@@ -2103,7 +2137,15 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
       }).catch(() => 0);
 
       const formatted = logs.map((l) => {
-        const userName = l.user?.profile?.fullName || l.user?.email?.split('@')[0] || 'Administrator';
+        let userName = l.user?.profile?.fullName || l.user?.email?.split('@')[0];
+        if (!userName || userName === 'Administrator' || userName === 'Super Administrator') {
+          const match = l.details?.match(/by (?:sub-admin \/ operator|sub-admin|operator|verification officer|officer) ([^.]+)/i);
+          if (match && match[1]) {
+            userName = match[1].trim();
+          }
+        }
+        if (!userName) userName = l.user?.email ? l.user.email.split('@')[0] : 'Sub-Admin Operator';
+
         const act = (l.action || '').toUpperCase();
         let status = 'Success';
         if (act.includes('REJECT') || act.includes('FAIL') || act.includes('SUSPEND')) {

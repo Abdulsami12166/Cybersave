@@ -31,38 +31,41 @@ export class ApplicationsController {
   @Patch(':id/status')
   async updateStatusPatch(
     @Param('id') id: string,
-    @Body() body: { status: string; rejectionReason?: string },
+    @Body() body: { status: string; rejectionReason?: string; adminId?: string; adminEmail?: string; adminName?: string; adminRole?: string },
   ) {
-    return this.applicationsService.updateStatus(id, body.status, body.rejectionReason);
+    return this.applicationsService.updateStatus(id, body.status, body.rejectionReason, body);
   }
 
   @Put(':id/status')
   async updateStatusPut(
     @Param('id') id: string,
-    @Body() body: { status: string; rejectionReason?: string },
+    @Body() body: { status: string; rejectionReason?: string; adminId?: string; adminEmail?: string; adminName?: string; adminRole?: string },
   ) {
-    return this.applicationsService.updateStatus(id, body.status, body.rejectionReason);
+    return this.applicationsService.updateStatus(id, body.status, body.rejectionReason, body);
   }
 
   @Post(':id/status')
   async updateStatusPost(
     @Param('id') id: string,
-    @Body() body: { status: string; rejectionReason?: string },
+    @Body() body: { status: string; rejectionReason?: string; adminId?: string; adminEmail?: string; adminName?: string; adminRole?: string },
   ) {
-    return this.applicationsService.updateStatus(id, body.status, body.rejectionReason);
+    return this.applicationsService.updateStatus(id, body.status, body.rejectionReason, body);
   }
 
   @Post(':id/approve')
-  async approveApplication(@Param('id') id: string) {
-    return this.applicationsService.updateStatus(id, 'APPROVED');
+  async approveApplication(
+    @Param('id') id: string,
+    @Body() body?: { rejectionReason?: string; adminId?: string; adminEmail?: string; adminName?: string; adminRole?: string },
+  ) {
+    return this.applicationsService.updateStatus(id, 'APPROVED', undefined, body);
   }
 
   @Post(':id/reject')
   async rejectApplication(
     @Param('id') id: string,
-    @Body() body?: { rejectionReason?: string },
+    @Body() body?: { rejectionReason?: string; adminId?: string; adminEmail?: string; adminName?: string; adminRole?: string },
   ) {
-    return this.applicationsService.updateStatus(id, 'REJECTED', body?.rejectionReason);
+    return this.applicationsService.updateStatus(id, 'REJECTED', body?.rejectionReason, body);
   }
 
   @Post(':id/assign')

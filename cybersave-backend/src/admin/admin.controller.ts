@@ -1793,7 +1793,15 @@ export class AdminController {
     }).catch(() => 0);
 
     const formatted = logs.map((l) => {
-      const userName = l.user?.profile?.fullName || l.user?.email?.split('@')[0] || 'Administrator';
+      let userName = l.user?.profile?.fullName || l.user?.email?.split('@')[0];
+      if (!userName || userName === 'Administrator' || userName === 'Super Administrator') {
+        const match = l.details?.match(/by (?:sub-admin \/ operator|sub-admin|operator|verification officer|officer) ([^.]+)/i);
+        if (match && match[1]) {
+          userName = match[1].trim();
+        }
+      }
+      if (!userName) userName = l.user?.email ? l.user.email.split('@')[0] : 'Sub-Admin Operator';
+
       const act = (l.action || '').toUpperCase();
       let status = 'Success';
       if (act.includes('REJECT') || act.includes('FAIL') || act.includes('SUSPEND')) {

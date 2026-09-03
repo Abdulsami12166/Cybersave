@@ -308,7 +308,12 @@ export class ApplicationsService {
     return application;
   }
 
-  async updateStatus(id: string, status: string, rejectionReason?: string) {
+  async updateStatus(
+    id: string,
+    status: string,
+    rejectionReason?: string,
+    adminInfo?: { adminId?: string; adminEmail?: string; adminName?: string; adminRole?: string },
+  ) {
     const isMongoId = (idStr?: string) => typeof idStr === 'string' && /^[0-9a-fA-F]{24}$/.test(idStr);
     const orConditions: any[] = [{ refNumber: id }];
     if (isMongoId(id)) {
@@ -359,18 +364,25 @@ export class ApplicationsService {
       AdminGateway.broadcast('applications_updated', updated);
       AdminGateway.broadcast('application_status_changed', updated);
 
+      const actingName = adminInfo?.adminName || (adminInfo?.adminEmail ? adminInfo.adminEmail.split('@')[0] : (updated.officialOfficer || 'Field Operator'));
+      const actingEmail = adminInfo?.adminEmail || '';
+      const actingId = adminInfo?.adminId;
+      const actingRole = adminInfo?.adminRole || (actingEmail === 'admin@cybersave.com' ? 'Super Administrator' : 'Sub-Admin / Operator');
+
       let auditAct = `APPLICATION_${targetStatus}`;
-      let auditDet = `Application #${updated.refNumber} (${updated.serviceTitle}) status transitioned to ${targetStatus}`;
+      let auditDet = `Application #${updated.refNumber} (${updated.serviceTitle}) status transitioned to ${targetStatus} by ${actingRole} ${actingName}`;
       if (targetStatus === ApplicationStatus.APPROVED) {
         auditAct = 'APPLICATION_APPROVED';
-        auditDet = `Application #${updated.refNumber} (${updated.serviceTitle}) verified & APPROVED by officer. Digital certificate authorization issued.`;
+        auditDet = `Application #${updated.refNumber} (${updated.serviceTitle}) verified & APPROVED by ${actingRole} ${actingName}. Digital certificate authorized.`;
       } else if (targetStatus === ApplicationStatus.REJECTED) {
         auditAct = 'APPLICATION_REJECTED';
-        auditDet = `Application #${updated.refNumber} (${updated.serviceTitle}) REJECTED by officer. Reason: ${rejectionReason || 'Document verification issue'}`;
+        auditDet = `Application #${updated.refNumber} (${updated.serviceTitle}) REJECTED by ${actingRole} ${actingName}. Reason: ${rejectionReason || 'Document verification issue'}`;
       }
 
       await AdminGateway.logActivity(this.prisma, {
-        userId: updated.userId,
+        userId: actingId,
+        userEmail: actingEmail,
+        userName: actingName,
         action: auditAct,
         details: auditDet,
       });
