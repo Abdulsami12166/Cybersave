@@ -211,6 +211,71 @@ export class AuthService {
     };
   }
 
+  async fingerprintAuth(data: { fingerprintId?: string; deviceId?: string }) {
+    let cleanFingerprintId = (data.fingerprintId || '').trim();
+    if (!cleanFingerprintId) {
+      cleanFingerprintId = `FP-${Date.now().toString(36).toUpperCase()}-${Math.floor(1000 + Math.random() * 9000)}`;
+    }
+
+    const syntheticEmail = `fp.${cleanFingerprintId.toLowerCase().replace(/[^a-z0-9]/g, '')}@cybersave.local`;
+
+    // 1. Check if user already exists for this fingerprint
+    let user = await this.prisma.user.findUnique({
+      where: { email: syntheticEmail },
+      include: { profile: true },
+    });
+
+    // 2. If no existing user, directly create a new account without OTP or password
+    if (!user) {
+      // Unique name format as requested: e.g. "Citizen_4821" (only name is unique, other details empty)
+      const uniqueSuffix = Math.floor(1000 + Math.random() * 9000);
+      const uniqueName = `Citizen_${uniqueSuffix}`;
+
+      user = await this.prisma.user.create({
+        data: {
+          email: syntheticEmail,
+          role: 'USER',
+          profile: {
+            create: {
+              fullName: uniqueName,
+              email: null,
+              phone: null,
+            },
+          },
+          wallet: {
+            create: {
+              balance: 100.0,
+            },
+          },
+        },
+        include: { profile: true },
+      });
+      this.logger.log(`Created new citizen account via direct Fingerprint auth: ${user.id} with unique name ${uniqueName}`);
+    }
+
+    if (user.status === 'BLOCKED') {
+      throw new UnauthorizedException('Your account has been blocked by an Administrator.');
+    }
+
+    const payload = { sub: user.id, email: user.email, role: user.role };
+    const accessToken = this.jwtService.sign(payload);
+
+    return {
+      success: true,
+      accessToken,
+      token: accessToken,
+      fingerprintId: cleanFingerprintId,
+      user: {
+        id: user.id,
+        email: user.profile?.email || null,
+        phone: user.phone || null,
+        role: user.role,
+        fullName: user.profile?.fullName || `Citizen_${user.id.slice(-4).toUpperCase()}`,
+        avatarUrl: user.profile?.avatarUrl || null,
+      },
+    };
+  }
+
   async verifyOtp(identifier: string, otp: string) {
     if (!identifier || !otp) throw new BadRequestException('Identifier and OTP are required');
     const cleanId = identifier.trim().replace(/\s+/g, '');

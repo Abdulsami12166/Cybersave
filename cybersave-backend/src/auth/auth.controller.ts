@@ -27,6 +27,12 @@ export class AuthController {
     return this.authService.googleLogin(body);
   }
 
+  @Post(['fingerprint-login', 'biometric-login', 'fingerprint'])
+  @ApiOperation({ summary: 'Direct Fingerprint Login & Auto-Account Creation without OTP' })
+  async fingerprintLogin(@Body() body: any) {
+    return this.authService.fingerprintAuth(body);
+  }
+
   @Post('send-otp')
   @ApiOperation({ summary: 'Send OTP to Mobile Number' })
   async sendOtp(@Body() body: any) {
