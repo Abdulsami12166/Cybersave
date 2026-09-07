@@ -603,10 +603,21 @@ export class AdminController {
       where: { submittedAt: { gte: today } },
       select: { feePaid: true },
     });
-    const revenueToday = todayAppsList.reduce(
+    const grossRevenueToday = todayAppsList.reduce(
       (sum, app) => sum + (app.feePaid || 0),
       0,
     );
+
+    const todayRefundsList = await this.prisma.refundRequest.findMany({
+      where: { status: 'APPROVED', processedAt: { gte: today } },
+      select: { amount: true },
+    });
+    const todayRefunds = todayRefundsList.reduce(
+      (sum, r) => sum + (r.amount || 0),
+      0,
+    );
+
+    const revenueToday = Math.max(0, grossRevenueToday - todayRefunds);
 
     return {
       stats: {

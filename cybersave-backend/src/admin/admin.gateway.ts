@@ -224,8 +224,12 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
       today.setHours(0, 0, 0, 0);
 
       const allApps = await this.prisma.application.findMany({
-        include: { user: { include: { profile: true } } },
+        include: { user: { include: { profile: true } }, refundRequests: true },
         orderBy: { submittedAt: 'desc' },
+      });
+
+      const allApprovedRefunds = await this.prisma.refundRequest.findMany({
+        where: { status: 'APPROVED' },
       });
 
       const todayApps = allApps.filter((a) => {
@@ -233,15 +237,28 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
         return d >= today;
       });
 
-      const revenueToday = todayApps.reduce((sum, a) => {
+      const todayApprovedRefunds = allApprovedRefunds.filter((r) => {
+        const d = new Date(r.processedAt || r.updatedAt || r.createdAt);
+        return d >= today;
+      });
+
+      const todayRefundedAmount = todayApprovedRefunds.reduce((sum, r) => sum + (Number(r.amount) || 0), 0);
+      const totalRefundedAmount = allApprovedRefunds.reduce((sum, r) => sum + (Number(r.amount) || 0), 0);
+
+      const grossRevenueToday = todayApps.reduce((sum, a) => {
         const fee = typeof a.feePaid === 'number' && !isNaN(a.feePaid) ? a.feePaid : (a.feePaid ? Number(a.feePaid) : 55.0);
         return sum + fee;
       }, 0);
 
-      const totalRevenue = allApps.reduce((sum, a) => {
+      // Realized daily revenue: Gross intake today minus approved refunds today
+      const revenueToday = Math.max(0, grossRevenueToday - todayRefundedAmount);
+
+      const grossTotalRevenue = allApps.reduce((sum, a) => {
         const fee = typeof a.feePaid === 'number' && !isNaN(a.feePaid) ? a.feePaid : (a.feePaid ? Number(a.feePaid) : 55.0);
         return sum + fee;
       }, 0);
+
+      const totalRevenue = Math.max(0, grossTotalRevenue - totalRefundedAmount);
 
       const appsToday = todayApps.length;
       const pendingApps = allApps.filter((a) => {
@@ -264,7 +281,7 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
 
       // Compute dynamic 7-day overview (<= 7 days)
       const dayNames = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
-      const revenueOverview: Array<{ day: string; date: string; value: number }> = [];
+      const revenueOverview: Array<{ day: string; date: string; value: number; gross?: number; refunds?: number }> = [];
       const applicationTrends: Array<{ day: string; date: string; completed: number; pending: number; rejected: number }> = [];
 
       for (let i = 6; i >= 0; i--) {
@@ -283,10 +300,20 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
           return appDate >= d && appDate < nextD;
         });
 
-        const dayRev = dayApps.reduce((acc, a) => {
+        const dayRefunds = allApprovedRefunds
+          .filter((r) => {
+            const rDate = new Date(r.processedAt || r.updatedAt || r.createdAt);
+            return rDate >= d && rDate < nextD;
+          })
+          .reduce((sum, r) => sum + (Number(r.amount) || 0), 0);
+
+        const dayGross = dayApps.reduce((acc, a) => {
           const fee = typeof a.feePaid === 'number' && !isNaN(a.feePaid) ? a.feePaid : (a.feePaid ? Number(a.feePaid) : 55.0);
           return acc + fee;
         }, 0);
+
+        const dayRealized = Math.max(0, dayGross - dayRefunds);
+
         const dayComp = dayApps.filter((a) => {
           const st = (a.status || '').toUpperCase();
           return st === 'COMPLETED' || st === 'APPROVED';
@@ -300,7 +327,9 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
         revenueOverview.push({
           day: dayShort,
           date: dateLabel,
-          value: dayRev,
+          value: dayRealized,
+          gross: dayGross,
+          refunds: dayRefunds,
         });
 
         applicationTrends.push({
@@ -315,7 +344,11 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
       client.emit('response_dashboard_data', {
         stats: {
           revenueToday: revenueToday,
+          grossRevenueToday: grossRevenueToday,
+          refundedToday: todayRefundedAmount,
           totalRevenue: totalRevenue,
+          grossTotalRevenue: grossTotalRevenue,
+          totalRefunded: totalRefundedAmount,
           appsToday: appsToday,
           totalApps: allApps.length,
           pendingApps: pendingApps,
@@ -328,6 +361,8 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
         collections: {
           totalCollections: totalRevenue,
           onlinePayments: totalRevenue,
+          grossCollections: grossTotalRevenue,
+          totalRefunded: totalRefundedAmount,
           cashCollections: 0,
         },
         serviceShare: [
@@ -1360,6 +1395,7 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
         rejectionReason: app.rejectionReason,
         feePaid: app.feePaid || 50.0,
         paymentStatus: app.paymentStatus || 'Success',
+        refundStatus: app.refundStatus,
         razorpayPaymentId: app.razorpayPaymentId || '',
         razorpayOrderId: app.razorpayOrderId || '',
         formData: app.formData,
@@ -1813,13 +1849,23 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
       const apps = await this.prisma.application.findMany({
         orderBy: { submittedAt: 'desc' },
         take: 100,
-        include: { user: { include: { profile: true } }, service: true },
+        include: { user: { include: { profile: true } }, service: true, refundRequests: true },
       });
+
+      const allApprovedRefunds = await this.prisma.refundRequest.findMany({
+        where: { status: 'APPROVED' },
+      });
+
       const formattedTransactions = apps.map((a) => {
         const userProfile = a.user?.profile;
         const formData = (a.formData as any) || {};
         const customerName = userProfile?.fullName || formData.fullName || (a.user as any)?.fullName || a.user?.email || 'Citizen User';
         const txnId = a.razorpayPaymentId || `TXN-${a.id.substring(0, 8).toUpperCase()}`;
+        const fee = typeof a.feePaid === 'number' && !isNaN(a.feePaid) ? a.feePaid : (a.feePaid ? Number(a.feePaid) : 50.0);
+
+        const approvedRefund = a.refundRequests?.find((r: any) => r.status === 'APPROVED');
+        const isRefunded = !!approvedRefund || (a.refundStatus || '').toUpperCase() === 'APPROVED' || (a.paymentStatus || '').toLowerCase() === 'refunded';
+        const status = isRefunded ? 'REFUNDED' : (a.paymentStatus || 'SUCCESS').toUpperCase();
 
         return {
           id: txnId,
@@ -1828,17 +1874,60 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
           date: a.submittedAt.toISOString(),
           customer: customerName,
           service: a.serviceTitle || a.service?.title || 'Government Service',
-          amount: a.feePaid || 50.0,
-          status: (a.paymentStatus || 'SUCCESS').toUpperCase(),
+          amount: fee,
+          status,
+          isRefunded,
+          refundRef: approvedRefund?.refNumber || (isRefunded ? `REF-${a.refNumber}` : undefined),
+          refundAmount: approvedRefund?.amount || (isRefunded ? fee : undefined),
+          refundReason: approvedRefund?.reason || undefined,
+          refundProcessedAt: approvedRefund?.processedAt ? approvedRefund.processedAt.toISOString() : undefined,
           paymentMethod: a.razorpayPaymentId ? 'Razorpay (Test UPI)' : 'Govt Portal Payment',
           razorpayPaymentId: a.razorpayPaymentId || '',
           razorpayOrderId: a.razorpayOrderId || '',
         };
       });
-      const totalAmount = apps.reduce((sum, a) => sum + (a.feePaid || 50.0), 0);
+
+      const today = new Date();
+      today.setHours(0, 0, 0, 0);
+
+      const totalGrossAmount = apps.reduce((sum, a) => {
+        const fee = typeof a.feePaid === 'number' && !isNaN(a.feePaid) ? a.feePaid : (a.feePaid ? Number(a.feePaid) : 50.0);
+        return sum + fee;
+      }, 0);
+
+      const totalRefundedAmount = apps
+        .filter((a) => (a.refundStatus || '').toUpperCase() === 'APPROVED' || (a.paymentStatus || '').toLowerCase() === 'refunded' || a.refundRequests?.some((r: any) => r.status === 'APPROVED'))
+        .reduce((sum, a) => {
+          const fee = typeof a.feePaid === 'number' && !isNaN(a.feePaid) ? a.feePaid : (a.feePaid ? Number(a.feePaid) : 50.0);
+          return sum + fee;
+        }, 0);
+
+      const realizedAmount = Math.max(0, totalGrossAmount - totalRefundedAmount);
+
+      const todayApps = apps.filter((a) => new Date(a.submittedAt || a.updatedAt) >= today);
+      const todayGross = todayApps.reduce((sum, a) => {
+        const fee = typeof a.feePaid === 'number' && !isNaN(a.feePaid) ? a.feePaid : (a.feePaid ? Number(a.feePaid) : 50.0);
+        return sum + fee;
+      }, 0);
+
+      const todayRefunds = allApprovedRefunds
+        .filter((r) => new Date(r.processedAt || r.updatedAt || r.createdAt) >= today)
+        .reduce((sum, r) => sum + (Number(r.amount) || 0), 0);
+
+      const revenueToday = Math.max(0, todayGross - todayRefunds);
+
       client.emit('response_transactions_data', {
         transactions: formattedTransactions,
-        stats: { totalCount: apps.length, totalAmount },
+        stats: {
+          totalCount: apps.length,
+          totalAmount: realizedAmount,
+          grossAmount: totalGrossAmount,
+          refundedAmount: totalRefundedAmount,
+          refundedCount: apps.filter((a) => (a.refundStatus || '').toUpperCase() === 'APPROVED' || (a.paymentStatus || '').toLowerCase() === 'refunded').length,
+          revenueToday,
+          todayGross,
+          todayRefunds,
+        },
       });
     } catch (e) {
       console.error('[AdminGateway] request_transactions_data error:', e);

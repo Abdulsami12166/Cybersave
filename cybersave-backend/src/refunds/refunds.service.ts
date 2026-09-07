@@ -288,9 +288,13 @@ export class RefundsService {
 
       AdminGateway.emitToUser(refund.userId, 'notification_received', notification);
 
+      AdminGateway.broadcast('refund_approved', updatedRefund);
       AdminGateway.broadcast('refunds_updated', updatedRefund);
       AdminGateway.broadcast('applications_updated');
       AdminGateway.broadcast('wallet_transactions_updated');
+      AdminGateway.broadcast('transactions_updated');
+      AdminGateway.broadcast('dashboard_updated');
+      AdminGateway.broadcast('analytics_updated');
 
       await AdminGateway.logActivity(this.prisma, {
         userId: refund.userId,
