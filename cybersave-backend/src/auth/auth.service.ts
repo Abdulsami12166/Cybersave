@@ -55,7 +55,7 @@ export class AuthService {
         },
         wallet: {
           create: {
-            balance: 100.0,
+            balance: 0.0,
           },
         },
       },
@@ -180,7 +180,7 @@ export class AuthService {
           },
           wallet: {
             create: {
-              balance: 100.0,
+              balance: 0.0,
             },
           },
         },
@@ -278,7 +278,7 @@ export class AuthService {
           },
           wallet: {
             create: {
-              balance: 100.0,
+              balance: 0.0,
             },
           },
         },
@@ -342,7 +342,7 @@ export class AuthService {
             },
             wallet: {
               create: {
-                balance: 100.0,
+                balance: 0.0,
               },
             },
           },

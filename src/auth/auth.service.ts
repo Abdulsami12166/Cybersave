@@ -89,7 +89,7 @@ export class AuthService {
           profile: {
             create: { fullName: userName, phone: cleanPhone, email: userEmail },
           },
-          wallet: { create: { balance: 100.0 } },
+          wallet: { create: { balance: 0.0 } },
           auditLogs: {
             create: { action: 'USER_REGISTER', details: 'Registered via OTP' },
           },
@@ -145,7 +145,7 @@ export class AuthService {
           phone: phone && registerDto.phone ? phone : undefined,
         },
       },
-      wallet: { create: { balance: 100.0 } },
+      wallet: { create: { balance: 0.0 } },
       auditLogs: {
         create: { action: 'USER_REGISTER', details: 'User registered via Email & Password' },
       },
@@ -279,7 +279,7 @@ export class AuthService {
             },
             wallet: {
               create: {
-                balance: 100.0,
+                balance: 0.0,
               },
             },
             auditLogs: {
