@@ -43,10 +43,26 @@ export class RefundsService {
         applicationId: application.id,
         status: RefundStatus.PENDING,
       },
+      include: {
+        user: { include: { profile: true } },
+        application: true,
+      },
     });
 
     if (existingPending) {
-      throw new BadRequestException('A refund request is already pending review for this application.');
+      this.logger.log(
+        `[Refunds] Refund already pending for application #${application.refNumber} (${existingPending.refNumber}). Returning existing claim idempotently.`,
+      );
+      return {
+        success: true,
+        id: existingPending.id,
+        refNumber: existingPending.refNumber,
+        amount: existingPending.amount,
+        status: existingPending.status,
+        message: 'A refund request is already pending review for this application.',
+        refund: existingPending,
+        alreadyPending: true,
+      };
     }
 
     // 3. Resolve user
@@ -101,7 +117,16 @@ export class RefundsService {
       this.logger.warn(`WS broadcast warning: ${wsErr?.message}`);
     }
 
-    return refund;
+    return {
+      success: true,
+      id: refund.id,
+      refNumber: refund.refNumber,
+      amount: refund.amount,
+      status: refund.status,
+      message: 'Refund request submitted successfully.',
+      refund,
+      alreadyPending: false,
+    };
   }
 
   async getAllRefunds(query?: { userId?: string; status?: string; applicationId?: string }) {
