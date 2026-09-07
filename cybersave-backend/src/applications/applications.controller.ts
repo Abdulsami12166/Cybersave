@@ -15,12 +15,10 @@ export class ApplicationsController {
 
   @Get()
   async getUserApplications(
-    @Query('userId') userId: string,
+    @Query('userId') userId?: string,
     @Query('status') status?: string,
   ) {
-    // If no userId query, fallback to system default for testing
-    const targetUserId = userId || 'default-user-id';
-    return this.applicationsService.getUserApplications(targetUserId, status);
+    return this.applicationsService.getUserApplications(userId, status);
   }
 
   @Get(':id')

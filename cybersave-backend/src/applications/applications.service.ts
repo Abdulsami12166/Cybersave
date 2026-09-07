@@ -243,7 +243,7 @@ export class ApplicationsService {
   async getUserApplications(userId?: string, status?: string) {
     const isMongoId = (id?: string) => typeof id === 'string' && /^[0-9a-fA-F]{24}$/.test(id);
     const whereClause: any = {};
-    if (status && status !== 'All') {
+    if (status && status !== 'All' && status !== 'ALL') {
       const upper = status.toUpperCase().replace(/\s+/g, '_');
       if (
         Object.values(ApplicationStatus).includes(upper as ApplicationStatus)
@@ -252,35 +252,50 @@ export class ApplicationsService {
       }
     }
 
-    if (userId && userId !== 'all') {
-      const userOrConditions: any[] = [];
-      if (isMongoId(userId)) userOrConditions.push({ id: userId });
-      userOrConditions.push({ phone: userId }, { email: userId });
-
-      const matchedUser = await this.prisma.user.findFirst({
-        where: { OR: userOrConditions },
-      }).catch(() => null);
-
-      const targetIds: string[] = [];
-      if (isMongoId(userId)) targetIds.push(userId);
-      if (matchedUser && isMongoId(matchedUser.id) && !targetIds.includes(matchedUser.id)) {
-        targetIds.push(matchedUser.id);
-      }
-
-      if (targetIds.length > 0) {
-        return this.prisma.application.findMany({
-          where: {
-            ...whereClause,
-            userId: { in: targetIds },
-          },
-          orderBy: { submittedAt: 'desc' },
-          include: { service: true, user: { include: { profile: true } } },
-        });
-      }
-
-      // User has no applications - return empty array to maintain strict privacy
-      return [];
+    // If userId is omitted or 'all' or 'admin', return all applications (for Admin Web Panel)
+    if (!userId || userId === 'all' || userId === 'admin' || userId === 'default-user-id') {
+      return this.prisma.application.findMany({
+        where: whereClause,
+        orderBy: { submittedAt: 'desc' },
+        include: {
+          service: true,
+          user: { include: { profile: true } },
+          refundRequests: true,
+        },
+      });
     }
+
+    const userOrConditions: any[] = [];
+    if (isMongoId(userId)) userOrConditions.push({ id: userId });
+    userOrConditions.push({ phone: userId }, { email: userId });
+
+    const matchedUser = await this.prisma.user.findFirst({
+      where: { OR: userOrConditions },
+    }).catch(() => null);
+
+    const targetIds: string[] = [];
+    if (isMongoId(userId)) targetIds.push(userId);
+    if (matchedUser && isMongoId(matchedUser.id) && !targetIds.includes(matchedUser.id)) {
+      targetIds.push(matchedUser.id);
+    }
+
+    if (targetIds.length > 0) {
+      return this.prisma.application.findMany({
+        where: {
+          ...whereClause,
+          userId: { in: targetIds },
+        },
+        orderBy: { submittedAt: 'desc' },
+        include: {
+          service: true,
+          user: { include: { profile: true } },
+          refundRequests: true,
+        },
+      });
+    }
+
+    // User has no applications - return empty array to maintain strict privacy
+    return [];
   }
 
   async getApplicationById(id: string) {
@@ -298,6 +313,7 @@ export class ApplicationsService {
         service: true,
         user: { include: { profile: true } },
         documentUploads: true,
+        refundRequests: true,
       },
     });
 
