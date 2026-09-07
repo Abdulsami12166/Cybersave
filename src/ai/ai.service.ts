@@ -24,7 +24,7 @@ export class AiService implements OnModuleInit {
       try {
         this.genAI = new GoogleGenerativeAI(apiKey);
         this.model = this.genAI.getGenerativeModel({
-          model: 'gemini-1.5-flash',
+          model: 'gemini-3.6-flash',
         });
         this.logger.log('Gemini AI Service initialized successfully for CyberBot.');
         return true;
@@ -44,10 +44,10 @@ export class AiService implements OnModuleInit {
 
     if (this.model) {
       const fallbackModels = [
-        'gemini-1.5-flash',
-        'gemini-2.0-flash',
-        'gemini-1.5-pro',
-        'gemini-pro',
+        'gemini-3.6-flash',
+        'gemini-3.5-flash',
+        'gemini-flash-latest',
+        'gemini-2.5-pro',
       ];
 
       for (const modelName of fallbackModels) {
