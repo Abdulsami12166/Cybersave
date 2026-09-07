@@ -71,6 +71,7 @@ model User {
   auditLogs     AuditLog[]
   supportTickets SupportTicket[]
   feedbacks     Feedback[] // ponytail: citizen feedback records
+  refundRequests RefundRequest[]
 
 }
 
@@ -139,7 +140,8 @@ model Application {
   documents            Json?             // List of uploaded file objects/URLs
   submittedAt          DateTime          @default(now())
   updatedAt            DateTime          @updatedAt
-
+  refundStatus         String?
+  refundRequests       RefundRequest[]
   documentUploads      DocumentUpload[]
 
   @@index([userId])
@@ -283,6 +285,36 @@ model Feedback {
 
   @@index([userId])
   @@index([createdAt])
+}
+
+enum RefundStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+model RefundRequest {
+  id             String        @id @default(auto()) @map("_id") @db.ObjectId
+  refNumber      String        @unique // e.g. REF-20261234
+  applicationId  String        @db.ObjectId
+  application    Application   @relation(fields: [applicationId], references: [id], onDelete: Cascade)
+  userId         String        @db.ObjectId
+  user           User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  serviceTitle   String
+  amount         Float
+  reason         String
+  details        String?
+  proofUrl       String?       // Cloudinary URL
+  status         RefundStatus  @default(PENDING)
+  adminNotes     String?
+  processedBy    String?
+  processedAt    DateTime?
+  createdAt      DateTime      @default(now())
+  updatedAt      DateTime      @updatedAt
+
+  @@index([userId])
+  @@index([applicationId])
+  @@index([status])
 }
 
 

@@ -16,6 +16,7 @@ import { AadhaarModule } from './aadhaar/aadhaar.module';
 import { SandboxModule } from './sandbox/sandbox.module';
 import { PaymentModule } from './payment/payment.module';
 import { AdminModule } from './admin/admin.module';
+import { RefundsModule } from './refunds/refunds.module';
 
 @Module({
   imports: [
@@ -36,6 +37,7 @@ import { AdminModule } from './admin/admin.module';
     SandboxModule,
     PaymentModule,
     AdminModule,
+    RefundsModule,
   ],
   controllers: [AppController],
   providers: [AppService],

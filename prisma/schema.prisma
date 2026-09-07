@@ -1,5 +1,5 @@
 datasource db {
-  provider = "postgresql"
+  provider = "mongodb"
   url      = env("DATABASE_URL")
 }
 
@@ -13,11 +13,13 @@ enum Role {
 }
 
 enum ApplicationStatus {
+  PENDING
   SUBMITTED
   VERIFYING
   IN_PROGRESS
   APPROVED
   REJECTED
+  COMPLETED
 }
 
 enum TransactionType {
@@ -29,6 +31,10 @@ enum NotificationType {
   APPLICATION_UPDATE
   PAYMENT
   SYSTEM
+  SECURITY
+  WARNING
+  SUCCESS
+  INFO
 }
 
 enum NotificationStatus {
@@ -39,15 +45,22 @@ enum NotificationStatus {
 }
 
 model User {
-  id            String    @id @default(uuid())
+  id            String    @id @default(auto()) @map("_id") @db.ObjectId
   phone         String?
   email         String?   @unique
-  firebaseUid   String?   @unique
+  keycloakId    String?
   passwordHash  String?
+  fcmToken      String?
   role          Role      @default(USER)
+  otpCode       String?
+  otpExpiry     DateTime?
   createdAt     DateTime  @default(now())
   updatedAt     DateTime  @updatedAt
   deletedAt     DateTime?
+  permissions   String[]  @default([]) // ponytail: dynamic access control array
+  status        String    @default("ACTIVE")
+  isOnline      Boolean?  @default(false)
+  lastSeenAt    DateTime?
 
   profile       Profile?
   wallet        Wallet?
@@ -56,16 +69,15 @@ model User {
   aadhaarDocs   AadhaarDocument[]
   notifications Notification[]
   auditLogs     AuditLog[]
+  supportTickets SupportTicket[]
   feedbacks     Feedback[] // ponytail: citizen feedback records
+  refundRequests RefundRequest[]
 
-  @@index([phone])
-  @@index([email])
-  @@index([firebaseUid])
 }
 
 model Profile {
-  id          String   @id @default(uuid())
-  userId      String   @unique
+  id          String   @id @default(auto()) @map("_id") @db.ObjectId
+  userId      String   @unique @db.ObjectId
   user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
   fullName    String?
   phone       String?
@@ -80,11 +92,10 @@ model Profile {
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 
-  @@index([userId])
 }
 
 model Service {
-  id             String        @id @default(uuid())
+  id             String        @id @default(auto()) @map("_id") @db.ObjectId
   slug           String        @unique // e.g. "birth-certificate", "aadhaar-address"
   title          String
   description    String
@@ -94,6 +105,9 @@ model Service {
   processingTime String
   eligibility    Json?         // Array of string rules
   requiredDocs   Json?         // Array of required doc descriptions
+  subServices    Json?         // Configured sub-services
+  formDataSchema Json?         // Interface form builder schema
+  pricingConfig  Json?         // Pricing and tax configurations
   iconName       String
   colorHex       String
   isActive       Boolean       @default(true)
@@ -103,15 +117,14 @@ model Service {
   applications   Application[]
 
   @@index([category])
-  @@index([slug])
 }
 
 model Application {
-  id                   String            @id @default(uuid())
+  id                   String            @id @default(auto()) @map("_id") @db.ObjectId
   refNumber            String            @unique // e.g. "CSB2024001234"
-  userId               String
+  userId               String            @db.ObjectId
   user                 User              @relation(fields: [userId], references: [id], onDelete: Cascade)
-  serviceId            String
+  serviceId            String            @db.ObjectId
   service              Service           @relation(fields: [serviceId], references: [id])
   serviceTitle         String
   status               ApplicationStatus @default(SUBMITTED)
@@ -120,21 +133,24 @@ model Application {
   officialOfficer      String?           @default("Officer Sharma (SDM)")
   feePaid              Float             @default(50.0)
   paymentStatus        String            @default("Success")
+  razorpayOrderId      String?
+  razorpayPaymentId    String?
+  razorpaySignature    String?
   formData             Json?             // Form input fields (fullName, dob, state, etc.)
   documents            Json?             // List of uploaded file objects/URLs
   submittedAt          DateTime          @default(now())
   updatedAt            DateTime          @updatedAt
-
+  refundStatus         String?
+  refundRequests       RefundRequest[]
   documentUploads      DocumentUpload[]
 
   @@index([userId])
-  @@index([refNumber])
   @@index([status])
 }
 
 model Wallet {
-  id           String              @id @default(uuid())
-  userId       String              @unique
+  id           String              @id @default(auto()) @map("_id") @db.ObjectId
+  userId       String              @unique @db.ObjectId
   user         User                @relation(fields: [userId], references: [id], onDelete: Cascade)
   balance      Float               @default(0.0)
   createdAt    DateTime            @default(now())
@@ -142,14 +158,13 @@ model Wallet {
 
   transactions WalletTransaction[]
 
-  @@index([userId])
 }
 
 model WalletTransaction {
-  id          String          @id @default(uuid())
-  walletId    String
+  id          String          @id @default(auto()) @map("_id") @db.ObjectId
+  walletId    String          @db.ObjectId
   wallet      Wallet          @relation(fields: [walletId], references: [id], onDelete: Cascade)
-  userId      String
+  userId      String          @db.ObjectId
   type        TransactionType @default(CREDIT)
   title       String
   subtitle    String?
@@ -163,10 +178,10 @@ model WalletTransaction {
 }
 
 model DocumentUpload {
-  id            String       @id @default(uuid())
-  userId        String
+  id            String       @id @default(auto()) @map("_id") @db.ObjectId
+  userId        String       @db.ObjectId
   user          User         @relation(fields: [userId], references: [id], onDelete: Cascade)
-  applicationId String?
+  applicationId String?      @db.ObjectId
   application   Application? @relation(fields: [applicationId], references: [id], onDelete: SetNull)
   fileUrl       String       // Cloudinary URL
   fileName      String
@@ -179,8 +194,8 @@ model DocumentUpload {
 }
 
 model Notification {
-  id        String             @id @default(uuid())
-  userId    String
+  id        String             @id @default(auto()) @map("_id") @db.ObjectId
+  userId    String             @db.ObjectId
   user      User               @relation(fields: [userId], references: [id], onDelete: Cascade)
   title     String
   body      String
@@ -194,8 +209,8 @@ model Notification {
 }
 
 model AuditLog {
-  id        String   @id @default(uuid())
-  userId    String?
+  id        String   @id @default(auto()) @map("_id") @db.ObjectId
+  userId    String?  @db.ObjectId
   user      User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
   action    String   // e.g., "USER_LOGIN", "SUBMIT_APPLICATION"
   details   String?
@@ -207,8 +222,8 @@ model AuditLog {
 }
 
 model AadhaarDocument {
-  id                 String   @id @default(uuid())
-  userId             String
+  id                 String   @id @default(auto()) @map("_id") @db.ObjectId
+  userId             String   @db.ObjectId
   user               User     @relation(fields: [userId], references: [id], onDelete: Cascade)
   documentType       String   @default("OFFLINE_EKYC")
   referenceId        String?
@@ -229,9 +244,37 @@ model AadhaarDocument {
   @@index([userId])
 }
 
+model SupportTicket {
+  id            String   @id @default(auto()) @map("_id") @db.ObjectId
+  refNumber     String   @unique // e.g. TKT-2024-001
+  userId        String?  @db.ObjectId
+  user          User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+  title         String
+  description   String?
+  attachmentUrl String?
+  category      String   @default("Technical")
+  priority      String   @default("Medium") // High, Medium, Low, Critical
+  status        String   @default("OPEN") // OPEN, IN_PROGRESS, RESOLVED, ESCALATED
+  assignedTo    String?
+  messages      Json?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@index([userId])
+  @@index([status])
+}
+
+model SystemSetting {
+  id        String   @id @default(auto()) @map("_id") @db.ObjectId
+  key       String   @unique
+  value     Json
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
 model Feedback {
-  id                  String   @id @default(uuid())
-  userId              String?
+  id                  String   @id @default(auto()) @map("_id") @db.ObjectId
+  userId              String?  @db.ObjectId
   user                User?    @relation(fields: [userId], references: [id], onDelete: Cascade)
   rating              Int      @default(5)
   improvementCategory String?  @default("App Experience")
@@ -243,4 +286,35 @@ model Feedback {
   @@index([userId])
   @@index([createdAt])
 }
+
+enum RefundStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+model RefundRequest {
+  id             String        @id @default(auto()) @map("_id") @db.ObjectId
+  refNumber      String        @unique // e.g. REF-20261234
+  applicationId  String        @db.ObjectId
+  application    Application   @relation(fields: [applicationId], references: [id], onDelete: Cascade)
+  userId         String        @db.ObjectId
+  user           User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  serviceTitle   String
+  amount         Float
+  reason         String
+  details        String?
+  proofUrl       String?       // Cloudinary URL
+  status         RefundStatus  @default(PENDING)
+  adminNotes     String?
+  processedBy    String?
+  processedAt    DateTime?
+  createdAt      DateTime      @default(now())
+  updatedAt      DateTime      @updatedAt
+
+  @@index([userId])
+  @@index([applicationId])
+  @@index([status])
+}
+
 

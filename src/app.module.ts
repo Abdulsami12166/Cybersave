@@ -14,7 +14,9 @@ import { DocumentsModule } from './documents/documents.module';
 import { IntegrationsModule } from './common/services/integrations.module';
 import { AadhaarModule } from './aadhaar/aadhaar.module';
 import { SandboxModule } from './sandbox/sandbox.module';
-import { AdminGateway } from './admin/admin.gateway';
+import { PaymentModule } from './payment/payment.module';
+import { AdminModule } from './admin/admin.module';
+import { RefundsModule } from './refunds/refunds.module';
 
 @Module({
   imports: [
@@ -33,8 +35,11 @@ import { AdminGateway } from './admin/admin.gateway';
     IntegrationsModule,
     AadhaarModule,
     SandboxModule,
+    PaymentModule,
+    AdminModule,
+    RefundsModule,
   ],
   controllers: [AppController],
-  providers: [AppService, AdminGateway],
+  providers: [AppService],
 })
 export class AppModule {}
