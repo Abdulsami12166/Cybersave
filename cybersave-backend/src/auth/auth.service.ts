@@ -211,10 +211,44 @@ export class AuthService {
     };
   }
 
-  async fingerprintAuth(data: { fingerprintId?: string; deviceId?: string }) {
+  async fingerprintAuth(data: { fingerprintId?: string; deviceId?: string; userId?: string }) {
     let cleanFingerprintId = (data.fingerprintId || '').trim();
     if (!cleanFingerprintId) {
       cleanFingerprintId = `FP-${Date.now().toString(36).toUpperCase()}-${Math.floor(1000 + Math.random() * 9000)}`;
+    }
+
+    // ponytail: Re-login flow — if mobile sends userId from enrolled biometric data, find the real user
+    if (data.userId) {
+      const existingUser = await this.prisma.user.findUnique({
+        where: { id: data.userId },
+        include: { profile: true },
+      });
+
+      if (existingUser) {
+        if (existingUser.status === 'BLOCKED') {
+          throw new UnauthorizedException('Your account has been blocked by an Administrator.');
+        }
+
+        const payload = { sub: existingUser.id, email: existingUser.email, role: existingUser.role };
+        const accessToken = this.jwtService.sign(payload);
+        this.logger.log(`Fingerprint re-login for existing user: ${existingUser.id}`);
+
+        return {
+          success: true,
+          accessToken,
+          token: accessToken,
+          fingerprintId: cleanFingerprintId,
+          user: {
+            id: existingUser.id,
+            email: existingUser.profile?.email || existingUser.email || null,
+            phone: existingUser.phone || null,
+            role: existingUser.role,
+            fullName: existingUser.profile?.fullName || 'Citizen User',
+            avatarUrl: existingUser.profile?.avatarUrl || null,
+          },
+        };
+      }
+      // If userId not found in DB, fall through to normal fingerprint flow below
     }
 
     const syntheticEmail = `fp.${cleanFingerprintId.toLowerCase().replace(/[^a-z0-9]/g, '')}@cybersave.local`;
