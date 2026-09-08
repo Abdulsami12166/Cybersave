@@ -107,9 +107,14 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
     }
   }
 
-  static isUserOnline(userId: string): boolean {
+  static isUserOnline(userId: string, lastSeenAt?: Date | string | null): boolean {
     const s = AdminGateway.userSockets.get(userId);
-    return !!(s && s.size > 0);
+    if (s && s.size > 0) return true;
+    if (lastSeenAt) {
+      const diff = Date.now() - new Date(lastSeenAt).getTime();
+      return diff < 60000;
+    }
+    return false;
   }
 
   static emitToUser(userId: string, event: string, data: any): boolean {
@@ -144,6 +149,12 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
               where: { id: userId },
               data: { isOnline: false, lastSeenAt: new Date() },
             }).catch(() => null);
+
+            await AdminGateway.logActivity(this.prisma, {
+              userId,
+              action: 'APP_CLOSED',
+              details: 'Citizen mobile connection disconnected / app terminated',
+            });
           } catch {}
           AdminGateway.broadcast('user_status_changed', {
             userId,
@@ -152,6 +163,54 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
           });
         }
       }
+    }
+  }
+
+  @SubscribeMessage('citizen_app_closed')
+  @SubscribeMessage('user_disconnected')
+  async handleCitizenAppClosed(
+    @ConnectedSocket() client: Socket,
+    @MessageBody() data: { userId: string },
+  ) {
+    try {
+      const { userId } = data || {};
+      if (!userId) return;
+      let resolvedId = userId;
+      if (resolvedId.startsWith('CIT-')) {
+        const short = resolvedId.replace('CIT-', '').toUpperCase();
+        const u = await this.prisma.user.findFirst({ where: { role: 'USER' } });
+        if (u) resolvedId = u.id;
+      }
+
+      AdminGateway.socketToUser.delete(client.id);
+      const userSet = AdminGateway.userSockets.get(resolvedId);
+      if (userSet) {
+        userSet.delete(client.id);
+        if (userSet.size === 0) {
+          AdminGateway.userSockets.delete(resolvedId);
+        }
+      }
+
+      if (/^[0-9a-fA-F]{24}$/.test(resolvedId)) {
+        await this.prisma.user.update({
+          where: { id: resolvedId },
+          data: { isOnline: false, lastSeenAt: new Date() },
+        }).catch(() => null);
+
+        await AdminGateway.logActivity(this.prisma, {
+          userId: resolvedId,
+          action: 'APP_CLOSED',
+          details: 'Citizen app closed / session backgrounded',
+        });
+      }
+
+      AdminGateway.broadcast('user_status_changed', {
+        userId: resolvedId,
+        isOnline: false,
+        lastSeenAt: new Date().toISOString(),
+      });
+    } catch (e) {
+      console.error('[AdminGateway] citizen_app_closed error:', e);
     }
   }
 
@@ -825,7 +884,7 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
     }
   }
 
-  private formatCitizenPayload(u: any, allAdmins?: any[]) {
+  public formatCitizenPayload(u: any, allAdmins?: any[]) {
     const apps = u.applications || [];
     const profile = u.profile || {};
     const firstAppForm = (apps[0]?.formData as any) || {};
@@ -1020,12 +1079,11 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
           transactionsList.push({
             id: tx.id,
             refNumber: tx.refId || `TXN-${tx.id.substring(0, 8).toUpperCase()}`,
-            title: tx.title || (isCredit ? 'Wallet Balance Top-up' : 'Wallet Payment'),
-            subtitle: tx.subtitle || (isCredit ? 'Direct UPI Payment Gateway' : 'Service Fee Disbursement'),
+            title: tx.title || (isCredit ? 'Wallet Balance Top-up' : 'Citizen Service Payment'),
             amount: `${isCredit ? '+' : '-'} ₹${Number(tx.amount || 0).toLocaleString('en-IN')}`,
             rawAmount: Number(tx.amount || 0),
             type: tx.type || (isCredit ? 'CREDIT' : 'DEBIT'),
-            category: tx.title?.includes('UPI') ? 'UPI / QR Payment' : tx.title?.includes('Refund') ? 'Refund Credit' : 'Digital Wallet',
+            category: tx.category || (isCredit ? 'Wallet Topup' : 'Gov Scheme Fee'),
             status: tx.status || 'SUCCESS',
             date: tx.createdAt ? new Date(tx.createdAt).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' }) : 'Recently',
             dateTime: tx.createdAt ? new Date(tx.createdAt).toLocaleString('en-IN', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' }) : 'Recently',
@@ -1094,7 +1152,18 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
     const sessionHistory: any[] = [];
     const seenSessionIds = new Set<string>();
 
-    const isOnline = AdminGateway.isUserOnline(u.id) || u.isOnline === true;
+    const hasActiveSocket = AdminGateway.isUserOnline(u.id);
+    const lastSeenMs = u.lastSeenAt ? Date.now() - new Date(u.lastSeenAt).getTime() : Infinity;
+    // Citizen is strictly online ONLY if active socket connected OR verified recent heartbeat within 60s
+    const isOnline = hasActiveSocket || (u.isOnline === true && lastSeenMs < 60000);
+
+    // Auto-heal stale isOnline in database if citizen went offline without clean disconnect
+    if (!isOnline && u.isOnline === true && lastSeenMs >= 60000 && /^[0-9a-fA-F]{24}$/.test(u.id)) {
+      this.prisma.user.update({
+        where: { id: u.id },
+        data: { isOnline: false },
+      }).catch(() => null);
+    }
 
     // Prepend live active session if online
     if (isOnline) {
@@ -1118,7 +1187,7 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
     rawLogs.forEach((l: any) => {
       const act = l.action || '';
       const isLogin = act.includes('LOGIN') || act.includes('SESSION_START') || act.includes('AUTH');
-      const isLogout = act.includes('LOGOUT') || act.includes('SESSION_END');
+      const isLogout = act.includes('LOGOUT') || act.includes('SESSION_END') || act.includes('APP_CLOSED') || act.includes('CLOSED');
 
       if ((isLogin || isLogout) && !seenSessionIds.has(l.id)) {
         seenSessionIds.add(l.id);
@@ -1138,7 +1207,7 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
           action: l.action,
           method,
           platform,
-          details: l.details || (isLogin ? 'User signed in' : 'User signed out'),
+          details: l.details || (isLogin ? 'User signed in' : 'App closed / Session terminated'),
           ipAddress: l.ipAddress || '192.168.1.1 (Mobile App)',
           status: isLogin ? 'Session Established' : 'Session Terminated',
           date: l.createdAt ? new Date(l.createdAt).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' }) : 'Recently',
@@ -1238,6 +1307,7 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
       else if (l.action?.includes('APPROV') || l.action?.includes('COMPLET') || l.action?.includes('PAY')) color = '#10B981';
       else if (l.action?.includes('FEEDBACK')) color = '#FFB800';
       else if (l.action?.includes('PEND') || l.action?.includes('VERIF')) color = '#F59E0B';
+      else if (l.action?.includes('LOGOUT') || l.action?.includes('APP_CLOSED') || l.action?.includes('SESSION_END')) color = '#64748B';
 
       if (l.action === 'FEEDBACK_SUBMITTED' && feedbacks.length > 0) return;
 
