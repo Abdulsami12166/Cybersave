@@ -25,6 +25,86 @@ setupSockets(io);
 const prisma = new PrismaClient();
 const PORT = process.env.ADMIN_PORT || 3001;
 
+async function findUserByIdOrCit(id: string, includeRelations?: any): Promise<any> {
+  if (!id) return null;
+  const isMongoId = /^[0-9a-fA-F]{24}$/.test(id);
+  if (isMongoId) {
+    return prisma.user.findUnique({
+      where: { id },
+      ...(includeRelations ? { include: includeRelations } : {})
+    });
+  }
+  if (id.startsWith('CIT-')) {
+    const shortId = id.replace('CIT-', '').toUpperCase();
+    const userIds = await prisma.user.findMany({
+      where: { role: 'USER' },
+      select: { id: true }
+    });
+    const match = userIds.find(u => u.id.substring(0, 5).toUpperCase() === shortId);
+    if (match) {
+      return prisma.user.findUnique({
+        where: { id: match.id },
+        ...(includeRelations ? { include: includeRelations } : {})
+      });
+    }
+  }
+  // Try email or phone
+  return prisma.user.findFirst({
+    where: { OR: [{ id }, { email: id }, { phone: id }] },
+    ...(includeRelations ? { include: includeRelations } : {})
+  });
+}
+
+export async function fetchApplicationsWithUsers(where: any = {}, take: number = 50, skip?: number): Promise<any[]> {
+  const apps = await prisma.application.findMany({
+    where,
+    take,
+    ...(skip !== undefined ? { skip } : {}),
+    orderBy: { submittedAt: 'desc' },
+    select: {
+      id: true,
+      refNumber: true,
+      userId: true,
+      serviceId: true,
+      serviceTitle: true,
+      status: true,
+      rejectionReason: true,
+      estimatedCompletion: true,
+      officialOfficer: true,
+      feePaid: true,
+      paymentStatus: true,
+      razorpayOrderId: true,
+      razorpayPaymentId: true,
+      razorpaySignature: true,
+      formData: true,
+      submittedAt: true,
+      updatedAt: true,
+      refundStatus: true,
+      service: true,
+      refundRequests: true,
+    }
+  });
+
+  const userIds = [...new Set(apps.map(a => a.userId).filter(Boolean))];
+  if (userIds.length > 0) {
+    const users = await prisma.user.findMany({
+      where: { id: { in: userIds } },
+      select: {
+        id: true,
+        email: true,
+        phone: true,
+        profile: { select: { fullName: true, phone: true, district: true, state: true } }
+      }
+    });
+    const userMap = new Map(users.map(u => [u.id, u]));
+    for (const app of apps) {
+      (app as any).user = userMap.get(app.userId) || null;
+    }
+  }
+
+  return apps as any[];
+}
+
 // ponytail: scope CORS to env-configured origin in production
 const allowedOrigins = process.env.CORS_ORIGIN
   ? process.env.CORS_ORIGIN.split(',')
@@ -113,36 +193,48 @@ app.get('/api/admin/dashboard', async (req, res) => {
     const today = new Date();
     today.setHours(0, 0, 0, 0);
 
-    // 1. Stats
-    // Applications count
-    const totalApps = await prisma.application.count();
-    const appsToday = await prisma.application.count({ where: { submittedAt: { gte: today } } });
-    const pendingApps = await prisma.application.count({ where: { status: 'PENDING' } });
-    const completedAppsToday = await prisma.application.count({ where: { status: 'COMPLETED', updatedAt: { gte: today } } });
-    const rejectedAppsToday = await prisma.application.count({ where: { status: 'REJECTED', updatedAt: { gte: today } } });
-    
-    // Revenue (assuming feePaid is the revenue)
-    const revenueAggr = await prisma.application.aggregate({
-      _sum: { feePaid: true },
-      where: { submittedAt: { gte: today } }
-    });
+    const [
+      totalApps,
+      appsToday,
+      pendingApps,
+      completedAppsToday,
+      rejectedAppsToday,
+      revenueAggr,
+      activeCentres,
+      serviceShare,
+      operatorLogs,
+      recentApps
+    ] = await Promise.all([
+      prisma.application.count(),
+      prisma.application.count({ where: { submittedAt: { gte: today } } }),
+      prisma.application.count({ where: { status: 'PENDING' } }),
+      prisma.application.count({ where: { status: 'COMPLETED', updatedAt: { gte: today } } }),
+      prisma.application.count({ where: { status: 'REJECTED', updatedAt: { gte: today } } }),
+      prisma.application.aggregate({
+        _sum: { feePaid: true },
+        where: { submittedAt: { gte: today } }
+      }),
+      prisma.user.count({ where: { role: 'ADMIN' } }),
+      prisma.application.groupBy({
+        by: ['serviceTitle'],
+        _count: { id: true },
+        orderBy: { _count: { id: 'desc' } },
+        take: 4
+      }),
+      prisma.auditLog.findMany({
+        take: 4,
+        orderBy: { createdAt: 'desc' },
+        include: { user: { include: { profile: true } } }
+      }),
+      fetchApplicationsWithUsers({}, 5)
+    ]);
+
     const revenueToday = revenueAggr._sum.feePaid || 0;
+    const finalActiveCentres = activeCentres || 2847;
 
-    // Active Centres (Using Operators/Users as proxy)
-    const activeCentres = await prisma.user.count({ where: { role: 'ADMIN' } }) || 2847; // fallback if no real centres
-
-    // 2. Collections Summary (Mocking cash vs online split for now since there's no payment type in DB)
     const totalCollections = 1240000;
     const onlinePayments = 820000;
     const cashCollections = 420000;
-
-    // 3. Service Share
-    const serviceShare = await prisma.application.groupBy({
-      by: ['serviceTitle'],
-      _count: { id: true },
-      orderBy: { _count: { id: 'desc' } },
-      take: 4
-    });
 
     const totalServiceShare = serviceShare.reduce((acc, curr) => acc + curr._count.id, 0);
     const serviceShareFormatted = serviceShare.map(s => ({
@@ -150,7 +242,6 @@ app.get('/api/admin/dashboard', async (req, res) => {
       percentage: totalServiceShare > 0 ? Math.round((s._count.id / totalServiceShare) * 100) : 0
     }));
 
-    // Fill missing ones with defaults to match design if empty
     if (serviceShareFormatted.length === 0) {
       serviceShareFormatted.push(
         { name: 'Aadhaar', percentage: 35 },
@@ -161,13 +252,6 @@ app.get('/api/admin/dashboard', async (req, res) => {
       );
     }
 
-    // 4. Operator Logs
-    const operatorLogs = await prisma.auditLog.findMany({
-      take: 4,
-      orderBy: { createdAt: 'desc' },
-      include: { user: { include: { profile: true } } }
-    });
-    
     const operatorLogsFormatted = operatorLogs.map(log => ({
       id: log.id,
       title: log.action,
@@ -181,13 +265,6 @@ app.get('/api/admin/dashboard', async (req, res) => {
       );
     }
 
-    // 5. Recent Service Applications
-    const recentApps = await prisma.application.findMany({
-      take: 5,
-      orderBy: { submittedAt: 'desc' },
-      include: { user: { include: { profile: true } } }
-    });
-
     const recentAppsFormatted = recentApps.map(app => ({
       id: app.refNumber,
       citizenName: app.user?.profile?.fullName || app.user?.phone || 'Unknown',
@@ -200,8 +277,6 @@ app.get('/api/admin/dashboard', async (req, res) => {
       dateSubmitted: app.submittedAt.toISOString(),
     }));
 
-    // 6. Charts Data (Mocked 7 days trends if no real daily data exists yet)
-    // To implement real charts, we'd group by day, but Prisma doesn't natively do date_trunc easily in raw without executeRaw.
     const revenueOverview = [
       { day: 'Mon', value: 120000 },
       { day: 'Tue', value: 160000 },
@@ -229,7 +304,7 @@ app.get('/api/admin/dashboard', async (req, res) => {
         pendingApps,
         completedAppsToday,
         rejectedAppsToday,
-        activeCentres
+        activeCentres: finalActiveCentres
       },
       collections: {
         totalCollections,
@@ -244,7 +319,6 @@ app.get('/api/admin/dashboard', async (req, res) => {
         applicationTrends
       }
     });
-
   } catch (error) {
     console.error(error);
     res.status(500).json({ error: 'Internal server error' });
@@ -253,18 +327,24 @@ app.get('/api/admin/dashboard', async (req, res) => {
 
 app.get('/api/admin/users', async (req, res) => {
   try {
-    const totalCitizens = await prisma.user.count({ where: { role: 'USER' } });
+    const page = parseInt(req.query.page as string) || 1;
+    const limit = Math.min(parseInt(req.query.limit as string) || 20, 100);
+    const skip = (page - 1) * limit;
+
+    const [totalCitizens, newThisMonth, users] = await Promise.all([
+      prisma.user.count({ where: { role: 'USER' } }),
+      prisma.user.count({ 
+        where: { role: 'USER', createdAt: { gte: new Date(new Date().getFullYear(), new Date().getMonth(), 1) } } 
+      }),
+      prisma.user.findMany({
+        where: { role: 'USER' },
+        include: { profile: true, applications: { select: { id: true } } },
+        take: limit,
+        skip,
+        orderBy: { createdAt: 'desc' }
+      })
+    ]);
     const activeCitizens = totalCitizens;
-    const newThisMonth = await prisma.user.count({ 
-      where: { role: 'USER', createdAt: { gte: new Date(new Date().getFullYear(), new Date().getMonth(), 1) } } 
-    });
-    
-    const users = await prisma.user.findMany({
-      where: { role: 'USER' },
-      include: { profile: true, applications: true },
-      take: 20,
-      orderBy: { createdAt: 'desc' }
-    });
 
     const formattedUsers = users.map(u => ({
       id: `CIT-${u.id.substring(0, 5).toUpperCase()}`,
@@ -288,60 +368,19 @@ app.get('/api/admin/users', async (req, res) => {
 app.get(['/api/admin/users/:id', '/api/v1/users/:id'], async (req: any, res: any) => {
   try {
     const id = req.params.id;
-    const isMongoId = (s?: string) => typeof s === 'string' && /^[0-9a-fA-F]{24}$/.test(s);
-    let u: any = null;
+    const userInclude: any = {
+      profile: true,
+      applications: { orderBy: { submittedAt: 'desc' } },
+      documents: true,
+      aadhaarDocs: true,
+      auditLogs: { orderBy: { createdAt: 'desc' }, take: 15 }
+    };
 
-    if (isMongoId(id)) {
-      u = await prisma.user.findUnique({
-        where: { id },
-        include: {
-          profile: true,
-          applications: { orderBy: { submittedAt: 'desc' } },
-          documents: true,
-          aadhaarDocs: true,
-          auditLogs: { orderBy: { createdAt: 'desc' }, take: 15 }
-        }
-      });
-    }
-
-    if (!u && id?.startsWith('CIT-')) {
-      const shortId = id.replace('CIT-', '').toUpperCase();
-      const allUsers = await prisma.user.findMany({
-        where: { role: 'USER' },
-        include: {
-          profile: true,
-          applications: { orderBy: { submittedAt: 'desc' } },
-          documents: true,
-          aadhaarDocs: true,
-          auditLogs: { orderBy: { createdAt: 'desc' }, take: 15 }
-        }
-      });
-      u = allUsers.find(x => x.id.substring(0, 5).toUpperCase() === shortId) || null;
-    }
-
-    if (!u && id) {
-      u = await prisma.user.findFirst({
-        where: { OR: [{ id }, { email: id }, { phone: id }] },
-        include: {
-          profile: true,
-          applications: { orderBy: { submittedAt: 'desc' } },
-          documents: true,
-          aadhaarDocs: true,
-          auditLogs: { orderBy: { createdAt: 'desc' }, take: 15 }
-        }
-      });
-    }
-
+    let u = await findUserByIdOrCit(id, userInclude);
     if (!u) {
       u = await prisma.user.findFirst({
         where: { role: 'USER' },
-        include: {
-          profile: true,
-          applications: { orderBy: { submittedAt: 'desc' } },
-          documents: true,
-          aadhaarDocs: true,
-          auditLogs: { orderBy: { createdAt: 'desc' }, take: 15 }
-        }
+        include: userInclude
       });
     }
 
@@ -442,12 +481,7 @@ app.put(['/api/admin/users/:id', '/api/v1/users/:id'], async (req: any, res: any
   try {
     const id = req.params.id;
     const { fullName, phone, email, address, district, state, pinCode, dob, gender } = req.body;
-    const isMongoId = (s?: string) => typeof s === 'string' && /^[0-9a-fA-F]{24}$/.test(s);
-    let u: any = null;
-
-    if (isMongoId(id)) {
-      u = await prisma.user.findUnique({ where: { id }, include: { profile: true } });
-    }
+    let u = await findUserByIdOrCit(id, { profile: true });
     if (!u) {
       u = await prisma.user.findFirst({ where: { role: 'USER' }, include: { profile: true } });
     }
@@ -476,12 +510,7 @@ app.post(['/api/admin/users/:id/block', '/api/v1/users/:id/block'], async (req: 
   try {
     const id = req.params.id;
     const { status } = req.body;
-    const isMongoId = (s?: string) => typeof s === 'string' && /^[0-9a-fA-F]{24}$/.test(s);
-    let u: any = null;
-
-    if (isMongoId(id)) {
-      u = await prisma.user.findUnique({ where: { id } });
-    }
+    let u = await findUserByIdOrCit(id);
     if (!u) {
       u = await prisma.user.findFirst({ where: { role: 'USER' } });
     }
@@ -499,19 +528,16 @@ app.post(['/api/admin/users/:id/block', '/api/v1/users/:id/block'], async (req: 
 
 app.get('/api/admin/applications', async (req, res) => {
   try {
-    const totalApps = await prisma.application.count();
     const today = new Date();
     today.setHours(0,0,0,0);
-    const todayApps = await prisma.application.count({ where: { submittedAt: { gte: today } }});
-    const pending = await prisma.application.count({ where: { status: 'VERIFYING' }});
-    const processing = await prisma.application.count({ where: { status: 'IN_PROGRESS' }});
-    const completed = await prisma.application.count({ where: { status: 'APPROVED' }});
-
-    const apps = await prisma.application.findMany({
-      take: 8,
-      orderBy: { submittedAt: 'desc' },
-      include: { user: { include: { profile: true } }, service: true }
-    });
+    const [totalApps, todayApps, pending, processing, completed, apps] = await Promise.all([
+      prisma.application.count(),
+      prisma.application.count({ where: { submittedAt: { gte: today } }}),
+      prisma.application.count({ where: { status: 'VERIFYING' }}),
+      prisma.application.count({ where: { status: 'IN_PROGRESS' }}),
+      prisma.application.count({ where: { status: 'APPROVED' }}),
+      fetchApplicationsWithUsers({}, 20)
+    ]);
 
     const formattedApps = apps.map(a => ({
       id: `APP-2026-${a.id.substring(0, 4).toUpperCase()}`,
@@ -675,8 +701,208 @@ app.post(['/api/v1/services', '/api/services'], async (req: any, res: any) => {
     res.status(500).json({ error: (e as any).message });
   }
 });
+app.get(['/api/v1/applications', '/api/applications'], async (req: any, res: any) => {
+  try {
+    const { userId, status, limit, page } = req.query;
+    const where: any = {};
+    if (userId) {
+      const isMongoId = /^[0-9a-fA-F]{24}$/.test(userId as string);
+      if (isMongoId) {
+        where.userId = userId;
+      } else {
+        const matched = await findUserByIdOrCit(userId as string);
+        if (matched) {
+          where.userId = matched.id;
+        } else {
+          where.userId = userId;
+        }
+      }
+    }
+    if (status && status !== 'All') where.status = status;
+
+    const take = limit ? Math.min(parseInt(limit as string) || 100, 200) : 100;
+    const skipVal = page ? ((parseInt(page as string) || 1) - 1) * take : undefined;
+
+    const apps = await fetchApplicationsWithUsers(where, take, skipVal);
+    res.json(apps);
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.get(['/api/v1/applications/:id', '/api/applications/:id'], async (req: any, res: any) => {
+  try {
+    const { id } = req.params;
+    const isMongoId = /^[0-9a-fA-F]{24}$/.test(id);
+    let appRecord = null;
+    if (isMongoId) {
+      appRecord = await prisma.application.findUnique({
+        where: { id },
+        include: {
+          user: { select: { id: true, email: true, phone: true, profile: true } },
+          service: true,
+          refundRequests: true,
+        },
+      });
+    }
+    if (!appRecord) {
+      appRecord = await prisma.application.findFirst({
+        where: { refNumber: id },
+        include: {
+          user: { select: { id: true, email: true, phone: true, profile: true } },
+          service: true,
+          refundRequests: true,
+        },
+      });
+    }
+    if (!appRecord) return res.status(404).json({ error: 'Application not found' });
+    res.json(appRecord);
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.get(['/api/v1/users', '/api/users'], async (req: any, res: any) => {
+  try {
+    const { limit, page } = req.query;
+    const take = limit ? Math.min(parseInt(limit as string) || 50, 200) : 50;
+    const skipVal = page ? ((parseInt(page as string) || 1) - 1) * take : undefined;
+
+    const users = await prisma.user.findMany({
+      where: { role: 'USER' },
+      take,
+      ...(skipVal !== undefined ? { skip: skipVal } : {}),
+      select: {
+        id: true,
+        email: true,
+        phone: true,
+        status: true,
+        createdAt: true,
+        profile: true,
+        applications: {
+          select: { id: true, refNumber: true, status: true, serviceTitle: true, feePaid: true, submittedAt: true },
+          orderBy: { submittedAt: 'desc' },
+          take: 10,
+        },
+      },
+      orderBy: { createdAt: 'desc' },
+    });
+    res.json(users);
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.get(['/api/v1/refunds', '/api/refunds'], async (req: any, res: any) => {
+  try {
+    const { applicationId } = req.query;
+    const where: any = {};
+    if (applicationId) {
+      const isMongoId = /^[0-9a-fA-F]{24}$/.test(applicationId);
+      if (isMongoId) {
+        where.applicationId = applicationId;
+      } else {
+        const appObj = await prisma.application.findFirst({ where: { refNumber: applicationId } });
+        if (appObj) where.applicationId = appObj.id;
+      }
+    }
+    const refunds = await prisma.refundRequest.findMany({
+      where,
+      orderBy: { createdAt: 'desc' },
+      select: {
+        id: true,
+        refNumber: true,
+        applicationId: true,
+        userId: true,
+        reason: true,
+        amount: true,
+        status: true,
+        adminNotes: true,
+        proofUrl: true,
+        createdAt: true,
+        updatedAt: true,
+        application: {
+          select: {
+            id: true,
+            refNumber: true,
+            serviceTitle: true,
+            status: true,
+            feePaid: true,
+          }
+        },
+        user: {
+          select: {
+            id: true,
+            email: true,
+            phone: true,
+            profile: { select: { fullName: true, phone: true } }
+          }
+        }
+      },
+    });
+    res.json(refunds);
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.get(['/api/v1/operators', '/api/operators'], async (req: any, res: any) => {
+  try {
+    const totalOps = await prisma.user.count({ where: { role: 'ADMIN' } });
+    const ops = await prisma.user.findMany({
+      where: { role: 'ADMIN' },
+      include: { profile: true },
+      orderBy: { createdAt: 'desc' },
+    });
+    const formattedOps = ops.map(o => ({
+      id: o.id,
+      name: o.profile?.fullName || (o.email ? o.email.split('@')[0] : 'Admin Officer'),
+      email: o.email || '',
+      phone: o.phone || o.profile?.phone || '',
+      role: (o.email === 'admin@cybersave.com' || o.email === 'officer.admin@cybersave.gov.in') ? 'Super Admin' : 'Field Operator',
+      department: 'Operations',
+      permissions: o.permissions || ['DASHBOARD', 'APPLICATIONS', 'SETTINGS'],
+      joinedDate: o.createdAt.toLocaleDateString('en-GB'),
+      lastActive: 'Active now',
+      status: o.status || 'Active',
+      avatarUrl: o.profile?.avatarUrl || null,
+    }));
+    res.json({
+      stats: { totalOps, active: totalOps, pending: 0, suspended: 0 },
+      operators: formattedOps,
+    });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.get(['/api/v1/audit-logs', '/api/audit-logs'], async (req: any, res: any) => {
+  try {
+    const logs = await prisma.auditLog.findMany({
+      take: 50,
+      orderBy: { createdAt: 'desc' },
+      include: { user: { include: { profile: true } } },
+    });
+    res.json(logs);
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.get(['/api/admin/profile', '/api/v1/profile'], async (req: any, res: any) => {
+  try {
+    const adminUser = await prisma.user.findFirst({
+      where: { role: 'ADMIN' },
+      include: { profile: true },
+    });
+    res.json(adminUser?.profile || { fullName: 'Super Administrator', email: 'admin@cybersave.com' });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
 
 server.listen(PORT, () => {
   console.log(`Admin backend running on http://localhost:${PORT}`);
 });
+
 
