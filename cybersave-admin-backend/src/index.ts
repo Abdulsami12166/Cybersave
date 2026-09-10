@@ -1500,8 +1500,26 @@ app.post(['/api/v1/support/upload', '/api/support/upload'], async (req: any, res
     if (image && typeof image === 'string' && image.startsWith('http')) {
       return res.json({ success: true, url: image, secure_url: image });
     }
-    const sampleUrl = 'https://images.unsplash.com/photo-1589829545856-d10d557cf95f?w=800&auto=format&fit=crop&q=60';
-    res.json({ success: true, url: sampleUrl, secure_url: sampleUrl });
+    if (image && typeof image === 'string' && image.startsWith('data:')) {
+      try {
+        const cldRes = await fetch('https://api.cloudinary.com/v1_1/dzo4caeef/image/upload', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            file: image,
+            upload_preset: 'cybersave_docs',
+          }),
+        });
+        const cldJson = await cldRes.json();
+        if (cldJson.secure_url || cldJson.url) {
+          return res.json({ success: true, url: cldJson.secure_url || cldJson.url, secure_url: cldJson.secure_url || cldJson.url });
+        }
+      } catch (cldErr) {
+        console.warn('Backend Cloudinary upload error:', cldErr);
+      }
+      return res.json({ success: true, url: image, secure_url: image });
+    }
+    return res.json({ success: true, url: image || '', secure_url: image || '' });
   } catch (e: any) {
     res.status(500).json({ error: e.message });
   }
