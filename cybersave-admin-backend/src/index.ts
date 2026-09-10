@@ -462,19 +462,16 @@ app.post(['/api/admin/applications', '/api/v1/applications', '/api/applications'
     const randomNum = Math.floor(100000 + Math.random() * 900000);
     const refNumber = `CSB2026${randomNum}`;
 
-    // Normalize documents and sanitize heavy base64 strings to prevent DB choking
+    // Normalize documents preserving real URLs and files
     const cleanDocs = Array.isArray(documents)
       ? documents.map((d: any, i: number) => {
           const rawUrl = typeof d === 'string' ? d : (d?.fileUrl || d?.url || d?.uri || '');
-          const safeUrl = (typeof rawUrl === 'string' && rawUrl.startsWith('data:image') && rawUrl.length > 3000)
-            ? 'https://images.unsplash.com/photo-1589829545856-d10d557cf95f?w=800&auto=format&fit=crop&q=60'
-            : rawUrl;
 
-          if (typeof d === 'string') return { label: `Supporting Proof #${i + 1}`, fileName: `proof_${i + 1}.jpg`, fileUrl: safeUrl, type: 'Identity Proof', size: '1.4 MB' };
+          if (typeof d === 'string') return { label: `Supporting Proof #${i + 1}`, fileName: `proof_${i + 1}.jpg`, fileUrl: rawUrl, type: 'Identity Proof', size: '1.4 MB' };
           return {
             label: d.label || d.name || d.fileName || `Supporting Proof #${i + 1}`,
-            fileName: d.fileName || d.name || `proof_${i + 1}.pdf`,
-            fileUrl: safeUrl,
+            fileName: d.fileName || d.name || d.label || `proof_${i + 1}.pdf`,
+            fileUrl: rawUrl,
             type: d.type || 'Identity & Address Proof',
             size: d.size || '1.4 MB',
             uploadedAt: d.uploadedAt || new Date().toISOString(),

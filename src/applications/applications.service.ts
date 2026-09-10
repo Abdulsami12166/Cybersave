@@ -148,19 +148,16 @@ export class ApplicationsService {
       }
     }
 
-    // Sanitize documents to ensure clean URLs, prevent DB bloat, and ensure fast queries
+    // Sanitize documents to ensure clean structure and prevent DB bloat
     const sanitizedDocs = (Array.isArray(dto.documents) ? dto.documents : [])
       .filter((d: any) => d && (d.fileUrl || d.url || d.uri || d.fileName || d.label))
       .map((d: any, idx: number) => {
         const rawUrl = d.fileUrl || d.url || d.uri || d.path || '';
-        const safeUrl = (typeof rawUrl === 'string' && rawUrl.startsWith('data:image') && rawUrl.length > 3000)
-          ? 'https://images.unsplash.com/photo-1589829545856-d10d557cf95f?w=800&auto=format&fit=crop&q=60'
-          : rawUrl;
         return {
-          label: d.label || `Document ${idx + 1}`,
-          fileName: d.fileName || `proof_${idx + 1}.jpg`,
-          fileUrl: safeUrl,
-          type: d.type || 'Identity Proof',
+          label: d.label || d.fileName || `Document ${idx + 1}`,
+          fileName: d.fileName || d.label || `proof_${idx + 1}.jpg`,
+          fileUrl: rawUrl,
+          type: d.type || 'Identity & Address Proof',
         };
       });
 
@@ -264,11 +261,8 @@ export class ApplicationsService {
         if (Array.isArray(app?.documents)) {
           app.documents = app.documents.map((d: any, idx: number) => {
             const rawUrl = typeof d === 'string' ? d : (d?.fileUrl || d?.url || d?.uri || '');
-            const safeUrl = (typeof rawUrl === 'string' && rawUrl.startsWith('data:image') && rawUrl.length > 3000)
-              ? 'https://images.unsplash.com/photo-1589829545856-d10d557cf95f?w=800&auto=format&fit=crop&q=60'
-              : rawUrl;
-            if (typeof d === 'string') return { label: `Supporting Proof #${idx + 1}`, fileName: `proof_${idx + 1}.jpg`, fileUrl: safeUrl, type: 'Identity Proof' };
-            return { ...d, fileUrl: safeUrl };
+            if (typeof d === 'string') return { label: `Supporting Proof #${idx + 1}`, fileName: `proof_${idx + 1}.jpg`, fileUrl: rawUrl, type: 'Identity Proof' };
+            return { ...d, fileUrl: rawUrl };
           });
         }
         return app;
@@ -283,6 +277,7 @@ export class ApplicationsService {
         include: {
           service: true,
           user: { include: { profile: true } },
+          documentUploads: true,
           refundRequests: true,
         },
       });
@@ -323,6 +318,7 @@ export class ApplicationsService {
         include: {
           service: true,
           user: { include: { profile: true } },
+          documentUploads: true,
           refundRequests: true,
         },
       });
