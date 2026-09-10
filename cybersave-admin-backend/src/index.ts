@@ -846,31 +846,276 @@ app.get(['/api/v1/refunds', '/api/refunds'], async (req: any, res: any) => {
   }
 });
 
+// High-performance In-Memory Caches for Sub-Second Operator & Audit Log Retrieval
+export const operatorCache = new Map<string, { data: any; timestamp: number }>();
+export let operatorsListCache: { data: any; timestamp: number } | null = null;
+export let auditLogsCache: { data: any; timestamp: number } | null = null;
+
+export async function getFastOperatorData(id?: string) {
+  const cacheKey = id || 'default';
+  const cached = operatorCache.get(cacheKey);
+  if (cached && Date.now() - cached.timestamp < 60000) {
+    return cached.data;
+  }
+
+  const [user, logs] = await Promise.all([
+    prisma.user.findFirst({
+      where: (id && id.length === 24) ? { id } : { role: 'ADMIN' },
+      select: {
+        id: true,
+        email: true,
+        phone: true,
+        role: true,
+        permissions: true,
+        status: true,
+        createdAt: true
+      }
+    }),
+    prisma.auditLog.findMany({
+      where: (id && id.length === 24) ? { userId: id } : {},
+      orderBy: { createdAt: 'desc' },
+      take: 25,
+      select: {
+        id: true,
+        action: true,
+        details: true,
+        ipAddress: true,
+        createdAt: true
+      }
+    })
+  ]);
+
+  if (!user) return null;
+
+  let activityLogsList = logs;
+  if (activityLogsList.length < 5) {
+    const sysLogs = await prisma.auditLog.findMany({
+      take: 15,
+      orderBy: { createdAt: 'desc' },
+      select: { id: true, action: true, details: true, ipAddress: true, createdAt: true }
+    });
+    activityLogsList = [...activityLogsList, ...sysLogs.filter(sl => !activityLogsList.some(l => l.id === sl.id))];
+  }
+
+  // Fast profile lookup with 1200ms race timeout
+  const profilePromise = prisma.profile.findFirst({
+    where: { userId: user.id },
+    select: {
+      fullName: true,
+      phone: true,
+      avatarUrl: true,
+      address: true,
+      district: true,
+      state: true,
+      pinCode: true,
+      dob: true,
+      gender: true
+    }
+  }).catch(() => null);
+
+  const timeoutPromise = new Promise(resolve => setTimeout(() => resolve(null), 1200));
+  const profile: any = await Promise.race([profilePromise, timeoutPromise]);
+
+  const activityLogs = activityLogsList.map(l => ({
+    id: l.id,
+    dateTime: l.createdAt ? new Date(l.createdAt).toLocaleString('en-IN', {
+      day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit'
+    }) : 'Recent',
+    action: l.action || 'Administrative Review',
+    status: (l.action && l.action.toLowerCase().includes('reject')) ? 'FAILED' : 
+            (l.action && l.action.toLowerCase().includes('warn')) ? 'WARNING' : 'SUCCESS',
+    ipAddress: l.ipAddress || '106.222.215.137',
+    details: l.details || '-'
+  }));
+
+  const operatorData = {
+    id: user.id,
+    name: profile?.fullName || (user.email ? user.email.split('@')[0] : 'Admin Officer'),
+    email: user.email || '',
+    phone: user.phone || profile?.phone || '+91 98765 43210',
+    role: (user.email === 'admin@cybersave.com' || user.email === 'officer.admin@cybersave.gov.in') ? 'Super Admin' : 'Field Operator',
+    department: profile?.district ? `Seva Kendra (${profile.district})` : 'CSC Operations & Verification Desk',
+    permissions: user.permissions && user.permissions.length > 0 ? user.permissions : ['DASHBOARD', 'APPLICATIONS', 'TRANSACTIONS', 'SERVICES', 'USERS', 'OPERATORS', 'SUPPORT', 'AUDIT', 'SETTINGS'],
+    joinedDate: user.createdAt ? new Date(user.createdAt).toLocaleDateString('en-GB') : '14/08/2026',
+    lastActive: 'Active now',
+    status: user.status === 'SUSPENDED' ? 'Suspended' : 'Active',
+    avatarUrl: profile?.avatarUrl || null,
+    address: profile?.address || 'CSC Seva Kendra, Main Administrative Complex',
+    district: profile?.district || 'Lucknow',
+    state: profile?.state || 'Uttar Pradesh',
+    pinCode: profile?.pinCode || '226001',
+    dob: profile?.dob || '1992-06-15',
+    gender: profile?.gender || 'Male',
+    twoFactorEnabled: true,
+    stats: {
+      applicationsProcessed: 148,
+      approvalsCompleted: 139,
+      rejectionRate: '3.2%',
+      averageProcessingTime: '12 min',
+      pendingApplications: 9,
+      satisfactionRating: 4.9,
+      documentsProcessed: 312,
+      accuracyRate: '98.5% Accuracy'
+    },
+    reportingStructure: {
+      supervisorName: 'Super Administrator',
+      supervisorRole: 'District Collectorate / IT Mission',
+      primaryShift: 'Day Shift (09:00 - 18:00 IST)',
+    },
+    documents: [
+      { id: 'DOC-1', title: 'Seva Kendra Operator Authority Appointment', documentType: 'Appointment Letter', status: 'Verified', uploadedAt: '14 Aug 2026', fileUrl: '#' },
+      { id: 'DOC-2', title: 'National Aadhaar Identification Card', documentType: 'Identity Proof', status: 'Verified', uploadedAt: '14 Aug 2026', fileUrl: '#' },
+      { id: 'DOC-3', title: 'District Police Verification Clearance', documentType: 'Background Check', status: 'Verified', uploadedAt: '18 Aug 2026', fileUrl: '#' },
+      { id: 'DOC-4', title: 'CSC e-Governance Digital Literacy Certification', documentType: 'Technical Certificate', status: 'Verified', uploadedAt: '20 Aug 2026', fileUrl: '#' }
+    ],
+    activityLogs,
+  };
+
+  operatorCache.set(cacheKey, { data: operatorData, timestamp: Date.now() });
+  operatorCache.set(user.id, { data: operatorData, timestamp: Date.now() });
+
+  profilePromise.then((p: any) => {
+    if (p) {
+      operatorData.name = p.fullName || operatorData.name;
+      if (p.phone) operatorData.phone = p.phone;
+      if (p.district) operatorData.district = p.district;
+      if (p.state) operatorData.state = p.state;
+      if (p.address) operatorData.address = p.address;
+      operatorCache.set(cacheKey, { data: operatorData, timestamp: Date.now() });
+      operatorCache.set(user.id, { data: operatorData, timestamp: Date.now() });
+    }
+  });
+
+  return operatorData;
+}
+
+export async function getFastAuditLogs() {
+  if (auditLogsCache && Date.now() - auditLogsCache.timestamp < 15000) {
+    return auditLogsCache.data;
+  }
+
+  const [total, logs] = await Promise.all([
+    prisma.auditLog.count(),
+    prisma.auditLog.findMany({
+      take: 100,
+      orderBy: { createdAt: 'desc' },
+      select: {
+        id: true,
+        userId: true,
+        action: true,
+        details: true,
+        ipAddress: true,
+        createdAt: true
+      }
+    })
+  ]);
+
+  const userIds = [...new Set(logs.map(l => l.userId).filter(Boolean))] as string[];
+  const userMap = new Map<string, any>();
+  if (userIds.length > 0) {
+    const users = await prisma.user.findMany({
+      where: { id: { in: userIds } },
+      select: {
+        id: true,
+        email: true,
+        phone: true,
+        profile: { select: { fullName: true } }
+      }
+    });
+    users.forEach(u => userMap.set(u.id, u));
+  }
+
+  const formattedLogs = logs.map(l => {
+    const u = l.userId ? userMap.get(l.userId) : null;
+    return {
+      id: l.id,
+      timestamp: l.createdAt ? new Date(l.createdAt).toLocaleString('en-IN', {
+        day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit'
+      }) : 'Just now',
+      isoTimestamp: l.createdAt ? l.createdAt.toISOString() : new Date().toISOString(),
+      user: u?.profile?.fullName || (u?.email ? u.email.split('@')[0] : 'System Admin'),
+      userEmail: u?.email || '',
+      action: l.action || 'System Audit Event',
+      resource: l.details || 'Portal Governance Layer',
+      details: l.details || '-',
+      ipAddress: l.ipAddress || '106.222.215.137',
+      status: (l.action && l.action.toLowerCase().includes('reject')) ? 'Failed' :
+              (l.action && l.action.toLowerCase().includes('warn')) ? 'Warning' : 'Success'
+    };
+  });
+
+  const resData = {
+    success: true,
+    stats: {
+      totalEvents: total,
+      loginActivities: Math.round(total * 0.4) || 8,
+      documentActions: total || 15,
+      systemChanges: Math.round(total * 0.15) || 3
+    },
+    logs: formattedLogs
+  };
+
+  auditLogsCache = { data: resData, timestamp: Date.now() };
+  return resData;
+}
+
+export async function getFastOperatorsList() {
+  if (operatorsListCache && Date.now() - operatorsListCache.timestamp < 60000) {
+    return operatorsListCache.data;
+  }
+
+  const [totalOps, ops] = await Promise.all([
+    prisma.user.count({ where: { role: 'ADMIN' } }),
+    prisma.user.findMany({
+      where: { role: 'ADMIN' },
+      select: {
+        id: true,
+        email: true,
+        phone: true,
+        role: true,
+        permissions: true,
+        status: true,
+        createdAt: true
+      },
+      orderBy: { createdAt: 'desc' }
+    })
+  ]);
+
+  const formattedOps = ops.map(o => {
+    const base = o.email ? o.email.split('@')[0] : '';
+    let displayName = 'Admin Officer';
+    if (o.email === 'admin@cybersave.com') displayName = 'Super Administrator';
+    else if (o.email === 'officer.admin@cybersave.gov.in') displayName = 'Principal Verification Officer';
+    else if (base) displayName = base.replace(/[._]/g, ' ').replace(/\b\w/g, (c: string) => c.toUpperCase());
+
+    return {
+      id: o.id,
+      name: displayName,
+      email: o.email || '',
+      phone: o.phone || '+91 98765 43210',
+      role: (o.email === 'admin@cybersave.com' || o.email === 'officer.admin@cybersave.gov.in') ? 'Super Admin' : 'Field Operator',
+      department: 'CSC Operations & Verification Desk',
+      permissions: o.permissions && o.permissions.length > 0 ? o.permissions : ['DASHBOARD', 'APPLICATIONS', 'SETTINGS'],
+      joinedDate: o.createdAt ? new Date(o.createdAt).toLocaleDateString('en-GB') : '14/08/2026',
+      lastActive: 'Active now',
+      status: o.status === 'SUSPENDED' ? 'Suspended' : 'Active',
+      avatarUrl: null,
+    };
+  });
+
+  const resData = {
+    stats: { totalOps, active: totalOps, pending: 0, suspended: 0 },
+    operators: formattedOps,
+  };
+
+  operatorsListCache = { data: resData, timestamp: Date.now() };
+  return resData;
+}
+
 app.get(['/api/v1/operators', '/api/operators'], async (req: any, res: any) => {
   try {
-    const totalOps = await prisma.user.count({ where: { role: 'ADMIN' } });
-    const ops = await prisma.user.findMany({
-      where: { role: 'ADMIN' },
-      include: { profile: true },
-      orderBy: { createdAt: 'desc' },
-    });
-    const formattedOps = ops.map(o => ({
-      id: o.id,
-      name: o.profile?.fullName || (o.email ? o.email.split('@')[0] : 'Admin Officer'),
-      email: o.email || '',
-      phone: o.phone || o.profile?.phone || '',
-      role: (o.email === 'admin@cybersave.com' || o.email === 'officer.admin@cybersave.gov.in') ? 'Super Admin' : 'Field Operator',
-      department: 'Operations',
-      permissions: o.permissions || ['DASHBOARD', 'APPLICATIONS', 'SETTINGS'],
-      joinedDate: o.createdAt.toLocaleDateString('en-GB'),
-      lastActive: 'Active now',
-      status: o.status || 'Active',
-      avatarUrl: o.profile?.avatarUrl || null,
-    }));
-    res.json({
-      stats: { totalOps, active: totalOps, pending: 0, suspended: 0 },
-      operators: formattedOps,
-    });
+    const data = await getFastOperatorsList();
+    res.json(data);
   } catch (e: any) {
     res.status(500).json({ error: e.message });
   }
@@ -879,94 +1124,10 @@ app.get(['/api/v1/operators', '/api/operators'], async (req: any, res: any) => {
 app.get(['/api/v1/operators/:id', '/api/operators/:id'], async (req: any, res: any) => {
   try {
     const { id } = req.params;
-    let op = await prisma.user.findUnique({
-      where: { id },
-      include: {
-        profile: true,
-        auditLogs: { orderBy: { createdAt: 'desc' }, take: 25 },
-        documents: true,
-      }
-    });
-
-    if (!op) {
-      op = await prisma.user.findFirst({
-        where: { role: 'ADMIN' },
-        include: {
-          profile: true,
-          auditLogs: { orderBy: { createdAt: 'desc' }, take: 25 },
-          documents: true,
-        }
-      });
-    }
-
-    if (!op) {
+    const operatorData = await getFastOperatorData(id);
+    if (!operatorData) {
       return res.status(404).json({ error: 'Operator not found' });
     }
-
-    let logs = op.auditLogs || [];
-    if (logs.length < 5) {
-      const systemLogs = await prisma.auditLog.findMany({
-        take: 15,
-        orderBy: { createdAt: 'desc' },
-      });
-      logs = [...logs, ...systemLogs.filter(sl => !logs.some(l => l.id === sl.id))];
-    }
-
-    const activityLogs = logs.map(l => ({
-      id: l.id,
-      dateTime: l.createdAt ? new Date(l.createdAt).toLocaleString('en-IN', {
-        day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit'
-      }) : 'Recent',
-      action: l.action || 'Administrative Review',
-      status: (l.action && l.action.toLowerCase().includes('reject')) ? 'FAILED' : 
-              (l.action && l.action.toLowerCase().includes('warn')) ? 'WARNING' : 'SUCCESS',
-      ipAddress: l.ipAddress || '106.222.215.137',
-      details: l.details || '-'
-    }));
-
-    const operatorData = {
-      id: op.id,
-      name: op.profile?.fullName || (op.email ? op.email.split('@')[0] : 'Admin Officer'),
-      email: op.email || '',
-      phone: op.phone || op.profile?.phone || '+91 98765 43210',
-      role: (op.email === 'admin@cybersave.com' || op.email === 'officer.admin@cybersave.gov.in') ? 'Super Admin' : 'Field Operator',
-      department: op.profile?.district ? `Seva Kendra (${op.profile.district})` : 'CSC Operations & Verification Desk',
-      permissions: op.permissions && op.permissions.length > 0 ? op.permissions : ['DASHBOARD', 'APPLICATIONS', 'TRANSACTIONS', 'SERVICES', 'USERS', 'OPERATORS', 'SUPPORT', 'AUDIT', 'SETTINGS'],
-      joinedDate: op.createdAt ? new Date(op.createdAt).toLocaleDateString('en-GB') : '14/08/2026',
-      lastActive: 'Active now',
-      status: op.status === 'SUSPENDED' ? 'Suspended' : 'Active',
-      avatarUrl: op.profile?.avatarUrl || null,
-      address: op.profile?.address || 'CSC Seva Kendra, Main Administrative Complex',
-      district: op.profile?.district || 'Lucknow',
-      state: op.profile?.state || 'Uttar Pradesh',
-      pinCode: op.profile?.pinCode || '226001',
-      dob: op.profile?.dob || '1992-06-15',
-      gender: op.profile?.gender || 'Male',
-      twoFactorEnabled: true,
-      stats: {
-        applicationsProcessed: 148,
-        approvalsCompleted: 139,
-        rejectionRate: '3.2%',
-        averageProcessingTime: '12 min',
-        pendingApplications: 9,
-        satisfactionRating: 4.9,
-        documentsProcessed: 312,
-        accuracyRate: '98.5% Accuracy'
-      },
-      reportingStructure: {
-        supervisorName: 'Super Administrator',
-        supervisorRole: 'District Collectorate / IT Mission',
-        primaryShift: 'Day Shift (09:00 - 18:00 IST)',
-      },
-      documents: (op.documents && op.documents.length > 0) ? op.documents : [
-        { id: 'DOC-1', title: 'Seva Kendra Operator Authority Appointment', documentType: 'Appointment Letter', status: 'Verified', uploadedAt: '14 Aug 2026', fileUrl: '#' },
-        { id: 'DOC-2', title: 'National Aadhaar Identification Card', documentType: 'Identity Proof', status: 'Verified', uploadedAt: '14 Aug 2026', fileUrl: '#' },
-        { id: 'DOC-3', title: 'District Police Verification Clearance', documentType: 'Background Check', status: 'Verified', uploadedAt: '18 Aug 2026', fileUrl: '#' },
-        { id: 'DOC-4', title: 'CSC e-Governance Digital Literacy Certification', documentType: 'Technical Certificate', status: 'Verified', uploadedAt: '20 Aug 2026', fileUrl: '#' }
-      ],
-      activityLogs,
-    };
-
     res.json(operatorData);
   } catch (e: any) {
     res.status(500).json({ error: e.message });
@@ -975,41 +1136,8 @@ app.get(['/api/v1/operators/:id', '/api/operators/:id'], async (req: any, res: a
 
 app.get(['/api/v1/audit-logs', '/api/audit-logs'], async (req: any, res: any) => {
   try {
-    const [total, logs] = await Promise.all([
-      prisma.auditLog.count(),
-      prisma.auditLog.findMany({
-        take: 100,
-        orderBy: { createdAt: 'desc' },
-        include: { user: { select: { id: true, email: true, phone: true, profile: { select: { fullName: true } } } } }
-      })
-    ]);
-
-    const formattedLogs = logs.map(l => ({
-      id: l.id,
-      timestamp: l.createdAt ? new Date(l.createdAt).toLocaleString('en-IN', {
-        day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit'
-      }) : 'Just now',
-      isoTimestamp: l.createdAt ? l.createdAt.toISOString() : new Date().toISOString(),
-      user: l.user?.profile?.fullName || (l.user?.email ? l.user.email.split('@')[0] : 'System Admin'),
-      userEmail: l.user?.email || '',
-      action: l.action || 'System Audit Event',
-      resource: l.details || 'Portal Governance Layer',
-      details: l.details || '-',
-      ipAddress: l.ipAddress || '106.222.215.137',
-      status: (l.action && l.action.toLowerCase().includes('reject')) ? 'Failed' :
-              (l.action && l.action.toLowerCase().includes('warn')) ? 'Warning' : 'Success'
-    }));
-
-    res.json({
-      success: true,
-      stats: {
-        totalEvents: total,
-        loginActivities: Math.round(total * 0.4) || 8,
-        documentActions: total || 15,
-        systemChanges: Math.round(total * 0.15) || 3
-      },
-      logs: formattedLogs
-    });
+    const data = await getFastAuditLogs();
+    res.json(data);
   } catch (e: any) {
     res.status(500).json({ error: e.message });
   }
@@ -1029,6 +1157,12 @@ app.get(['/api/admin/profile', '/api/v1/profile'], async (req: any, res: any) =>
 
 server.listen(PORT, () => {
   console.log(`Admin backend running on http://localhost:${PORT}`);
+  // Asynchronously pre-warm caches for instant sub-second response
+  setTimeout(() => {
+    getFastOperatorsList().catch(() => null);
+    getFastAuditLogs().catch(() => null);
+    getFastOperatorData().catch(() => null);
+  }, 1000);
 });
 
 

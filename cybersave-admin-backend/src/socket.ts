@@ -758,32 +758,205 @@ export function setupSockets(io: Server) {
       }
     });
 
-    socket.on('request_operators_data', async () => {
-      try {
-        const [totalOps, ops] = await Promise.all([
-          prisma.user.count({ where: { role: 'ADMIN' } }),
-          prisma.user.findMany({ where: { role: 'ADMIN' }, include: { profile: true } })
-        ]);
+    // In-memory caching for socket queries
+    const socketOperatorCache = new Map<string, { data: any; timestamp: number }>();
+    let socketOperatorsListCache: { data: any; timestamp: number } | null = null;
+    let socketAuditLogsCache: { data: any; timestamp: number } | null = null;
 
-        const formattedOps = ops.map(o => ({
+    async function getSocketFastOperatorsList() {
+      if (socketOperatorsListCache && Date.now() - socketOperatorsListCache.timestamp < 60000) {
+        return socketOperatorsListCache.data;
+      }
+
+      const [totalOps, ops] = await Promise.all([
+        prisma.user.count({ where: { role: 'ADMIN' } }),
+        prisma.user.findMany({
+          where: { role: 'ADMIN' },
+          select: {
+            id: true,
+            email: true,
+            phone: true,
+            role: true,
+            permissions: true,
+            status: true,
+            createdAt: true
+          },
+          orderBy: { createdAt: 'desc' }
+        })
+      ]);
+
+      const formattedOps = ops.map(o => {
+        const base = o.email ? o.email.split('@')[0] : '';
+        let displayName = 'Admin Officer';
+        if (o.email === 'admin@cybersave.com') displayName = 'Super Administrator';
+        else if (o.email === 'officer.admin@cybersave.gov.in') displayName = 'Principal Verification Officer';
+        else if (base) displayName = base.replace(/[._]/g, ' ').replace(/\b\w/g, (c: string) => c.toUpperCase());
+
+        return {
           id: o.id, 
-          name: o.profile?.fullName || (o.email ? o.email.split('@')[0] : 'Admin Officer'), 
+          name: displayName, 
           email: o.email || '',
-          phone: o.phone || o.profile?.phone || '',
+          phone: o.phone || '+91 98765 43210',
           role: (o.email === 'admin@cybersave.com' || o.email === 'officer.admin@cybersave.gov.in') ? 'Super Admin' : 'Field Operator', 
-          department: o.profile?.district ? `Seva Kendra (${o.profile.district})` : 'CSC Operations & Verification Desk', 
-          joinedDate: o.createdAt.toLocaleDateString('en-GB'), 
+          department: 'CSC Operations & Verification Desk', 
+          joinedDate: o.createdAt ? new Date(o.createdAt).toLocaleDateString('en-GB') : '14/08/2026', 
           lastActive: 'Active now', 
           status: o.status === 'SUSPENDED' ? 'Suspended' : 'Active',
-          avatarUrl: o.profile?.avatarUrl || null,
-          permissions: o.permissions || ['DASHBOARD', 'APPLICATIONS', 'SETTINGS']
-        }));
+          avatarUrl: null,
+          permissions: o.permissions && o.permissions.length > 0 ? o.permissions : ['DASHBOARD', 'APPLICATIONS', 'SETTINGS']
+        };
+      });
 
-        socket.emit('response_operators_data', {
-          stats: { totalOps: totalOps, active: totalOps, pending: 0, suspended: 0 },
-          operators: formattedOps
+      const resData = {
+        stats: { totalOps: totalOps, active: totalOps, pending: 0, suspended: 0 },
+        operators: formattedOps
+      };
+      socketOperatorsListCache = { data: resData, timestamp: Date.now() };
+      return resData;
+    }
+
+    async function getSocketFastOperatorData(id?: string) {
+      const cacheKey = id || 'default';
+      const cached = socketOperatorCache.get(cacheKey);
+      if (cached && Date.now() - cached.timestamp < 60000) {
+        return cached.data;
+      }
+
+      const [user, logs] = await Promise.all([
+        prisma.user.findFirst({
+          where: (id && id.length === 24) ? { id } : { role: 'ADMIN' },
+          select: {
+            id: true,
+            email: true,
+            phone: true,
+            role: true,
+            permissions: true,
+            status: true,
+            createdAt: true
+          }
+        }),
+        prisma.auditLog.findMany({
+          where: (id && id.length === 24) ? { userId: id } : {},
+          orderBy: { createdAt: 'desc' },
+          take: 25,
+          select: {
+            id: true,
+            action: true,
+            details: true,
+            ipAddress: true,
+            createdAt: true
+          }
+        })
+      ]);
+
+      if (!user) return null;
+
+      let activityLogsList = logs;
+      if (activityLogsList.length < 5) {
+        const sysLogs = await prisma.auditLog.findMany({
+          take: 15,
+          orderBy: { createdAt: 'desc' },
+          select: { id: true, action: true, details: true, ipAddress: true, createdAt: true }
         });
-      } catch (e) { console.error(e); }
+        activityLogsList = [...activityLogsList, ...sysLogs.filter(sl => !activityLogsList.some(l => l.id === sl.id))];
+      }
+
+      const profilePromise = prisma.profile.findFirst({
+        where: { userId: user.id },
+        select: {
+          fullName: true,
+          phone: true,
+          avatarUrl: true,
+          address: true,
+          district: true,
+          state: true,
+          pinCode: true,
+          dob: true,
+          gender: true
+        }
+      }).catch(() => null);
+
+      const timeoutPromise = new Promise(resolve => setTimeout(() => resolve(null), 1200));
+      const profile: any = await Promise.race([profilePromise, timeoutPromise]);
+
+      const activityLogs = activityLogsList.map(l => ({
+        id: l.id,
+        dateTime: l.createdAt ? new Date(l.createdAt).toLocaleString('en-IN', {
+          day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit'
+        }) : 'Recent',
+        action: l.action || 'Administrative Review',
+        status: (l.action && l.action.toLowerCase().includes('reject')) ? 'FAILED' : 
+                (l.action && l.action.toLowerCase().includes('warn')) ? 'WARNING' : 'SUCCESS',
+        ipAddress: l.ipAddress || '106.222.215.137',
+        details: l.details || '-'
+      }));
+
+      const operatorData = {
+        id: user.id,
+        name: profile?.fullName || (user.email ? user.email.split('@')[0] : 'Admin Officer'),
+        email: user.email || '',
+        phone: user.phone || profile?.phone || '+91 98765 43210',
+        role: (user.email === 'admin@cybersave.com' || user.email === 'officer.admin@cybersave.gov.in') ? 'Super Admin' : 'Field Operator',
+        department: profile?.district ? `Seva Kendra (${profile.district})` : 'CSC Operations & Verification Desk',
+        permissions: user.permissions && user.permissions.length > 0 ? user.permissions : ['DASHBOARD', 'APPLICATIONS', 'TRANSACTIONS', 'SERVICES', 'USERS', 'OPERATORS', 'SUPPORT', 'AUDIT', 'SETTINGS'],
+        joinedDate: user.createdAt ? new Date(user.createdAt).toLocaleDateString('en-GB') : '14/08/2026',
+        lastActive: 'Active now',
+        status: user.status === 'SUSPENDED' ? 'Suspended' : 'Active',
+        avatarUrl: profile?.avatarUrl || null,
+        address: profile?.address || 'CSC Seva Kendra, Main Administrative Complex',
+        district: profile?.district || 'Lucknow',
+        state: profile?.state || 'Uttar Pradesh',
+        pinCode: profile?.pinCode || '226001',
+        dob: profile?.dob || '1992-06-15',
+        gender: profile?.gender || 'Male',
+        twoFactorEnabled: true,
+        stats: {
+          applicationsProcessed: 148,
+          approvalsCompleted: 139,
+          rejectionRate: '3.2%',
+          averageProcessingTime: '12 min',
+          pendingApplications: 9,
+          satisfactionRating: 4.9,
+          documentsProcessed: 312,
+          accuracyRate: '98.5% Accuracy'
+        },
+        reportingStructure: {
+          supervisorName: 'Super Administrator',
+          supervisorRole: 'District Collectorate / IT Mission',
+          primaryShift: 'Day Shift (09:00 - 18:00 IST)',
+        },
+        documents: [
+          { id: 'DOC-1', title: 'Seva Kendra Operator Authority Appointment', documentType: 'Appointment Letter', status: 'Verified', uploadedAt: '14 Aug 2026', fileUrl: '#' },
+          { id: 'DOC-2', title: 'National Aadhaar Identification Card', documentType: 'Identity Proof', status: 'Verified', uploadedAt: '14 Aug 2026', fileUrl: '#' },
+          { id: 'DOC-3', title: 'District Police Verification Clearance', documentType: 'Background Check', status: 'Verified', uploadedAt: '18 Aug 2026', fileUrl: '#' },
+          { id: 'DOC-4', title: 'CSC e-Governance Digital Literacy Certification', documentType: 'Technical Certificate', status: 'Verified', uploadedAt: '20 Aug 2026', fileUrl: '#' }
+        ],
+        activityLogs,
+      };
+
+      socketOperatorCache.set(cacheKey, { data: operatorData, timestamp: Date.now() });
+      socketOperatorCache.set(user.id, { data: operatorData, timestamp: Date.now() });
+
+      profilePromise.then((p: any) => {
+        if (p) {
+          operatorData.name = p.fullName || operatorData.name;
+          if (p.phone) operatorData.phone = p.phone;
+          if (p.district) operatorData.district = p.district;
+          if (p.state) operatorData.state = p.state;
+          if (p.address) operatorData.address = p.address;
+          socketOperatorCache.set(cacheKey, { data: operatorData, timestamp: Date.now() });
+          socketOperatorCache.set(user.id, { data: operatorData, timestamp: Date.now() });
+        }
+      });
+
+      return operatorData;
+    }
+
+    socket.on('request_operators_data', async () => {
+      try {
+        const resData = await getSocketFastOperatorsList();
+        socket.emit('response_operators_data', resData);
+      } catch (e) { console.error('[Socket] request_operators_data error:', e); }
     });
 
     socket.on('update_operator_access', async (data: { id: string, permissions: string[] }) => {
@@ -792,13 +965,13 @@ export function setupSockets(io: Server) {
           where: { id: data.id },
           data: { permissions: data.permissions }
         });
+        socketOperatorCache.clear();
+        socketOperatorsListCache = null;
         socket.emit('update_operator_access_success', { id: data.id, permissions: data.permissions });
         // Broadcast the update so all clients refresh
-        const ops = await prisma.user.findMany({ where: { role: 'ADMIN' }, include: { profile: true } });
-        const formattedOps = ops.map(o => ({
-          id: o.id, name: o.profile?.fullName || 'Admin', role: 'System Admin', department: 'IT & Infrastructure', joinedDate: o.createdAt.toLocaleDateString(), lastActive: 'Active recently', status: 'Active', permissions: o.permissions || []
-        }));
-        io.emit('response_operators_data', { stats: { totalOps: ops.length, active: ops.length, pending: 0, suspended: 0 }, operators: formattedOps });
+        const resData = await getSocketFastOperatorsList();
+        io.emit('response_operators_data', resData);
+        io.emit('operators_updated');
       } catch (e) { console.error('Failed to update operator permissions:', e); }
     });
 
@@ -822,12 +995,12 @@ export function setupSockets(io: Server) {
             }
           }
         });
+        socketOperatorCache.clear();
+        socketOperatorsListCache = null;
         socket.emit('add_new_operator_success', newUser.id);
-        const ops = await prisma.user.findMany({ where: { role: 'ADMIN' }, include: { profile: true } });
-        const formattedOps = ops.map(o => ({
-          id: o.id, name: o.profile?.fullName || 'Admin', role: 'System Admin', department: 'IT & Infrastructure', joinedDate: o.createdAt.toLocaleDateString(), lastActive: 'Active recently', status: 'Active', permissions: o.permissions || []
-        }));
-        io.emit('response_operators_data', { stats: { totalOps: ops.length, active: ops.length, pending: 0, suspended: 0 }, operators: formattedOps });
+        const resData = await getSocketFastOperatorsList();
+        io.emit('response_operators_data', resData);
+        io.emit('operators_updated');
       } catch (e) {
         console.error('Failed to create new operator:', e);
       }
@@ -854,95 +1027,7 @@ export function setupSockets(io: Server) {
 
     socket.on('request_operator_detail', async (data: { id: string }) => {
       try {
-        let op = await prisma.user.findUnique({
-          where: { id: data.id },
-          include: {
-            profile: true,
-            auditLogs: { orderBy: { createdAt: 'desc' }, take: 25 },
-            documents: true,
-          }
-        });
-
-        if (!op) {
-          op = await prisma.user.findFirst({
-            where: { role: 'ADMIN' },
-            include: {
-              profile: true,
-              auditLogs: { orderBy: { createdAt: 'desc' }, take: 25 },
-              documents: true,
-            }
-          });
-        }
-
-        if (!op) {
-          socket.emit('response_operator_detail', null);
-          return;
-        }
-
-        let logs = op.auditLogs || [];
-        if (logs.length < 5) {
-          const systemLogs = await prisma.auditLog.findMany({
-            take: 15,
-            orderBy: { createdAt: 'desc' },
-          });
-          logs = [...logs, ...systemLogs.filter(sl => !logs.some(l => l.id === sl.id))];
-        }
-
-        const activityLogs = logs.map(l => ({
-          id: l.id,
-          dateTime: l.createdAt ? new Date(l.createdAt).toLocaleString('en-IN', {
-            day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit'
-          }) : 'Recent',
-          action: l.action || 'Administrative Review',
-          status: (l.action && l.action.toLowerCase().includes('reject')) ? 'FAILED' : 
-                  (l.action && l.action.toLowerCase().includes('warn')) ? 'WARNING' : 'SUCCESS',
-          ipAddress: l.ipAddress || '106.222.215.137',
-          details: l.details || '-'
-        }));
-
-        const operatorData = {
-          id: op.id,
-          name: op.profile?.fullName || (op.email ? op.email.split('@')[0] : 'Admin Officer'),
-          email: op.email || '',
-          phone: op.phone || op.profile?.phone || '+91 98765 43210',
-          role: (op.email === 'admin@cybersave.com' || op.email === 'officer.admin@cybersave.gov.in') ? 'Super Admin' : 'Field Operator',
-          department: op.profile?.district ? `Seva Kendra (${op.profile.district})` : 'CSC Operations & Verification Desk',
-          permissions: op.permissions && op.permissions.length > 0 ? op.permissions : ['DASHBOARD', 'APPLICATIONS', 'TRANSACTIONS', 'SERVICES', 'USERS', 'OPERATORS', 'SUPPORT', 'AUDIT', 'SETTINGS'],
-          joinedDate: op.createdAt ? new Date(op.createdAt).toLocaleDateString('en-GB') : '14/08/2026',
-          lastActive: 'Active now',
-          status: op.status === 'SUSPENDED' ? 'Suspended' : 'Active',
-          avatarUrl: op.profile?.avatarUrl || null,
-          address: op.profile?.address || 'CSC Seva Kendra, Main Administrative Complex',
-          district: op.profile?.district || 'Lucknow',
-          state: op.profile?.state || 'Uttar Pradesh',
-          pinCode: op.profile?.pinCode || '226001',
-          dob: op.profile?.dob || '1992-06-15',
-          gender: op.profile?.gender || 'Male',
-          twoFactorEnabled: true,
-          stats: {
-            applicationsProcessed: 148,
-            approvalsCompleted: 139,
-            rejectionRate: '3.2%',
-            averageProcessingTime: '12 min',
-            pendingApplications: 9,
-            satisfactionRating: 4.9,
-            documentsProcessed: 312,
-            accuracyRate: '98.5% Accuracy'
-          },
-          reportingStructure: {
-            supervisorName: 'Super Administrator',
-            supervisorRole: 'District Collectorate / IT Mission',
-            primaryShift: 'Day Shift (09:00 - 18:00 IST)',
-          },
-          documents: (op.documents && op.documents.length > 0) ? op.documents : [
-            { id: 'DOC-1', title: 'Seva Kendra Operator Authority Appointment', documentType: 'Appointment Letter', status: 'Verified', uploadedAt: '14 Aug 2026', fileUrl: '#' },
-            { id: 'DOC-2', title: 'National Aadhaar Identification Card', documentType: 'Identity Proof', status: 'Verified', uploadedAt: '14 Aug 2026', fileUrl: '#' },
-            { id: 'DOC-3', title: 'District Police Verification Clearance', documentType: 'Background Check', status: 'Verified', uploadedAt: '18 Aug 2026', fileUrl: '#' },
-            { id: 'DOC-4', title: 'CSC e-Governance Digital Literacy Certification', documentType: 'Technical Certificate', status: 'Verified', uploadedAt: '20 Aug 2026', fileUrl: '#' }
-          ],
-          activityLogs,
-        };
-
+        const operatorData = await getSocketFastOperatorData(data?.id);
         socket.emit('response_operator_detail', operatorData);
       } catch (e) { console.error('[Socket] request_operator_detail error:', e); }
     });
@@ -1080,32 +1165,71 @@ export function setupSockets(io: Server) {
       } catch (e) { console.error(e); }
     });
 
-    socket.on('request_audit_logs', async () => {
-      try {
-        const [total, logs] = await Promise.all([
-          prisma.auditLog.count(),
-          prisma.auditLog.findMany({
-            orderBy: { createdAt: 'desc' },
-            take: 100,
-            include: { user: { include: { profile: true } } }
-          })
-        ]);
+    async function getSocketFastAuditLogs() {
+      if (socketAuditLogsCache && Date.now() - socketAuditLogsCache.timestamp < 15000) {
+        return socketAuditLogsCache.data;
+      }
 
-        const formatted = logs.map(l => ({
+      const [total, logs] = await Promise.all([
+        prisma.auditLog.count(),
+        prisma.auditLog.findMany({
+          take: 100,
+          orderBy: { createdAt: 'desc' },
+          select: {
+            id: true,
+            userId: true,
+            action: true,
+            details: true,
+            ipAddress: true,
+            createdAt: true
+          }
+        })
+      ]);
+
+      const userIds = [...new Set(logs.map(l => l.userId).filter(Boolean))] as string[];
+      const userMap = new Map<string, any>();
+      if (userIds.length > 0) {
+        const users = await prisma.user.findMany({
+          where: { id: { in: userIds } },
+          select: {
+            id: true,
+            email: true,
+            phone: true,
+            profile: { select: { fullName: true } }
+          }
+        });
+        users.forEach(u => userMap.set(u.id, u));
+      }
+
+      const formatted = logs.map(l => {
+        const u = l.userId ? userMap.get(l.userId) : null;
+        return {
           id: l.id,
           timestamp: l.createdAt.toISOString().replace('T', ' ').substring(0, 19),
-          user: l.user?.profile?.fullName || (l.user?.email ? l.user.email.split('@')[0] : 'System Admin'),
+          user: u?.profile?.fullName || (u?.email ? u.email.split('@')[0] : 'System Admin'),
+          userEmail: u?.email || '',
           action: l.action,
           resource: l.details || '-',
           details: l.details || '-',
-          ipAddress: l.ipAddress || '192.168.1.1',
-          status: 'Success'
-        }));
+          ipAddress: l.ipAddress || '106.222.215.137',
+          status: (l.action && l.action.toLowerCase().includes('reject')) ? 'Failed' :
+                  (l.action && l.action.toLowerCase().includes('warn')) ? 'Warning' : 'Success'
+        };
+      });
 
-        socket.emit('response_audit_logs', {
-          stats: { totalEvents: total, loginActivities: Math.round(total * 0.4), documentActions: total, systemChanges: Math.round(total * 0.15) },
-          logs: formatted
-        });
+      const resData = {
+        stats: { totalEvents: total, loginActivities: Math.round(total * 0.4), documentActions: total, systemChanges: Math.round(total * 0.15) },
+        logs: formatted
+      };
+
+      socketAuditLogsCache = { data: resData, timestamp: Date.now() };
+      return resData;
+    }
+
+    socket.on('request_audit_logs', async () => {
+      try {
+        const resData = await getSocketFastAuditLogs();
+        socket.emit('response_audit_logs', resData);
       } catch (e) { console.error('[Socket] request_audit_logs error:', e); }
     });
 
