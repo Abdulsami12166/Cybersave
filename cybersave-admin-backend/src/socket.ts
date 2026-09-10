@@ -1179,14 +1179,20 @@ export function setupSockets(io: Server) {
         ]);
 
         const formatted = tickets.map(t => ({
-          id: `TKT-${t.id.substring(0, 8).toUpperCase()}`,
+          id: t.refNumber || `TKT-${t.id.substring(0, 8).toUpperCase()}`,
+          rawId: t.id,
+          refNumber: t.refNumber,
           title: t.title,
+          description: t.description,
           category: t.category,
           priority: t.priority,
-          createdOn: t.createdAt.toLocaleDateString(),
-          lastUpdated: t.updatedAt.toLocaleDateString(),
-          assignedTo: t.assignedTo || 'Unassigned',
-          status: t.status
+          createdOn: t.createdAt.toLocaleDateString('en-IN'),
+          lastUpdated: t.updatedAt.toLocaleDateString('en-IN'),
+          createdAt: t.createdAt,
+          updatedAt: t.updatedAt,
+          assignedTo: t.assignedTo || 'Amit S. (Support Desk)',
+          status: t.status,
+          attachmentUrl: t.attachmentUrl,
         }));
 
         socket.emit('response_support_tickets', {
@@ -1196,19 +1202,39 @@ export function setupSockets(io: Server) {
       } catch (e) { console.error(e); }
     });
 
-    socket.on('create_support_ticket', async (data: { title: string, category: string, priority: string, description: string }) => {
+    socket.on('create_support_ticket', async (data: { title: string, category: string, priority: string, description: string, attachmentUrl?: string }) => {
       try {
-        await prisma.supportTicket.create({
+        const randomNum = Math.floor(100000 + Math.random() * 900000);
+        const refNumber = `TKT-${randomNum}`;
+        const newTicket = await prisma.supportTicket.create({
           data: {
-            refNumber: `TKT-${Date.now()}`,
-            title: `${data.title} - ${data.description}`.substring(0, 100),
-            category: data.category,
-            priority: data.priority,
+            refNumber,
+            title: data.title || 'Support Ticket',
+            description: data.description || '',
+            category: data.category || 'Technical Support',
+            priority: data.priority || 'Medium',
             status: 'OPEN',
-            userId: (await prisma.user.findFirst({ where: { role: 'ADMIN' } }))?.id || ''
+            attachmentUrl: data.attachmentUrl || null,
+            assignedTo: 'Amit S. (Support Desk)',
+            userId: (await prisma.user.findFirst({ where: { role: 'ADMIN' } }))?.id || null,
           }
         });
+
         socket.emit('create_support_ticket_success');
+        io.emit('new_support_ticket', {
+          id: newTicket.refNumber,
+          rawId: newTicket.id,
+          refNumber: newTicket.refNumber,
+          title: newTicket.title,
+          description: newTicket.description,
+          category: newTicket.category,
+          priority: newTicket.priority,
+          status: newTicket.status,
+          assignedTo: newTicket.assignedTo,
+          attachmentUrl: newTicket.attachmentUrl,
+          createdOn: newTicket.createdAt.toLocaleDateString('en-IN'),
+        });
+        io.emit('support_tickets_updated');
       } catch (e) {
         console.error('Failed to create ticket', e);
       }

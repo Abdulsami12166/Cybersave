@@ -420,7 +420,7 @@ export async function fetchCitizenFullDetails(targetId: string): Promise<any | n
   });
 
   // Compile Activity Logs
-  const recentActivity = auditLogs.map((l: any) => ({
+  const recentActivity: any[] = auditLogs.map((l: any) => ({
     id: l.id,
     title: l.action.replace(/_/g, ' ').toLowerCase().replace(/\b\w/g, (c: string) => c.toUpperCase()),
     details: l.details || `Action logged in portal`,

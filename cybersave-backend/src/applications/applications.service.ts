@@ -265,16 +265,26 @@ export class ApplicationsService {
       });
     }
 
+    const cleanUserId = String(userId).trim();
     const userOrConditions: any[] = [];
-    if (isMongoId(userId)) userOrConditions.push({ id: userId });
-    userOrConditions.push({ phone: userId }, { email: userId });
+    if (isMongoId(cleanUserId)) userOrConditions.push({ id: cleanUserId });
+    userOrConditions.push({ email: cleanUserId.toLowerCase() });
+    userOrConditions.push({ email: cleanUserId });
+    userOrConditions.push({ phone: cleanUserId });
+
+    const digits = cleanUserId.replace(/\D/g, '').slice(-10);
+    if (digits.length === 10) {
+      userOrConditions.push({ phone: `+91${digits}` });
+      userOrConditions.push({ phone: `+91 ${digits.slice(0, 5)} ${digits.slice(5)}` });
+      userOrConditions.push({ phone: digits });
+    }
 
     const matchedUser = await this.prisma.user.findFirst({
       where: { OR: userOrConditions },
     }).catch(() => null);
 
     const targetIds: string[] = [];
-    if (isMongoId(userId)) targetIds.push(userId);
+    if (isMongoId(cleanUserId)) targetIds.push(cleanUserId);
     if (matchedUser && isMongoId(matchedUser.id) && !targetIds.includes(matchedUser.id)) {
       targetIds.push(matchedUser.id);
     }
