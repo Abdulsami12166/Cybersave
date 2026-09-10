@@ -63,6 +63,51 @@ export class AdminController {
     throw new BadRequestException('No image proof file or buffer provided');
   }
 
+  @Get(['api/v1/support/tickets', 'api/support/tickets', 'support/tickets'])
+  @ApiOperation({ summary: 'Get all Support Tickets & Grievances with Statistics' })
+  async getAllSupportTicketsRest() {
+    const [total, open, inProgress, resolved, tickets] = await Promise.all([
+      this.prisma.supportTicket.count(),
+      this.prisma.supportTicket.count({ where: { status: 'OPEN' } }),
+      this.prisma.supportTicket.count({ where: { status: 'IN_PROGRESS' } }),
+      this.prisma.supportTicket.count({ where: { status: 'RESOLVED' } }),
+      this.prisma.supportTicket.findMany({
+        take: 50,
+        orderBy: { createdAt: 'desc' },
+        include: {
+          user: { select: { id: true, email: true, phone: true, profile: true } }
+        }
+      })
+    ]);
+
+    const formatted = tickets.map(t => ({
+      id: t.refNumber || t.id,
+      rawId: t.id,
+      refNumber: t.refNumber,
+      title: t.title,
+      description: t.description,
+      category: t.category,
+      priority: t.priority,
+      createdOn: t.createdAt.toLocaleDateString('en-IN'),
+      lastUpdated: t.updatedAt.toLocaleDateString('en-IN'),
+      createdAt: t.createdAt,
+      updatedAt: t.updatedAt,
+      assignedTo: t.assignedTo || 'Amit S. (Support Desk)',
+      status: t.status,
+      attachmentUrl: t.attachmentUrl,
+      reporter: {
+        name: t.user?.profile?.fullName || 'Citizen User',
+        email: t.user?.email || '',
+      },
+      messages: Array.isArray(t.messages) ? t.messages : [],
+    }));
+
+    return {
+      stats: { totalTickets: total, openTickets: open, inProgress: inProgress, resolved: resolved },
+      tickets: formatted
+    };
+  }
+
   @Post(['api/v1/support/tickets', 'api/support/tickets', 'support/tickets'])
   @ApiOperation({ summary: 'Create Support Ticket / Grievance from Mobile or Web' })
   async createSupportTicketRest(@Body() body: any) {
@@ -705,16 +750,21 @@ export class AdminController {
     const isMongoId = (s?: string) => typeof s === 'string' && /^[0-9a-fA-F]{24}$/.test(s);
     let u: any = null;
 
+    const userInclude = {
+      profile: true,
+      applications: { include: { service: true }, orderBy: { submittedAt: 'desc' as const } },
+      documents: true,
+      aadhaarDocs: true,
+      auditLogs: { orderBy: { createdAt: 'desc' as const }, take: 100 },
+      feedbacks: { orderBy: { createdAt: 'desc' as const } },
+      wallet: { include: { transactions: { orderBy: { createdAt: 'desc' as const } } } },
+      refundRequests: { orderBy: { createdAt: 'desc' as const } },
+    };
+
     if (isMongoId(id)) {
       u = await this.prisma.user.findUnique({
         where: { id },
-        include: {
-          profile: true,
-          applications: { include: { service: true }, orderBy: { submittedAt: 'desc' } },
-          documents: true,
-          aadhaarDocs: true,
-          auditLogs: { orderBy: { createdAt: 'desc' }, take: 15 },
-        },
+        include: userInclude,
       });
     }
 
@@ -722,13 +772,7 @@ export class AdminController {
       const shortId = id.replace('CIT-', '').toUpperCase();
       const allUsers = await this.prisma.user.findMany({
         where: { role: 'USER' },
-        include: {
-          profile: true,
-          applications: { include: { service: true }, orderBy: { submittedAt: 'desc' } },
-          documents: true,
-          aadhaarDocs: true,
-          auditLogs: { orderBy: { createdAt: 'desc' }, take: 15 },
-        },
+        include: userInclude,
       });
       u = allUsers.find((x) => x.id.substring(0, 5).toUpperCase() === shortId) || null;
     }
@@ -738,18 +782,21 @@ export class AdminController {
         where: {
           OR: [{ id }, { email: id }, { phone: id }],
         },
-        include: {
-          profile: true,
-          applications: { include: { service: true }, orderBy: { submittedAt: 'desc' } },
-          documents: true,
-          aadhaarDocs: true,
-          auditLogs: { orderBy: { createdAt: 'desc' }, take: 15 },
-        },
+        include: userInclude,
       });
     }
 
     if (!u) {
       throw new NotFoundException(`Citizen profile for '${id}' not found`);
+    }
+
+    const allAdmins = await this.prisma.user.findMany({
+      where: { role: 'ADMIN' },
+      include: { profile: true },
+    });
+
+    if (AdminGateway.instance) {
+      return AdminGateway.instance.formatCitizenPayload(u, allAdmins);
     }
 
     return this.formatCitizenData(u);
@@ -1020,6 +1067,31 @@ export class AdminController {
     return { success: true, active: true };
   }
 
+  @Post(['api/v1/users/offline', 'api/users/offline', 'users/offline'])
+  @ApiOperation({ summary: 'Record citizen app closed / offline' })
+  async citizenOffline(@Body() body: any) {
+    const { userId } = body;
+    if (userId && /^[0-9a-fA-F]{24}$/.test(userId)) {
+      await this.prisma.user.update({
+        where: { id: userId },
+        data: { isOnline: false, lastSeenAt: new Date() },
+      }).catch(() => null);
+
+      await AdminGateway.logActivity(this.prisma, {
+        userId,
+        action: 'APP_CLOSED',
+        details: 'Citizen app closed / session terminated',
+      });
+
+      AdminGateway.broadcast('user_status_changed', {
+        userId,
+        isOnline: false,
+        lastSeenAt: new Date().toISOString(),
+      });
+    }
+    return { success: true, isOnline: false };
+  }
+
   @Get(['api/v1/users', 'api/admin/users', 'admin/users'])
   @ApiOperation({ summary: 'Get all citizens with real-time active status' })
   async getAllCitizens() {
@@ -1030,7 +1102,7 @@ export class AdminController {
     });
 
     return users.map((u) => {
-      const isOnline = AdminGateway.isUserOnline(u.id) || u.isOnline === true;
+      const isOnline = AdminGateway.isUserOnline(u.id, u.lastSeenAt) || (u.isOnline === true && u.lastSeenAt && (Date.now() - new Date(u.lastSeenAt).getTime()) < 60000);
       let lastActive = 'Active Now';
       if (!isOnline) {
         const lastTime = u.lastSeenAt || u.updatedAt || u.createdAt;

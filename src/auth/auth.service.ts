@@ -88,7 +88,7 @@ export class AuthService {
     };
   }
 
-  async login(emailOrPhone: string, password?: string) {
+  async login(emailOrPhone: string, password?: string, ipAddress?: string) {
     const cleanId = (emailOrPhone || '').trim();
     
     // Check by email or phone
@@ -119,6 +119,13 @@ export class AuthService {
       // Direct login successful with valid password
       const payload = { sub: user.id, email: user.email, role: user.role };
       const accessToken = this.jwtService.sign(payload);
+
+      // Record real session login
+      await this.recordAuditLog(user.id, 'USER_LOGIN', 'Logged in via Email/Password (CyberSave Mobile App)', ipAddress);
+      await this.prisma.user.update({
+        where: { id: user.id },
+        data: { isOnline: true, lastSeenAt: new Date() },
+      });
 
       return {
         success: true,
@@ -154,7 +161,7 @@ export class AuthService {
     };
   }
 
-  async googleLogin(data: { token?: string; email?: string; fullName?: string; photoUrl?: string }) {
+  async googleLogin(data: { token?: string; email?: string; fullName?: string; photoUrl?: string }, ipAddress?: string) {
     const email = (data.email || '').trim().toLowerCase();
     if (!email) {
       throw new BadRequestException('Google email is required');
@@ -196,6 +203,13 @@ export class AuthService {
     const payload = { sub: user.id, email: user.email, role: user.role };
     const accessToken = this.jwtService.sign(payload);
 
+    // Record real Google login audit log & online status
+    await this.recordAuditLog(user.id, 'USER_LOGIN', 'Logged in via Google Sign-In (CyberSave Mobile App)', ipAddress);
+    await this.prisma.user.update({
+      where: { id: user.id },
+      data: { isOnline: true, lastSeenAt: new Date() },
+    });
+
     return {
       success: true,
       accessToken,
@@ -211,7 +225,7 @@ export class AuthService {
     };
   }
 
-  async fingerprintAuth(data: { fingerprintId?: string; deviceId?: string; userId?: string }) {
+  async fingerprintAuth(data: { fingerprintId?: string; deviceId?: string; userId?: string }, ipAddress?: string) {
     let cleanFingerprintId = (data.fingerprintId || '').trim();
     if (!cleanFingerprintId) {
       cleanFingerprintId = `FP-${Date.now().toString(36).toUpperCase()}-${Math.floor(1000 + Math.random() * 9000)}`;
@@ -232,6 +246,13 @@ export class AuthService {
         const payload = { sub: existingUser.id, email: existingUser.email, role: existingUser.role };
         const accessToken = this.jwtService.sign(payload);
         this.logger.log(`Fingerprint re-login for existing user: ${existingUser.id}`);
+
+        // Record biometric login audit log & online status
+        await this.recordAuditLog(existingUser.id, 'USER_LOGIN', 'Logged in via Biometric Fingerprint (CyberSave Mobile App)', ipAddress);
+        await this.prisma.user.update({
+          where: { id: existingUser.id },
+          data: { isOnline: true, lastSeenAt: new Date() },
+        });
 
         return {
           success: true,
@@ -294,6 +315,13 @@ export class AuthService {
     const payload = { sub: user.id, email: user.email, role: user.role };
     const accessToken = this.jwtService.sign(payload);
 
+    // Record real biometric login audit log & online status
+    await this.recordAuditLog(user.id, 'USER_LOGIN', 'Enrolled & Logged in via Biometric Fingerprint (CyberSave Mobile App)', ipAddress);
+    await this.prisma.user.update({
+      where: { id: user.id },
+      data: { isOnline: true, lastSeenAt: new Date() },
+    });
+
     return {
       success: true,
       accessToken,
@@ -310,7 +338,7 @@ export class AuthService {
     };
   }
 
-  async verifyOtp(identifier: string, otp: string) {
+  async verifyOtp(identifier: string, otp: string, ipAddress?: string) {
     if (!identifier || !otp) throw new BadRequestException('Identifier and OTP are required');
     const cleanId = identifier.trim().replace(/\s+/g, '');
     const isPhone = /^\+?[0-9]{10,15}$/.test(cleanId);
@@ -383,6 +411,13 @@ export class AuthService {
       const payload = { sub: user.id, email: user.email, role: user.role };
       const accessToken = this.jwtService.sign(payload);
 
+      // Record mobile OTP login audit log & online status
+      await this.recordAuditLog(user.id, 'USER_LOGIN', 'Logged in via Mobile OTP (CyberSave Mobile App)', ipAddress);
+      await this.prisma.user.update({
+        where: { id: user.id },
+        data: { isOnline: true, lastSeenAt: new Date() },
+      });
+
       return {
         accessToken,
         user: {
@@ -423,13 +458,28 @@ export class AuthService {
             userId,
             action,
             details: details || 'CyberSave Android App Session',
-            ipAddress: ipAddress || '127.0.0.1 (Mobile App)',
+            ipAddress: ipAddress || '192.168.1.1 (Mobile App)',
           },
         });
       }
     } catch (e: any) {
       this.logger.warn(`Failed to record audit log: ${e?.message}`);
     }
+  }
+
+  async logout(userId?: string, ipAddress?: string) {
+    if (userId && /^[0-9a-fA-F]{24}$/.test(userId)) {
+      try {
+        await this.prisma.user.update({
+          where: { id: userId },
+          data: { isOnline: false, lastSeenAt: new Date() },
+        });
+        await this.recordAuditLog(userId, 'USER_LOGOUT', 'Logged out of CyberSave Android App', ipAddress);
+      } catch (e: any) {
+        this.logger.warn(`Failed to record logout for ${userId}: ${e?.message}`);
+      }
+    }
+    return { success: true, message: 'Logged out successfully' };
   }
 
   async getLoginHistory(userId?: string) {
