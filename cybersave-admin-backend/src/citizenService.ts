@@ -72,17 +72,28 @@ export async function findUserByIdOrCit(id: string, includeRelations?: any): Pro
   return user || null;
 }
 
+const citizenDetailsCache = new Map<string, { data: any; timestamp: number }>();
+
 export async function fetchCitizenFullDetails(targetId: string): Promise<any | null> {
+  const cached = citizenDetailsCache.get(targetId);
+  if (cached && Date.now() - cached.timestamp < 30000) {
+    return cached.data;
+  }
+
   const user = await findUserByIdOrCit(targetId);
   if (!user) {
     return null;
   }
 
   const userId = user.id;
+  const userCached = citizenDetailsCache.get(userId);
+  if (userCached && Date.now() - userCached.timestamp < 30000) {
+    return userCached.data;
+  }
 
-  // Execute fast, isolated queries with individual race timeouts
+  // Execute fast, isolated queries with 1200ms individual race timeouts
   const [profile, apps, aadhaarDocs, auditLogs, wallet, docUploads, feedbacks, walletTransactions] = await Promise.all([
-    withTimeout(prisma.profile.findFirst({ where: { userId } }), 4000, null),
+    withTimeout(prisma.profile.findFirst({ where: { userId } }), 1200, null),
     withTimeout(prisma.application.findMany({
       where: { userId },
       select: {
@@ -97,8 +108,8 @@ export async function fetchCitizenFullDetails(targetId: string): Promise<any | n
         formData: true,
       },
       orderBy: { submittedAt: 'desc' },
-      take: 30
-    }), 4000, []),
+      take: 20
+    }), 1200, []),
     withTimeout(prisma.aadhaarDocument.findMany({
       where: { userId },
       select: {
@@ -111,8 +122,8 @@ export async function fetchCitizenFullDetails(targetId: string): Promise<any | n
         address: true,
         verifiedAt: true,
       },
-      take: 10
-    }), 4000, []),
+      take: 5
+    }), 1200, []),
     withTimeout(prisma.auditLog.findMany({
       where: { userId },
       select: {
@@ -123,12 +134,12 @@ export async function fetchCitizenFullDetails(targetId: string): Promise<any | n
         createdAt: true,
       },
       orderBy: { createdAt: 'desc' },
-      take: 20
-    }), 4000, []),
+      take: 15
+    }), 1200, []),
     withTimeout(prisma.wallet.findFirst({
       where: { userId },
       select: { id: true, balance: true }
-    }), 4000, null),
+    }), 1200, null),
     withTimeout(prisma.documentUpload.findMany({
       where: { userId },
       select: {
@@ -139,18 +150,18 @@ export async function fetchCitizenFullDetails(targetId: string): Promise<any | n
         fileSize: true,
         uploadedAt: true,
       },
-      take: 20
-    }), 4000, []),
+      take: 10
+    }), 1200, []),
     withTimeout(prisma.feedback.findMany({
       where: { userId },
       orderBy: { createdAt: 'desc' },
-      take: 20
-    }), 4000, []),
+      take: 10
+    }), 1200, []),
     withTimeout(prisma.walletTransaction.findMany({
       where: { userId },
       orderBy: { createdAt: 'desc' },
-      take: 50
-    }), 4000, [])
+      take: 25
+    }), 1200, [])
   ]);
 
   const firstAppForm = (apps[0]?.formData as any) || {};
@@ -523,6 +534,10 @@ export async function fetchCitizenFullDetails(targetId: string): Promise<any | n
     auditLogs: recentActivity,
     sessionHistory,
   };
+
+  citizenDetailsCache.set(targetId, { data: citizenPayload, timestamp: Date.now() });
+  citizenDetailsCache.set(user.id, { data: citizenPayload, timestamp: Date.now() });
+  citizenDetailsCache.set(citizenPayload.id, { data: citizenPayload, timestamp: Date.now() });
 
   return citizenPayload;
 }
