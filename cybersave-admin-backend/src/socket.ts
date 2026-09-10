@@ -479,33 +479,37 @@ export function setupSockets(io: Server) {
         const skip = (page - 1) * limit;
         const today = new Date(); today.setHours(0,0,0,0);
 
-        const [totalApps, todayApps, pending, processing, completed, apps] = await Promise.all([
-          prisma.application.count(),
-          prisma.application.count({ where: { submittedAt: { gte: today } }}),
-          prisma.application.count({ where: { status: { in: ['SUBMITTED', 'VERIFYING', 'IN_PROGRESS', 'PENDING'] } }}),
-          prisma.application.count({ where: { status: 'IN_PROGRESS' }}),
-          prisma.application.count({ where: { status: { in: ['APPROVED', 'COMPLETED'] } }}),
-          fetchApplicationsWithUsers({}, limit, skip)
-        ]);
+        const apps = await fetchApplicationsWithUsers({}, limit, skip);
+        const totalApps = apps.length;
+        const todayApps = apps.filter(a => {
+          const sub = new Date(a.submittedAt || Date.now());
+          return sub >= today;
+        }).length;
+        const pending = apps.filter(a => ['SUBMITTED', 'VERIFYING', 'IN_PROGRESS', 'PENDING'].includes(a.status)).length;
+        const processing = apps.filter(a => a.status === 'IN_PROGRESS').length;
+        const completed = apps.filter(a => ['APPROVED', 'COMPLETED'].includes(a.status)).length;
 
         const formattedApps = apps.map(a => ({
           id: a.refNumber || `APP-2026-${a.id.substring(0, 4).toUpperCase()}`,
+          rawId: a.id,
           dbId: a.id,
           refNumber: a.refNumber,
           citizen: a.user?.profile?.fullName || (a.user?.email ? a.user.email.split('@')[0] : 'Citizen User'),
           citizenName: a.user?.profile?.fullName || (a.user?.email ? a.user.email.split('@')[0] : 'Citizen User'),
-          citizenPhone: a.user?.phone || a.user?.profile?.phone || 'N/A',
+          citizenEmail: a.user?.email || a.formData?.email || '',
+          citizenPhone: a.user?.phone || a.user?.profile?.phone || a.formData?.phone || 'N/A',
           serviceType: a.serviceTitle || a.service?.title || 'Government Service',
           service: a.serviceTitle || a.service?.title || 'Government Service',
-          priority: 'High',
+          priority: 'Medium',
           status: a.status === 'APPROVED' || a.status === 'COMPLETED' ? 'Approved' : (a.status === 'REJECTED' ? 'Rejected' : (a.status === 'IN_PROGRESS' ? 'Processing' : 'In Review')),
           rawStatus: a.status,
-          assigned: 'Auto Assigned',
-          submitted: a.submittedAt.toISOString(),
+          assigned: a.officialOfficer || 'Auto Assigned',
+          submitted: a.submittedAt ? a.submittedAt.toISOString() : new Date().toISOString(),
           sla: '24h',
           amount: a.feePaid || 50,
           feeAmount: a.feePaid || 50,
           refundStatus: a.refundRequests?.[0]?.status || null,
+          rejectionReason: a.rejectionReason || '',
           rawApp: a
         }));
 
@@ -513,12 +517,21 @@ export function setupSockets(io: Server) {
           stats: { totalApps, todayApps: todayApps > 0 ? todayApps : totalApps, pending, processing, completed },
           applications: formattedApps
         });
-      } catch(e) { console.error('[Socket] request_applications_data error:', e); }
+      } catch(e: any) {
+        console.error('[Socket] request_applications_data error:', e);
+        socket.emit('response_applications_data', {
+          stats: { totalApps: 0, todayApps: 0, pending: 0, processing: 0, completed: 0 },
+          applications: []
+        });
+      }
     });
 
     socket.on('request_application_detail', async (data: { id: string }) => {
       try {
-        const idOrRef = data?.id;
+        const idOrRef = data?.id ? String(data.id).trim() : '';
+        if (!idOrRef) {
+          return socket.emit('response_application_detail', null);
+        }
         const isMongoId = /^[0-9a-fA-F]{24}$/.test(idOrRef);
         let app: any = null;
 
@@ -544,26 +557,39 @@ export function setupSockets(io: Server) {
         if (app) {
           socket.emit('response_application_detail', {
             id: app.refNumber || app.id,
+            rawId: app.id,
             dbId: app.id,
             refNumber: app.refNumber,
             serviceName: app.serviceTitle || app.service?.title || 'Government Service',
+            serviceCategory: app.service?.category || 'Government',
             sla: '4h 32m',
             submitted: new Date(app.submittedAt).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' }),
-            assignedTo: 'Vikram Tiwari (VLE-0234)',
+            submittedAt: app.submittedAt,
+            updatedAt: app.updatedAt,
+            assignedTo: app.officialOfficer || 'Vikram Tiwari (VLE-0234)',
             centre: app.user?.profile?.district ? `CSC ${app.user.profile.district}` : 'CSC Hazratganj, Lucknow',
             status: app.status,
             amount: app.feePaid || 50,
+            feePaid: app.feePaid || 50,
+            rejectionReason: app.rejectionReason,
             formData: app.formData,
             applicant: {
-              id: `CIT-${app.userId.substring(0, 5).toUpperCase()}`,
-              name: app.user?.profile?.fullName || 'Citizen User',
-              aadhaar: app.user?.profile?.dob ? `•••• •••• ${app.userId.slice(-4)}` : 'XXXX XXXX 4521',
+              id: `CIT-${app.userId ? app.userId.substring(0, 5).toUpperCase() : 'USER'}`,
+              name: app.user?.profile?.fullName || app.formData?.fullName || 'Citizen User',
+              email: app.user?.email || app.formData?.email || '',
+              phone: app.user?.phone || app.user?.profile?.phone || app.formData?.phone || '',
+              aadhaar: app.user?.profile?.aadhaarNumber || app.formData?.aadhaarNumber || 'Verified Identity Vault',
               mobile: app.user?.phone || '+91 98765 43210'
             },
             rawApp: app
           });
+        } else {
+          socket.emit('response_application_detail', null);
         }
-      } catch (e) { console.error('[Socket] request_application_detail error:', e); }
+      } catch (e: any) {
+        console.error('[Socket] request_application_detail error:', e);
+        socket.emit('response_application_detail', null);
+      }
     });
 
     socket.on('update_application_status', async (data: any) => {
