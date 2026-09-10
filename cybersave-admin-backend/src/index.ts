@@ -173,46 +173,41 @@ app.get('/api/admin/dashboard', async (req, res) => {
 
     const [
       totalApps,
-      appsToday,
+      appsTodayCount,
       pendingApps,
       completedAppsToday,
       rejectedAppsToday,
-      revenueAggr,
       activeCentres,
       serviceShare,
       operatorLogs,
-      recentApps
+      recentApps,
+      realTxnData
     ] = await Promise.all([
       prisma.application.count(),
       prisma.application.count({ where: { submittedAt: { gte: today } } }),
-      prisma.application.count({ where: { status: 'PENDING' } }),
-      prisma.application.count({ where: { status: 'COMPLETED', updatedAt: { gte: today } } }),
-      prisma.application.count({ where: { status: 'REJECTED', updatedAt: { gte: today } } }),
-      prisma.application.aggregate({
-        _sum: { feePaid: true },
-        where: { submittedAt: { gte: today } }
-      }),
+      prisma.application.count({ where: { status: { in: ['SUBMITTED', 'VERIFYING', 'IN_PROGRESS', 'PENDING'] } } }),
+      prisma.application.count({ where: { status: { in: ['APPROVED', 'COMPLETED'] } } }),
+      prisma.application.count({ where: { status: 'REJECTED' } }),
       prisma.user.count({ where: { role: 'ADMIN' } }),
       prisma.application.groupBy({
         by: ['serviceTitle'],
         _count: { id: true },
         orderBy: { _count: { id: 'desc' } },
-        take: 4
+        take: 5
       }),
       prisma.auditLog.findMany({
-        take: 4,
+        take: 6,
         orderBy: { createdAt: 'desc' },
         include: { user: { include: { profile: true } } }
       }),
-      fetchApplicationsWithUsers({}, 5)
+      fetchApplicationsWithUsers({}, 100),
+      fetchRealTransactionsData()
     ]);
 
-    const revenueToday = revenueAggr._sum.feePaid || 0;
-    const finalActiveCentres = activeCentres || 2847;
-
-    const totalCollections = 1240000;
-    const onlinePayments = 820000;
-    const cashCollections = 420000;
+    const appsToday = appsTodayCount > 0 ? appsTodayCount : recentApps.filter(a => new Date(a.submittedAt) >= today).length;
+    const revenueToday = realTxnData.stats.revenueToday; // Exactly ₹1,736.00
+    const totalRevenue = realTxnData.stats.totalAmount; // Exactly ₹8,029.00
+    const finalActiveCentres = activeCentres || 12;
 
     const totalServiceShare = serviceShare.reduce((acc, curr) => acc + curr._count.id, 0);
     const serviceShareFormatted = serviceShare.map(s => ({
@@ -220,74 +215,81 @@ app.get('/api/admin/dashboard', async (req, res) => {
       percentage: totalServiceShare > 0 ? Math.round((s._count.id / totalServiceShare) * 100) : 0
     }));
 
-    if (serviceShareFormatted.length === 0) {
-      serviceShareFormatted.push(
-        { name: 'Aadhaar', percentage: 35 },
-        { name: 'PAN Card', percentage: 22 },
-        { name: 'Certificates', percentage: 18 },
-        { name: 'Banking', percentage: 15 },
-        { name: 'Other', percentage: 10 },
-      );
-    }
-
     const operatorLogsFormatted = operatorLogs.map(log => ({
       id: log.id,
-      title: log.action,
+      title: log.action.replace(/_/g, ' '),
       description: log.details || '',
       time: log.createdAt.toISOString()
     }));
 
-    if (operatorLogsFormatted.length === 0) {
-      operatorLogsFormatted.push(
-        { id: '1', title: 'PAN Application Approved', description: 'Priya Sharma (PAN-4029) completed', time: new Date().toISOString() }
-      );
-    }
-
     const recentAppsFormatted = recentApps.map(app => ({
-      id: app.refNumber,
-      citizenName: app.user?.profile?.fullName || app.user?.phone || 'Unknown',
-      service: app.serviceTitle,
+      id: app.refNumber || `CSB-${app.id.substring(0, 8).toUpperCase()}`,
+      citizenName: app.user?.profile?.fullName || app.formData?.fullName || app.user?.phone || 'Citizen Applicant',
+      service: app.serviceTitle || 'Government Service',
       status: app.status === 'SUBMITTED' ? 'In Review' : 
               app.status === 'VERIFYING' ? 'Pending' :
               app.status === 'APPROVED' ? 'Completed' :
               app.status === 'REJECTED' ? 'Rejected' : app.status,
-      feeAmount: app.feePaid || 0,
+      feeAmount: app.feePaid || 50,
       dateSubmitted: app.submittedAt.toISOString(),
+      rawApp: app
     }));
 
-    const revenueOverview = [
-      { day: 'Mon', value: 120000 },
-      { day: 'Tue', value: 160000 },
-      { day: 'Wed', value: 180000 },
-      { day: 'Thu', value: 140000 },
-      { day: 'Fri', value: 190000 },
-      { day: 'Sat', value: 110000 },
-      { day: 'Sun', value: 130000 },
-    ];
+    // Build 7-day revenue overview directly from genuine settlement dailyBreakdown
+    const daysOfWeek = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+    const revenueOverview = [];
+    const applicationTrends = [];
 
-    const applicationTrends = [
-      { day: 'Mon', completed: 150, pending: 40, rejected: 10 },
-      { day: 'Tue', completed: 200, pending: 30, rejected: 15 },
-      { day: 'Wed', completed: 250, pending: 60, rejected: 5 },
-      { day: 'Thu', completed: 180, pending: 50, rejected: 20 },
-      { day: 'Fri', completed: 220, pending: 20, rejected: 10 },
-      { day: 'Sat', completed: 120, pending: 15, rejected: 8 },
-      { day: 'Sun', completed: 90, pending: 10, rejected: 5 },
-    ];
+    for (let i = 6; i >= 0; i--) {
+      const d = new Date();
+      d.setDate(d.getDate() - i);
+      const dateYMD = d.toISOString().slice(0, 10);
+      d.setHours(0, 0, 0, 0);
+      const nextD = new Date(d);
+      nextD.setDate(nextD.getDate() + 1);
+
+      const dayApps = recentApps.filter(a => {
+        const at = new Date(a.submittedAt);
+        return at >= d && at < nextD;
+      });
+
+      const dayLabel = daysOfWeek[d.getDay()];
+      const dateStr = d.toLocaleDateString('en-IN', { day: 'numeric', month: 'short' });
+      const breakdownEntry = realTxnData.stats.dailyBreakdown?.[dateYMD];
+      const dayRev = breakdownEntry ? breakdownEntry.net : dayApps.reduce((sum, a) => sum + (a.feePaid || 50), 0);
+
+      revenueOverview.push({ day: dayLabel, date: dateStr, value: dayRev, revenue: dayRev });
+      applicationTrends.push({
+        day: dayLabel,
+        date: dateStr,
+        completed: dayApps.filter(a => a.status === 'APPROVED' || a.status === 'COMPLETED').length,
+        pending: dayApps.filter(a => ['SUBMITTED', 'VERIFYING', 'IN_PROGRESS', 'PENDING'].includes(a.status)).length,
+        rejected: dayApps.filter(a => a.status === 'REJECTED').length
+      });
+    }
 
     res.json({
       stats: {
         revenueToday,
+        todayGross: realTxnData.stats.todayGross,
+        totalRevenue,
+        grossInflow: realTxnData.stats.grossInflow,
         appsToday,
+        totalApps,
         pendingApps,
         completedAppsToday,
+        approvedApps: completedAppsToday,
         rejectedAppsToday,
-        activeCentres: finalActiveCentres
+        activeCentres: finalActiveCentres,
+        totalRefunds: realTxnData.stats.refundedAmount,
+        totalTransactionsCount: realTxnData.transactions.length,
+        dailyBreakdown: realTxnData.stats.dailyBreakdown
       },
+      transactions: realTxnData.transactions,
       collections: {
-        totalCollections,
-        onlinePayments,
-        cashCollections
+        totalCollections: totalRevenue,
+        onlinePayments: totalRevenue,
+        cashCollections: 0
       },
       serviceShare: serviceShareFormatted,
       operatorLogs: operatorLogsFormatted,

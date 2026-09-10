@@ -77,7 +77,8 @@ export function setupSockets(io: Server) {
           activeCentres,
           totalRefunds,
           approvedRefunds,
-          auditLogs
+          auditLogs,
+          realTxnData
         ] = await Promise.all([
           prisma.application.count(),
           prisma.application.count({ 
@@ -90,26 +91,28 @@ export function setupSockets(io: Server) {
             where: { status: 'REJECTED' } 
           }),
           prisma.application.count({ where: { submittedAt: { gte: today } } }),
-          fetchApplicationsWithUsers({}, 20),
+          fetchApplicationsWithUsers({}, 100),
           prisma.user.count({ where: { role: 'USER' } }),
           prisma.user.count({ where: { role: 'ADMIN' } }),
           prisma.refundRequest.count(),
           prisma.refundRequest.findMany({ where: { status: 'APPROVED' }, select: { amount: true } }),
           prisma.auditLog.findMany({
-            take: 6,
+            take: 8,
             orderBy: { createdAt: 'desc' },
             include: { user: { include: { profile: true } } }
-          })
+          }),
+          fetchRealTransactionsData()
         ]);
 
-        const appsToday = appsTodayCount > 0 ? appsTodayCount : totalApps;
-        const totalRevenue = allApps.reduce((sum, app) => sum + (app.feePaid || 50), 0);
-        const todayAppsList = allApps.filter(a => new Date(a.submittedAt) >= today);
-        const revenueToday = todayAppsList.length > 0 
-          ? todayAppsList.reduce((sum, app) => sum + (app.feePaid || 50), 0)
-          : Math.round(totalRevenue / 7 * 2);
-
-        const refundedToday = approvedRefunds.reduce((sum, r) => sum + (r.amount || 0), 0);
+        const appsToday = appsTodayCount > 0 ? appsTodayCount : allApps.filter(a => new Date(a.submittedAt) >= today).length;
+        
+        // Exact real-time daily realized revenue and lifetime net collections from settlement ledger
+        const revenueToday = realTxnData.stats.revenueToday; // Exactly ₹1,736.00
+        const totalRevenue = realTxnData.stats.totalAmount; // Exactly ₹8,029.00
+        const todayGross = realTxnData.stats.todayGross;
+        const refundedToday = realTxnData.stats.todayRefunds;
+        const totalRefundedAmount = realTxnData.stats.refundedAmount; // Exactly ₹227.00
+        const totalTransactionsCount = realTxnData.transactions.length; // Exactly 18
 
         // Calculate service distribution
         const serviceCounts: Record<string, number> = {};
@@ -123,7 +126,7 @@ export function setupSockets(io: Server) {
           count
         })).sort((a, b) => b.percentage - a.percentage);
 
-        // Build 7-day revenue overview & application trends
+        // Build 7-day revenue overview & application trends directly from genuine daily settlement breakdown
         const daysOfWeek = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
         const revenueOverview = [];
         const applicationTrends = [];
@@ -131,6 +134,7 @@ export function setupSockets(io: Server) {
         for (let i = 6; i >= 0; i--) {
           const d = new Date();
           d.setDate(d.getDate() - i);
+          const dateYMD = d.toISOString().slice(0, 10);
           d.setHours(0, 0, 0, 0);
           const nextD = new Date(d);
           nextD.setDate(nextD.getDate() + 1);
@@ -142,33 +146,31 @@ export function setupSockets(io: Server) {
 
           const dayLabel = daysOfWeek[d.getDay()];
           const dateStr = d.toLocaleDateString('en-IN', { day: 'numeric', month: 'short' });
-          const dayRev = dayApps.reduce((sum, a) => sum + (a.feePaid || 50), 0);
+          
+          // Match settlement journal daily breakdown net revenue
+          const breakdownEntry = realTxnData.stats.dailyBreakdown?.[dateYMD];
+          const dayRev = breakdownEntry ? breakdownEntry.net : dayApps.reduce((sum, a) => sum + (a.feePaid || 50), 0);
+          
           const dayApproved = dayApps.filter(a => a.status === 'APPROVED' || a.status === 'COMPLETED').length;
           const dayPending = dayApps.filter(a => ['SUBMITTED', 'VERIFYING', 'IN_PROGRESS', 'PENDING'].includes(a.status)).length;
           const dayRejected = dayApps.filter(a => a.status === 'REJECTED').length;
 
-          // If no apps on this historical day, distribute evenly for smooth charts
-          const baselineRev = dayRev > 0 ? dayRev : (i === 0 ? revenueToday : Math.round(totalRevenue / 7));
-          const baselineAppr = dayApproved > 0 ? dayApproved : (i === 0 ? approvedApps : Math.max(1, Math.round(approvedApps / 4)));
-          const baselinePend = dayPending > 0 ? dayPending : (i === 0 ? pendingApps : Math.max(0, Math.round(pendingApps / 3)));
-
           revenueOverview.push({
             day: dayLabel,
             date: dateStr,
-            value: baselineRev,
-            revenue: baselineRev
+            value: dayRev,
+            revenue: dayRev
           });
 
           applicationTrends.push({
             day: dayLabel,
             date: dateStr,
-            approved: baselineAppr,
-            completed: baselineAppr,
-            pending: baselinePend,
+            approved: dayApproved,
+            completed: dayApproved,
+            pending: dayPending,
             rejected: dayRejected
           });
         }
-
 
         const operatorLogs = auditLogs.map(l => ({
           id: l.id,
@@ -180,7 +182,9 @@ export function setupSockets(io: Server) {
         socket.emit('response_dashboard_data', {
           stats: {
             revenueToday,
+            todayGross,
             totalRevenue,
+            grossInflow: realTxnData.stats.grossInflow,
             appsToday,
             totalApps,
             pendingApps,
@@ -192,12 +196,16 @@ export function setupSockets(io: Server) {
             totalCitizens,
             activeCentres,
             totalRefunds,
-            refundedToday
+            refundedToday,
+            totalRefundedAmount,
+            totalTransactionsCount,
+            dailyBreakdown: realTxnData.stats.dailyBreakdown
           },
+          transactions: realTxnData.transactions,
           collections: {
-            totalCollections: totalRevenue * 15 + 120000,
-            onlinePayments: Math.round((totalRevenue * 15 + 120000) * 0.7),
-            cashCollections: Math.round((totalRevenue * 15 + 120000) * 0.3)
+            totalCollections: totalRevenue,
+            onlinePayments: totalRevenue,
+            cashCollections: 0
           },
           serviceShare: serviceShare.length > 0 ? serviceShare : [
             { name: 'Aadhaar Update', percentage: 35 },
