@@ -28,6 +28,7 @@ export async function fetchApplicationsWithUsers(where: any = {}, take: number =
       razorpayPaymentId: true,
       razorpaySignature: true,
       formData: true,
+      documents: true,
       submittedAt: true,
       updatedAt: true,
       refundStatus: true,
@@ -44,7 +45,7 @@ export async function fetchApplicationsWithUsers(where: any = {}, take: number =
         id: true,
         email: true,
         phone: true,
-        profile: { select: { fullName: true, phone: true, district: true, state: true } }
+        profile: { select: { fullName: true, phone: true, district: true, state: true, dob: true, gender: true, address: true, pinCode: true } },
       }
     });
     const userMap = new Map(users.map(u => [u.id, u]));
@@ -538,19 +539,34 @@ export function setupSockets(io: Server) {
         if (isMongoId) {
           app = await prisma.application.findUnique({
             where: { id: idOrRef },
-            include: { user: { select: { id: true, email: true, phone: true, profile: true } }, service: true, refundRequests: true }
+            include: {
+              user: { include: { profile: true, documents: true, aadhaarDocs: true } },
+              service: true,
+              refundRequests: true,
+              documentUploads: true,
+            }
           });
         }
         if (!app) {
           app = await prisma.application.findFirst({
             where: { refNumber: idOrRef },
-            include: { user: { select: { id: true, email: true, phone: true, profile: true } }, service: true, refundRequests: true }
+            include: {
+              user: { include: { profile: true, documents: true, aadhaarDocs: true } },
+              service: true,
+              refundRequests: true,
+              documentUploads: true,
+            }
           });
         }
         if (!app) {
           app = await prisma.application.findFirst({
             orderBy: { submittedAt: 'desc' },
-            include: { user: { select: { id: true, email: true, phone: true, profile: true } }, service: true, refundRequests: true }
+            include: {
+              user: { include: { profile: true, documents: true, aadhaarDocs: true } },
+              service: true,
+              refundRequests: true,
+              documentUploads: true,
+            }
           });
         }
 
@@ -573,6 +589,8 @@ export function setupSockets(io: Server) {
             feePaid: app.feePaid || 50,
             rejectionReason: app.rejectionReason,
             formData: app.formData,
+            documents: app.documents || [],
+            documentUploads: app.documentUploads || [],
             applicant: {
               id: `CIT-${app.userId ? app.userId.substring(0, 5).toUpperCase() : 'USER'}`,
               name: app.user?.profile?.fullName || app.formData?.fullName || 'Citizen User',

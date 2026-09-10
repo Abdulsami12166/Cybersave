@@ -49,6 +49,7 @@ export async function fetchApplicationsWithUsers(where: any = {}, take: number =
       razorpayPaymentId: true,
       razorpaySignature: true,
       formData: true,
+      documents: true,
       submittedAt: true,
       updatedAt: true,
       refundStatus: true,
@@ -65,7 +66,7 @@ export async function fetchApplicationsWithUsers(where: any = {}, take: number =
         id: true,
         email: true,
         phone: true,
-        profile: { select: { fullName: true, phone: true, district: true, state: true } }
+        profile: { select: { fullName: true, phone: true, district: true, state: true, dob: true, gender: true, address: true, pinCode: true } },
       }
     });
     const userMap = new Map(users.map(u => [u.id, u]));
@@ -166,7 +167,7 @@ app.get('/api/services', async (req, res) => {
 app.use('/api/admin', authenticateAdmin);
 
 // Ponytail: Minimum implementation to fetch real data matching the dashboard UI
-app.get('/api/admin/dashboard', async (req, res) => {
+app.get(['/api/admin/dashboard', '/api/v1/dashboard', '/api/v1/dashboard/overview', '/api/dashboard'], async (req, res) => {
   try {
     const today = new Date();
     today.setHours(0, 0, 0, 0);
@@ -358,9 +359,10 @@ app.get(['/api/admin/applications/:id', '/api/v1/applications/:id', '/api/applic
       app = await prisma.application.findUnique({
         where: { id: targetId },
         include: {
-          user: { include: { profile: true } },
+          user: { include: { profile: true, documents: true, aadhaarDocs: true } },
           service: true,
           refundRequests: true,
+          documentUploads: true,
         }
       });
     }
@@ -370,9 +372,10 @@ app.get(['/api/admin/applications/:id', '/api/v1/applications/:id', '/api/applic
           ? { OR: [{ refNumber: targetId }, { id: targetId }] }
           : { refNumber: targetId },
         include: {
-          user: { include: { profile: true } },
+          user: { include: { profile: true, documents: true, aadhaarDocs: true } },
           service: true,
           refundRequests: true,
+          documentUploads: true,
         }
       });
     }
