@@ -2,38 +2,9 @@ import { Server, Socket } from 'socket.io';
 import { PrismaClient } from '@prisma/client';
 import { messaging } from './firebase';
 import bcrypt from 'bcrypt';
+import { findUserByIdOrCit, fetchCitizenFullDetails, fetchCitizensList } from './citizenService';
 
 const prisma = new PrismaClient();
-
-async function findUserByIdOrCit(id: string, includeRelations?: any): Promise<any> {
-  if (!id) return null;
-  const isMongoId = /^[0-9a-fA-F]{24}$/.test(id);
-  if (isMongoId) {
-    return prisma.user.findUnique({
-      where: { id },
-      ...(includeRelations ? { include: includeRelations } : {})
-    });
-  }
-  if (id.startsWith('CIT-')) {
-    const shortId = id.replace('CIT-', '').toUpperCase();
-    const userIds = await prisma.user.findMany({
-      where: { role: 'USER' },
-      select: { id: true }
-    });
-    const match = userIds.find(u => u.id.substring(0, 5).toUpperCase() === shortId);
-    if (match) {
-      return prisma.user.findUnique({
-        where: { id: match.id },
-        ...(includeRelations ? { include: includeRelations } : {})
-      });
-    }
-  }
-  // Try email or phone
-  return prisma.user.findFirst({
-    where: { OR: [{ id }, { email: id }, { phone: id }] },
-    ...(includeRelations ? { include: includeRelations } : {})
-  });
-}
 
 export async function fetchApplicationsWithUsers(where: any = {}, take: number = 50, skip?: number): Promise<any[]> {
   const apps = await prisma.application.findMany({
@@ -290,81 +261,68 @@ export function setupSockets(io: Server) {
 
     socket.on('request_users_data', async (params?: { page?: number; limit?: number }) => {
       try {
-        const page = params?.page || 1;
-        const limit = Math.min(params?.limit || 50, 100);
-        const skip = (page - 1) * limit;
-
-        const [totalCitizens, newThisMonth, users] = await Promise.all([
-          prisma.user.count({ where: { role: 'USER' } }),
-          prisma.user.count({ 
-            where: { role: 'USER', createdAt: { gte: new Date(new Date().getFullYear(), new Date().getMonth(), 1) } } 
-          }),
-          prisma.user.findMany({
-            where: { role: 'USER' }, 
-            include: { profile: true, applications: { select: { id: true } } }, 
-            take: limit,
-            skip,
-            orderBy: { createdAt: 'desc' }
-          })
-        ]);
-
-        const activeCitizens = totalCitizens;
-
-        const formattedUsers = users.map(u => ({
-          id: `CIT-${u.id.substring(0, 5).toUpperCase()}`,
-          dbId: u.id,
-          fullName: u.profile?.fullName || (u.email ? u.email.split('@')[0] : 'Citizen User'),
-          aadhaar: (u.profile as any)?.aadhaarNumber ? `•••• •••• ${(u.profile as any).aadhaarNumber.slice(-4)}` : (u.profile?.dob ? `•••• •••• ${u.id.slice(-4)}` : 'Not Given'),
-          mobile: u.phone || u.profile?.phone || 'N/A',
-          district: u.profile?.district || 'Lucknow',
-          servicesUsed: u.applications?.length || 0,
-          status: u.status === 'BLOCKED' ? 'BLOCKED' : (u.status || 'Verified'),
-          avatarUrl: u.profile?.avatarUrl || null,
-          lastActive: 'Active recently'
-        }));
-
-        socket.emit('response_users_data', {
-          stats: { totalCitizens, activeCitizens, newThisMonth, pendingVerification: 0 },
-          users: formattedUsers
-        });
-      } catch (e) { console.error(e); }
+        const usersData = await fetchCitizensList(params);
+        socket.emit('response_users_data', usersData);
+      } catch (e) {
+        console.error('[Socket] request_users_data error:', e);
+      }
     });
 
     socket.on('request_user_detail', async (data: { id: string }) => {
       try {
         const realId = data?.id;
-        const userInclude: any = {
-          profile: true,
-          applications: { orderBy: { submittedAt: 'desc' } },
-          documents: true,
-          aadhaarDocs: true,
-          auditLogs: { orderBy: { createdAt: 'desc' }, take: 15 },
-        };
-
-        let u = await findUserByIdOrCit(realId, userInclude);
-        if (!u) {
-          u = await prisma.user.findFirst({
-            where: { role: 'USER' },
-            include: userInclude,
-          });
-        }
-
-        if (!u) {
+        const details = await fetchCitizenFullDetails(realId);
+        if (!details) {
           socket.emit('response_user_detail', { error: 'User not found' });
           return;
         }
-
-        const formatted = formatCitizenSocketPayload(u);
-        socket.emit('response_user_detail', formatted);
+        socket.emit('response_user_detail', details);
       } catch (e) {
         console.error('[Socket] request_user_detail error:', e);
+      }
+    });
+
+    socket.on('add_citizen', async (data: { name: string; phone?: string; district?: string }) => {
+      try {
+        const { name, phone, district } = data;
+        const cleanName = (name || '').trim();
+        if (!cleanName) return;
+
+        const newUser = await prisma.user.create({
+          data: {
+            phone: phone || null,
+            role: 'USER',
+            status: 'ACTIVE',
+            profile: {
+              create: {
+                fullName: cleanName,
+                phone: phone || null,
+                district: district || 'Central District',
+              }
+            }
+          }
+        });
+
+        await prisma.auditLog.create({
+          data: {
+            userId: newUser.id,
+            action: 'CITIZEN_ENROLLED',
+            details: `Citizen ${cleanName} enrolled into directory`,
+          }
+        }).catch(() => null);
+
+        socket.emit('add_citizen_success', { id: newUser.id });
+        const usersData = await fetchCitizensList();
+        io.emit('response_users_data', usersData);
+      } catch (err: any) {
+        console.error('[Socket] add_citizen error:', err);
       }
     });
 
     socket.on('update_citizen_profile', async (data: any) => {
       try {
         const { id, fullName, phone, email, address, district, state, pinCode, dob, gender, status } = data;
-        let u = await findUserByIdOrCit(id, { profile: true });
+        let u = await findUserByIdOrCit(id);
 
         if (!u) {
           socket.emit('update_citizen_error', { message: 'Citizen not found' });
@@ -380,19 +338,20 @@ export function setupSockets(io: Server) {
           },
         });
 
-        if (u.profile) {
+        const existingProf = await prisma.profile.findFirst({ where: { userId: u.id } });
+        if (existingProf) {
           await prisma.profile.update({
-            where: { id: u.profile.id },
+            where: { id: existingProf.id },
             data: {
-              fullName: fullName ?? u.profile.fullName,
-              phone: phone ?? u.profile.phone,
-              email: email ?? u.profile.email,
-              address: address ?? u.profile.address,
-              district: district ?? u.profile.district,
-              state: state ?? u.profile.state,
-              pinCode: pinCode ?? u.profile.pinCode,
-              dob: dob ?? u.profile.dob,
-              gender: gender ?? u.profile.gender,
+              fullName: fullName ?? existingProf.fullName,
+              phone: phone ?? existingProf.phone,
+              email: email ?? existingProf.email,
+              address: address ?? existingProf.address,
+              district: district ?? existingProf.district,
+              state: state ?? existingProf.state,
+              pinCode: pinCode ?? existingProf.pinCode,
+              dob: dob ?? existingProf.dob,
+              gender: gender ?? existingProf.gender,
             },
           });
         } else {
@@ -420,21 +379,14 @@ export function setupSockets(io: Server) {
           },
         }).catch(() => null);
 
-        const updated = await prisma.user.findUnique({
-          where: { id: u.id },
-          include: {
-            profile: true,
-            applications: { orderBy: { submittedAt: 'desc' } },
-            documents: true,
-            aadhaarDocs: true,
-            auditLogs: { orderBy: { createdAt: 'desc' }, take: 15 },
-          },
-        });
-
-        const formatted = formatCitizenSocketPayload(updated);
+        const formatted = await fetchCitizenFullDetails(u.id);
         socket.emit('update_citizen_success', formatted);
         io.emit('response_user_detail', formatted);
         io.emit('user_detail_updated', formatted);
+        
+        // Also refresh list
+        const usersData = await fetchCitizensList();
+        io.emit('response_users_data', usersData);
       } catch (e: any) {
         console.error('[Socket] update_citizen_profile error:', e);
         socket.emit('update_citizen_error', { message: e.message });
@@ -465,21 +417,14 @@ export function setupSockets(io: Server) {
           }
         }).catch(() => null);
 
-        const updated = await prisma.user.findUnique({
-          where: { id: u.id },
-          include: {
-            profile: true,
-            applications: { orderBy: { submittedAt: 'desc' } },
-            documents: true,
-            aadhaarDocs: true,
-            auditLogs: { orderBy: { createdAt: 'desc' }, take: 15 },
-          },
-        });
-
-        const formatted = formatCitizenSocketPayload(updated);
+        const formatted = await fetchCitizenFullDetails(u.id);
         socket.emit('block_citizen_success', formatted);
         io.emit('response_user_detail', formatted);
         io.emit('user_detail_updated', formatted);
+
+        // Also refresh list
+        const usersData = await fetchCitizensList();
+        io.emit('response_users_data', usersData);
       } catch (e) {
         console.error('[block_citizen] error:', e);
       }
