@@ -319,7 +319,7 @@ app.get(['/api/admin/transactions', '/api/v1/transactions', '/api/transactions']
 // ─── Application Workflow Endpoints (Admin & Mobile) ───────────────────────────
 app.get(['/api/admin/applications', '/api/v1/applications', '/api/applications'], async (req: any, res: any) => {
   try {
-    const { userId, status, page, limit } = req.query;
+    const { userId, status, page, limit, refNumbers } = req.query;
     const where: any = {};
     const isMongoId = (idStr?: any) => typeof idStr === 'string' && /^[0-9a-fA-F]{24}$/.test(idStr.trim());
 
@@ -354,6 +354,20 @@ app.get(['/api/admin/applications', '/api/v1/applications', '/api/applications']
         where.userId = matchedUserIds.length === 1 ? matchedUserIds[0] : { in: matchedUserIds };
       } else {
         where.userId = cleanUserId;
+      }
+    }
+
+    // Support querying with known reference numbers
+    if (refNumbers) {
+      const refList = String(refNumbers).split(',').map((r: string) => r.trim()).filter(Boolean);
+      if (refList.length > 0) {
+        const refCondition = refList.length === 1 ? { refNumber: refList[0] } : { refNumber: { in: refList } };
+        if (where.userId) {
+          where.OR = [{ userId: where.userId }, refCondition];
+          delete where.userId;
+        } else {
+          where.refNumber = refList.length === 1 ? refList[0] : { in: refList };
+        }
       }
     }
 
@@ -970,34 +984,7 @@ app.post(['/api/v1/services', '/api/services'], async (req: any, res: any) => {
     res.status(500).json({ error: (e as any).message });
   }
 });
-app.get(['/api/v1/applications', '/api/applications'], async (req: any, res: any) => {
-  try {
-    const { userId, status, limit, page } = req.query;
-    const where: any = {};
-    if (userId) {
-      const isMongoId = /^[0-9a-fA-F]{24}$/.test(userId as string);
-      if (isMongoId) {
-        where.userId = userId;
-      } else {
-        const matched = await findUserByIdOrCit(userId as string);
-        if (matched) {
-          where.userId = matched.id;
-        } else {
-          where.userId = userId;
-        }
-      }
-    }
-    if (status && status !== 'All') where.status = status;
-
-    const take = limit ? Math.min(parseInt(limit as string) || 100, 200) : 100;
-    const skipVal = page ? ((parseInt(page as string) || 1) - 1) * take : undefined;
-
-    const apps = await fetchApplicationsWithUsers(where, take, skipVal);
-    res.json(apps);
-  } catch (e: any) {
-    res.status(500).json({ error: e.message });
-  }
-});
+// Duplicate /api/v1/applications route removed — authoritative handler with refNumbers support is defined above at line ~320
 
 app.get(['/api/v1/applications/:id', '/api/applications/:id'], async (req: any, res: any) => {
   try {
