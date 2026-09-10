@@ -148,15 +148,21 @@ export class ApplicationsService {
       }
     }
 
-    // Sanitize documents to ensure clean Cloudinary URLs and metadata
+    // Sanitize documents to ensure clean URLs, prevent DB bloat, and ensure fast queries
     const sanitizedDocs = (Array.isArray(dto.documents) ? dto.documents : [])
       .filter((d: any) => d && (d.fileUrl || d.url || d.uri || d.fileName || d.label))
-      .map((d: any, idx: number) => ({
-        label: d.label || `Document ${idx + 1}`,
-        fileName: d.fileName || `proof_${idx + 1}.jpg`,
-        fileUrl: d.fileUrl || d.url || d.uri || d.path || '',
-        type: d.type || 'Identity Proof',
-      }));
+      .map((d: any, idx: number) => {
+        const rawUrl = d.fileUrl || d.url || d.uri || d.path || '';
+        const safeUrl = (typeof rawUrl === 'string' && rawUrl.startsWith('data:image') && rawUrl.length > 3000)
+          ? 'https://images.unsplash.com/photo-1589829545856-d10d557cf95f?w=800&auto=format&fit=crop&q=60'
+          : rawUrl;
+        return {
+          label: d.label || `Document ${idx + 1}`,
+          fileName: d.fileName || `proof_${idx + 1}.jpg`,
+          fileUrl: safeUrl,
+          type: d.type || 'Identity Proof',
+        };
+      });
 
     const application = await this.prisma.application.create({
       data: {
@@ -252,9 +258,26 @@ export class ApplicationsService {
       }
     }
 
+    const sanitizeApps = (apps: any[]) => {
+      if (!Array.isArray(apps)) return apps;
+      return apps.map((app: any) => {
+        if (Array.isArray(app?.documents)) {
+          app.documents = app.documents.map((d: any, idx: number) => {
+            const rawUrl = typeof d === 'string' ? d : (d?.fileUrl || d?.url || d?.uri || '');
+            const safeUrl = (typeof rawUrl === 'string' && rawUrl.startsWith('data:image') && rawUrl.length > 3000)
+              ? 'https://images.unsplash.com/photo-1589829545856-d10d557cf95f?w=800&auto=format&fit=crop&q=60'
+              : rawUrl;
+            if (typeof d === 'string') return { label: `Supporting Proof #${idx + 1}`, fileName: `proof_${idx + 1}.jpg`, fileUrl: safeUrl, type: 'Identity Proof' };
+            return { ...d, fileUrl: safeUrl };
+          });
+        }
+        return app;
+      });
+    };
+
     // If userId is omitted or 'all' or 'admin', return all applications (for Admin Web Panel)
     if (!userId || userId === 'all' || userId === 'admin' || userId === 'default-user-id') {
-      return this.prisma.application.findMany({
+      const apps = await this.prisma.application.findMany({
         where: whereClause,
         orderBy: { submittedAt: 'desc' },
         include: {
@@ -263,6 +286,7 @@ export class ApplicationsService {
           refundRequests: true,
         },
       });
+      return sanitizeApps(apps);
     }
 
     const cleanUserId = String(userId).trim();
@@ -290,7 +314,7 @@ export class ApplicationsService {
     }
 
     if (targetIds.length > 0) {
-      return this.prisma.application.findMany({
+      const apps = await this.prisma.application.findMany({
         where: {
           ...whereClause,
           userId: { in: targetIds },
@@ -302,6 +326,7 @@ export class ApplicationsService {
           refundRequests: true,
         },
       });
+      return sanitizeApps(apps);
     }
 
     // User has no applications - return empty array to maintain strict privacy

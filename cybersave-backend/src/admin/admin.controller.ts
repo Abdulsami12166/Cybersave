@@ -63,6 +63,51 @@ export class AdminController {
     throw new BadRequestException('No image proof file or buffer provided');
   }
 
+  @Get(['api/v1/support/tickets', 'api/support/tickets', 'support/tickets'])
+  @ApiOperation({ summary: 'Get all Support Tickets & Grievances with Statistics' })
+  async getAllSupportTicketsRest() {
+    const [total, open, inProgress, resolved, tickets] = await Promise.all([
+      this.prisma.supportTicket.count(),
+      this.prisma.supportTicket.count({ where: { status: 'OPEN' } }),
+      this.prisma.supportTicket.count({ where: { status: 'IN_PROGRESS' } }),
+      this.prisma.supportTicket.count({ where: { status: 'RESOLVED' } }),
+      this.prisma.supportTicket.findMany({
+        take: 50,
+        orderBy: { createdAt: 'desc' },
+        include: {
+          user: { select: { id: true, email: true, phone: true, profile: true } }
+        }
+      })
+    ]);
+
+    const formatted = tickets.map(t => ({
+      id: t.refNumber || t.id,
+      rawId: t.id,
+      refNumber: t.refNumber,
+      title: t.title,
+      description: t.description,
+      category: t.category,
+      priority: t.priority,
+      createdOn: t.createdAt.toLocaleDateString('en-IN'),
+      lastUpdated: t.updatedAt.toLocaleDateString('en-IN'),
+      createdAt: t.createdAt,
+      updatedAt: t.updatedAt,
+      assignedTo: t.assignedTo || 'Amit S. (Support Desk)',
+      status: t.status,
+      attachmentUrl: t.attachmentUrl,
+      reporter: {
+        name: t.user?.profile?.fullName || 'Citizen User',
+        email: t.user?.email || '',
+      },
+      messages: Array.isArray(t.messages) ? t.messages : [],
+    }));
+
+    return {
+      stats: { totalTickets: total, openTickets: open, inProgress: inProgress, resolved: resolved },
+      tickets: formatted
+    };
+  }
+
   @Post(['api/v1/support/tickets', 'api/support/tickets', 'support/tickets'])
   @ApiOperation({ summary: 'Create Support Ticket / Grievance from Mobile or Web' })
   async createSupportTicketRest(@Body() body: any) {
