@@ -901,6 +901,39 @@ export async function performApplicationStatusUpdate(params: {
     }
   }).catch(() => null);
 
+  // Dispatch persistent notification to citizen
+  let notifTitle = `Application Status: ${finalStatus}`;
+  let notifBody = `Your application #${updated.refNumber} for "${updated.serviceTitle}" status is now ${finalStatus}.`;
+  let notifType: any = 'APPLICATION_UPDATE';
+
+  if (finalStatus === 'APPROVED') {
+    notifTitle = 'Application Approved 🎉';
+    notifBody = `Your application #${updated.refNumber} for "${updated.serviceTitle}" has been APPROVED by the administrative officer! Your digital certificate is ready for download.`;
+    notifType = 'SUCCESS';
+  } else if (finalStatus === 'REJECTED') {
+    notifTitle = 'Application Update: Rejected ⚠️';
+    notifBody = `Your application #${updated.refNumber} for "${updated.serviceTitle}" was rejected. Reason: ${finalRejectionReason}`;
+    notifType = 'WARNING';
+  }
+
+  let dbNotif: any = null;
+  if (app.userId && /^[0-9a-fA-F]{24}$/.test(app.userId)) {
+    try {
+      dbNotif = await prisma.notification.create({
+        data: {
+          userId: app.userId,
+          title: notifTitle,
+          body: notifBody,
+          type: notifType,
+          status: 'SENT',
+          sentAt: new Date(),
+        }
+      });
+    } catch (e) {
+      console.warn('[performApplicationStatusUpdate] DB notification warning:', e);
+    }
+  }
+
   const payload = {
     id: updated.id,
     dbId: updated.id,
@@ -922,13 +955,34 @@ export async function performApplicationStatusUpdate(params: {
     }
   };
 
-  if (io) {
-    io.emit('application_status_changed', payload);
-    io.emit('applications_updated', payload);
-    io.emit('update_application_status_success', payload);
-    io.emit('transactions_updated');
+  const notificationPayload = {
+    id: dbNotif?.id || `notif_${Date.now()}`,
+    userId: app.userId || 'all',
+    title: notifTitle,
+    body: notifBody,
+    type: notifType,
+    metadata: {
+      applicationId: updated.id,
+      refNumber: updated.refNumber,
+      serviceTitle: updated.serviceTitle,
+      status: finalStatus,
+      rejectionReason: finalRejectionReason,
+    },
+    status: 'SENT',
+    createdAt: new Date().toISOString(),
+  };
+
+  const broadcastIo = io || (global as any).__cybersave_io;
+  if (broadcastIo) {
+    broadcastIo.emit('application_status_changed', payload);
+    broadcastIo.emit('applications_updated', payload);
+    broadcastIo.emit('update_application_status_success', payload);
+    broadcastIo.emit('transactions_updated');
+    broadcastIo.emit('user_push_notification', notificationPayload);
+    broadcastIo.emit('new_notification', notificationPayload);
+    broadcastIo.emit('notifications_updated', notificationPayload);
   }
 
-  return { success: true, application: updated, payload };
+  return { success: true, application: updated, payload, notification: notificationPayload };
 }
 

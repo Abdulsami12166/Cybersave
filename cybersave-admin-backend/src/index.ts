@@ -2,7 +2,7 @@ import express from 'express';
 import cors from 'cors';
 import http from 'http';
 import { Server } from 'socket.io';
-import { setupSockets } from './socket';
+import { setupSockets, formatSupportTicketThread, dispatchNotificationToCitizen } from './socket';
 import { PrismaClient } from '@prisma/client';
 import dotenv from 'dotenv';
 import bcrypt from 'bcrypt';
@@ -520,6 +520,21 @@ app.post(['/api/admin/applications', '/api/v1/applications', '/api/applications'
         details: `Citizen application #${refNumber} submitted for "${finalServiceTitle}" with ${cleanDocs.length} supporting document(s).`,
       }
     }).catch(() => null);
+
+    // Dispatch instant notification to citizen
+    await dispatchNotificationToCitizen({
+      userId: matchedUser.id,
+      title: 'Application Submitted 📝',
+      body: `Your application #${refNumber} for "${finalServiceTitle}" has been submitted successfully. Estimated completion: 3-5 Business Days.`,
+      type: 'APPLICATION_UPDATE',
+      metadata: {
+        applicationId: newApp.id,
+        refNumber: newApp.refNumber,
+        serviceTitle: finalServiceTitle,
+        feePaid: newApp.feePaid,
+      },
+      io
+    });
 
     // Broadcast real-time WebSocket events cluster-wide
     const socketPayload = {
@@ -2339,6 +2354,270 @@ app.get(['/api/admin/profile', '/api/v1/profile', '/api/admin/me'], async (req: 
       avatarUrl: 'https://ui-avatars.com/api/?name=Suresh+Sharma&background=1E40AF&color=fff',
       permissions: ['DASHBOARD', 'APPLICATIONS', 'TRANSACTIONS', 'SERVICES', 'USERS', 'OPERATORS', 'SUPPORT', 'AUDIT', 'SETTINGS']
     });
+  }
+});
+
+// --- Support Tickets REST Endpoints ---
+app.get(['/api/admin/support/tickets', '/api/v1/support/tickets', '/api/support/tickets'], async (req: any, res: any) => {
+  try {
+    const [total, open, inProgress, resolved, tickets] = await Promise.all([
+      prisma.supportTicket.count(),
+      prisma.supportTicket.count({ where: { status: 'OPEN' } }),
+      prisma.supportTicket.count({ where: { status: 'IN_PROGRESS' } }),
+      prisma.supportTicket.count({ where: { status: 'RESOLVED' } }),
+      prisma.supportTicket.findMany({
+        take: 100,
+        orderBy: { createdAt: 'desc' },
+        include: { user: { include: { profile: true } } }
+      })
+    ]);
+
+    const formatted = tickets.map(t => {
+      const reporterName = t.user?.profile?.fullName || (t.user?.email ? t.user.email.split('@')[0] : 'Citizen User');
+      const reporterEmail = t.user?.email || '';
+      const reporterId = t.user?.id || t.userId || 'cit-user';
+      return {
+        id: t.refNumber || `TKT-${t.id.substring(0, 8).toUpperCase()}`,
+        rawId: t.id,
+        refNumber: t.refNumber,
+        title: t.title || 'Citizen Grievance',
+        description: t.description || 'Support inquiry registered by citizen',
+        category: t.category || 'Technical Support',
+        priority: t.priority || 'Medium',
+        status: t.status || 'OPEN',
+        createdOn: t.createdAt ? new Date(t.createdAt).toLocaleDateString('en-IN') : 'Today',
+        lastUpdated: t.updatedAt ? new Date(t.updatedAt).toLocaleDateString('en-IN') : 'Today',
+        createdAt: t.createdAt,
+        updatedAt: t.updatedAt,
+        attachmentUrl: t.attachmentUrl || null,
+        assignedTo: { id: 'agent-01', name: typeof t.assignedTo === 'string' ? t.assignedTo : 'Amit S. (Support Desk)' },
+        reporter: { id: reporterId, name: reporterName, email: reporterEmail },
+        user: t.user,
+        messages: Array.isArray(t.messages) ? t.messages : [],
+      };
+    });
+
+    res.json({
+      stats: { totalTickets: total, openTickets: open, inProgress, resolved },
+      tickets: formatted
+    });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.get(['/api/admin/support/tickets/:id', '/api/v1/support/tickets/:id', '/api/support/tickets/:id'], async (req: any, res: any) => {
+  try {
+    const thread = await formatSupportTicketThread(req.params.id);
+    if (!thread) return res.status(404).json({ error: 'Ticket not found' });
+    res.json(thread);
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.post(['/api/admin/support/tickets/:id/resolve', '/api/v1/support/tickets/:id/resolve', '/api/support/tickets/:id/resolve'], async (req: any, res: any) => {
+  try {
+    const targetId = String(req.params.id || '').trim();
+    const isMongoId = /^[0-9a-fA-F]{24}$/.test(targetId);
+    let ticket: any = null;
+    if (isMongoId) {
+      ticket = await prisma.supportTicket.findUnique({ where: { id: targetId }, include: { user: { include: { profile: true } } } });
+    }
+    if (!ticket) {
+      ticket = await prisma.supportTicket.findFirst({ where: { refNumber: targetId }, include: { user: { include: { profile: true } } } });
+    }
+    if (!ticket) {
+      ticket = await prisma.supportTicket.findFirst({
+        where: {
+          OR: [
+            { refNumber: { contains: targetId, mode: 'insensitive' } },
+            { id: { contains: targetId, mode: 'insensitive' } }
+          ]
+        },
+        include: { user: { include: { profile: true } } }
+      });
+    }
+    if (!ticket) return res.status(404).json({ error: 'Ticket not found' });
+
+    await prisma.supportTicket.update({
+      where: { id: ticket.id },
+      data: {
+        status: 'RESOLVED',
+        updatedAt: new Date()
+      }
+    });
+
+    const resolutionSummary = req.body?.resolutionSummary || 'Grievance verification completed. Issue marked as resolved.';
+    await prisma.auditLog.create({
+      data: {
+        userId: (req.body?.adminId && /^[0-9a-fA-F]{24}$/.test(req.body.adminId)) ? req.body.adminId : (ticket.userId || null),
+        action: 'SUPPORT_TICKET_RESOLVED',
+        details: `Ticket #${ticket.refNumber} marked as resolved: ${resolutionSummary}`,
+      }
+    }).catch(() => null);
+
+    // Dispatch notification to citizen
+    await dispatchNotificationToCitizen({
+      userId: ticket.userId,
+      title: 'Support Ticket Resolved ✅',
+      body: `Admin has resolved your grievance ticket #${ticket.refNumber || ticket.id}: "${resolutionSummary.substring(0, 80)}"`,
+      type: 'INFO',
+      metadata: {
+        ticketId: ticket.id,
+        refNumber: ticket.refNumber,
+        status: 'RESOLVED',
+        category: req.body?.resolutionCategory || ticket.category,
+        rootCause: req.body?.rootCause,
+        summary: resolutionSummary
+      },
+      io
+    });
+
+    const formatted = await formatSupportTicketThread(ticket.id);
+    if (io) {
+      io.emit('resolve_ticket_success', formatted);
+      io.emit('support_tickets_updated');
+      io.emit('support_ticket_resolved', formatted);
+      io.emit('response_ticket_thread', formatted);
+      io.emit('response_ticket_detail', formatted);
+    }
+
+    res.json({ success: true, ticket: formatted });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.post(['/api/admin/support/tickets/:id/reply', '/api/v1/support/tickets/:id/reply', '/api/support/tickets/:id/reply'], async (req: any, res: any) => {
+  try {
+    const targetId = String(req.params.id || '').trim();
+    const text = (req.body?.text || '').trim();
+    if (!text) return res.status(400).json({ error: 'Reply text is required' });
+
+    const isMongoId = /^[0-9a-fA-F]{24}$/.test(targetId);
+    let ticket: any = null;
+    if (isMongoId) {
+      ticket = await prisma.supportTicket.findUnique({ where: { id: targetId } });
+    }
+    if (!ticket) {
+      ticket = await prisma.supportTicket.findFirst({ where: { refNumber: targetId } });
+    }
+    if (!ticket) return res.status(404).json({ error: 'Ticket not found' });
+
+    const existingMsgs = Array.isArray(ticket.messages) ? ticket.messages : [];
+    const newMsg = {
+      senderId: req.body?.adminId || 'admin-01',
+      senderName: req.body?.adminName || 'Support Desk Agent',
+      role: 'AGENT',
+      text,
+      time: new Date().toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' }),
+      timestamp: new Date().toISOString()
+    };
+    const updatedMsgs = [...existingMsgs, newMsg];
+
+    await prisma.supportTicket.update({
+      where: { id: ticket.id },
+      data: {
+        messages: updatedMsgs,
+        status: 'IN_PROGRESS',
+        updatedAt: new Date()
+      }
+    });
+
+    await prisma.auditLog.create({
+      data: {
+        userId: (req.body?.adminId && /^[0-9a-fA-F]{24}$/.test(req.body.adminId)) ? req.body.adminId : null,
+        action: 'SUPPORT_TICKET_REPLIED',
+        details: `Admin replied to ticket ${ticket.refNumber}: "${text.substring(0, 60)}..."`,
+      }
+    }).catch(() => null);
+
+    // Dispatch notification to citizen
+    await dispatchNotificationToCitizen({
+      userId: ticket.userId,
+      title: 'New Reply on Support Ticket 💬',
+      body: `Official Response on Ticket #${ticket.refNumber}: "${text.substring(0, 80)}..."`,
+      type: 'INFO',
+      metadata: { ticketId: ticket.id, refNumber: ticket.refNumber },
+      io
+    });
+
+    const formatted = await formatSupportTicketThread(ticket.id);
+    if (io) {
+      io.emit('support_tickets_updated');
+      io.emit('response_ticket_thread', formatted);
+      io.emit('response_ticket_detail', formatted);
+    }
+
+    res.json({ success: true, ticket: formatted });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// --- Notifications REST Endpoints ---
+app.get(['/api/admin/notifications', '/api/v1/notifications', '/api/notifications'], async (req: any, res: any) => {
+  try {
+    const userId = req.query?.userId;
+    const where: any = {};
+    if (userId && userId !== 'all') {
+      const isMongoId = /^[0-9a-fA-F]{24}$/.test(userId);
+      if (isMongoId) {
+        where.userId = userId;
+      }
+    }
+
+    const [total, unread, rawNotifications] = await Promise.all([
+      prisma.notification.count({ where }),
+      prisma.notification.count({ where: { ...where, status: 'PENDING' } }),
+      prisma.notification.findMany({
+        where,
+        take: 50,
+        orderBy: { createdAt: 'desc' },
+      })
+    ]);
+
+    // Safely lookup users for notifications without throwing on orphaned relations
+    const userIds = Array.from(new Set(rawNotifications.map(n => n.userId).filter(Boolean)));
+    const users = userIds.length > 0 ? await prisma.user.findMany({
+      where: { id: { in: userIds } },
+      include: { profile: true }
+    }) : [];
+    const userMap = new Map(users.map(u => [u.id, u]));
+
+    const formatted = rawNotifications.map(n => ({
+      id: n.id,
+      title: n.title,
+      body: n.body,
+      type: n.type,
+      status: n.status,
+      createdOn: n.createdAt ? new Date(n.createdAt).toLocaleDateString('en-IN') : 'Today',
+      time: n.createdAt ? new Date(n.createdAt).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' }) : 'Now',
+      createdAt: n.createdAt,
+      user: userMap.get(n.userId) || null,
+    }));
+
+    res.json({ total, unread, notifications: formatted });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.post(['/api/admin/notifications/read-all', '/api/v1/notifications/read-all', '/api/notifications/read-all'], async (req: any, res: any) => {
+  try {
+    const userId = req.body?.userId || req.query?.userId;
+    const where: any = { status: { not: 'READ' } };
+    if (userId && /^[0-9a-fA-F]{24}$/.test(userId)) {
+      where.userId = userId;
+    }
+    await prisma.notification.updateMany({
+      where,
+      data: { status: 'READ' }
+    });
+    res.json({ success: true, message: 'All notifications marked as read' });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
   }
 });
 

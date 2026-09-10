@@ -57,7 +57,177 @@ export async function fetchApplicationsWithUsers(where: any = {}, take: number =
   return apps as any[];
 }
 
+export async function formatSupportTicketThread(idOrRef: string) {
+  if (!idOrRef) return null;
+  const cleanId = String(idOrRef).trim();
+  const isMongoId = /^[0-9a-fA-F]{24}$/.test(cleanId);
+  let ticket: any = null;
+  if (isMongoId) {
+    ticket = await prisma.supportTicket.findUnique({
+      where: { id: cleanId },
+      include: { user: { include: { profile: true } } }
+    });
+  }
+  if (!ticket) {
+    ticket = await prisma.supportTicket.findFirst({
+      where: { refNumber: cleanId },
+      include: { user: { include: { profile: true } } }
+    });
+  }
+  if (!ticket) {
+    ticket = await prisma.supportTicket.findFirst({
+      where: {
+        OR: [
+          { refNumber: { contains: cleanId, mode: 'insensitive' } },
+          { id: { contains: cleanId, mode: 'insensitive' } }
+        ]
+      },
+      include: { user: { include: { profile: true } } }
+    });
+  }
+  if (!ticket) {
+    ticket = await prisma.supportTicket.findFirst({
+      orderBy: { createdAt: 'desc' },
+      include: { user: { include: { profile: true } } }
+    });
+  }
+  if (!ticket) return null;
+
+  const reporterName = ticket.user?.profile?.fullName || (ticket.user?.email ? ticket.user.email.split('@')[0] : 'Citizen User');
+  const reporterEmail = ticket.user?.email || '';
+  const reporterId = ticket.user?.id || ticket.userId || 'cit-user';
+
+  const defaultMsg = {
+    senderId: reporterId,
+    senderName: reporterName,
+    role: 'CITIZEN',
+    text: ticket.description || 'Citizen submitted grievance request regarding service application.',
+    time: ticket.createdAt ? new Date(ticket.createdAt).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' }) : '10:30 AM',
+    timestamp: ticket.createdAt ? new Date(ticket.createdAt).toISOString() : new Date().toISOString()
+  };
+
+  const rawMessages = Array.isArray(ticket.messages) ? ticket.messages : [];
+  const messages = rawMessages.length > 0 ? rawMessages : [defaultMsg];
+
+  const notes = [
+    {
+      title: 'Citizen Grievance Ingested',
+      author: 'Portal Triaging Engine',
+      content: 'Ticket auto-routed to Sub-Divisional Magistrate (SDM) citizen grievance cell for fast resolution.',
+      time: ticket.createdAt ? new Date(ticket.createdAt).toLocaleDateString('en-IN') : 'Recent'
+    }
+  ];
+
+  const assignedName = typeof ticket.assignedTo === 'string' ? ticket.assignedTo : 'Amit S. (Support Desk)';
+
+  return {
+    id: ticket.refNumber || `TKT-${ticket.id.substring(0, 8).toUpperCase()}`,
+    rawId: ticket.id,
+    refNumber: ticket.refNumber,
+    title: ticket.title || 'Citizen Grievance Support',
+    description: ticket.description || 'Support inquiry registered by citizen',
+    category: ticket.category || 'Technical Support',
+    priority: ticket.priority || 'Medium',
+    status: ticket.status || 'OPEN',
+    createdOn: ticket.createdAt ? new Date(ticket.createdAt).toLocaleDateString('en-IN') : 'Today',
+    lastUpdated: ticket.updatedAt ? new Date(ticket.updatedAt).toLocaleDateString('en-IN') : 'Today',
+    createdAt: ticket.createdAt,
+    updatedAt: ticket.updatedAt,
+    attachmentUrl: ticket.attachmentUrl || null,
+    assignedTo: { id: 'agent-01', name: assignedName },
+    reporter: { id: reporterId, name: reporterName, email: reporterEmail },
+    user: ticket.user,
+    messages,
+    notes
+  };
+}
+
+export async function dispatchNotificationToCitizen(params: {
+  userId?: string | null;
+  title: string;
+  body: string;
+  type?: 'APPLICATION_UPDATE' | 'PAYMENT' | 'SYSTEM' | 'SECURITY' | 'WARNING' | 'SUCCESS' | 'INFO';
+  metadata?: any;
+  io?: any;
+}) {
+  const { userId, title, body, type = 'APPLICATION_UPDATE', metadata, io } = params;
+  let targetUserId = userId;
+
+  if (targetUserId) {
+    const isMongoId = /^[0-9a-fA-F]{24}$/.test(targetUserId);
+    if (!isMongoId) {
+      const u = await findUserByIdOrCit(targetUserId);
+      if (u) targetUserId = u.id;
+    }
+  }
+
+  let createdNotification: any = null;
+  if (targetUserId && /^[0-9a-fA-F]{24}$/.test(targetUserId)) {
+    try {
+      createdNotification = await prisma.notification.create({
+        data: {
+          userId: targetUserId,
+          title: title || 'Cybersave Notification',
+          body: body || '',
+          type: (type as any) || 'APPLICATION_UPDATE',
+          status: 'SENT',
+          sentAt: new Date(),
+        }
+      });
+    } catch (e) {
+      console.warn('[dispatchNotificationToCitizen] DB creation note:', e);
+    }
+  }
+
+  const notificationPayload = {
+    id: createdNotification?.id || `notif_${Date.now()}`,
+    userId: targetUserId || 'all',
+    title,
+    body,
+    type,
+    metadata: metadata || {},
+    status: 'SENT',
+    createdAt: new Date().toISOString(),
+  };
+
+  // Broadcast through active socket server
+  const broadcastIo = io || (global as any).__cybersave_io;
+  if (broadcastIo) {
+    broadcastIo.emit('user_push_notification', notificationPayload);
+    broadcastIo.emit('new_notification', notificationPayload);
+    broadcastIo.emit('notifications_updated', notificationPayload);
+  }
+
+  // Attempt Firebase FCM Push Notification if token exists
+  if (targetUserId && /^[0-9a-fA-F]{24}$/.test(targetUserId)) {
+    try {
+      const user = await prisma.user.findUnique({ where: { id: targetUserId }, select: { fcmToken: true } });
+      if (user?.fcmToken && messaging) {
+        await messaging.send({
+          token: user.fcmToken,
+          notification: {
+            title,
+            body,
+          },
+          data: {
+            title,
+            body,
+            type: String(type),
+            metadata: JSON.stringify(metadata || {}),
+          },
+        }).catch((err: any) => console.warn('[FCM Send Error]:', err?.message));
+      }
+    } catch (err) {
+      console.warn('[FCM Notification Exception]:', err);
+    }
+  }
+
+  return notificationPayload;
+}
+
 export function setupSockets(io: Server) {
+  (global as any).__cybersave_io = io;
+
   io.on('connection', (socket: Socket) => {
     console.log('Client connected:', socket.id);
 
@@ -1213,91 +1383,6 @@ export function setupSockets(io: Server) {
       } catch (e) { console.error(e); }
     });
 
-    async function formatSupportTicketThread(idOrRef: string) {
-      if (!idOrRef) return null;
-      const cleanId = String(idOrRef).trim();
-      const isMongoId = /^[0-9a-fA-F]{24}$/.test(cleanId);
-      let ticket: any = null;
-      if (isMongoId) {
-        ticket = await prisma.supportTicket.findUnique({
-          where: { id: cleanId },
-          include: { user: { include: { profile: true } } }
-        });
-      }
-      if (!ticket) {
-        ticket = await prisma.supportTicket.findFirst({
-          where: { refNumber: cleanId },
-          include: { user: { include: { profile: true } } }
-        });
-      }
-      if (!ticket) {
-        ticket = await prisma.supportTicket.findFirst({
-          where: {
-            OR: [
-              { refNumber: { contains: cleanId, mode: 'insensitive' } },
-              { id: { contains: cleanId, mode: 'insensitive' } }
-            ]
-          },
-          include: { user: { include: { profile: true } } }
-        });
-      }
-      if (!ticket) {
-        ticket = await prisma.supportTicket.findFirst({
-          orderBy: { createdAt: 'desc' },
-          include: { user: { include: { profile: true } } }
-        });
-      }
-      if (!ticket) return null;
-
-      const reporterName = ticket.user?.profile?.fullName || (ticket.user?.email ? ticket.user.email.split('@')[0] : 'Citizen User');
-      const reporterEmail = ticket.user?.email || '';
-      const reporterId = ticket.user?.id || ticket.userId || 'cit-user';
-
-      const defaultMsg = {
-        senderId: reporterId,
-        senderName: reporterName,
-        role: 'CITIZEN',
-        text: ticket.description || 'Citizen submitted grievance request regarding service application.',
-        time: ticket.createdAt ? new Date(ticket.createdAt).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' }) : '10:30 AM',
-        timestamp: ticket.createdAt ? new Date(ticket.createdAt).toISOString() : new Date().toISOString()
-      };
-
-      const rawMessages = Array.isArray(ticket.messages) ? ticket.messages : [];
-      const messages = rawMessages.length > 0 ? rawMessages : [defaultMsg];
-
-      const notes = [
-        {
-          title: 'Citizen Grievance Ingested',
-          author: 'Portal Triaging Engine',
-          content: 'Ticket auto-routed to Sub-Divisional Magistrate (SDM) citizen grievance cell for fast resolution.',
-          time: ticket.createdAt ? new Date(ticket.createdAt).toLocaleDateString('en-IN') : 'Recent'
-        }
-      ];
-
-      const assignedName = typeof ticket.assignedTo === 'string' ? ticket.assignedTo : 'Amit S. (Support Desk)';
-
-      return {
-        id: ticket.refNumber || `TKT-${ticket.id.substring(0, 8).toUpperCase()}`,
-        rawId: ticket.id,
-        refNumber: ticket.refNumber,
-        title: ticket.title || 'Citizen Grievance Support',
-        description: ticket.description || 'Support inquiry registered by citizen',
-        category: ticket.category || 'Technical Support',
-        priority: ticket.priority || 'Medium',
-        status: ticket.status || 'OPEN',
-        createdOn: ticket.createdAt ? new Date(ticket.createdAt).toLocaleDateString('en-IN') : 'Today',
-        lastUpdated: ticket.updatedAt ? new Date(ticket.updatedAt).toLocaleDateString('en-IN') : 'Today',
-        createdAt: ticket.createdAt,
-        updatedAt: ticket.updatedAt,
-        attachmentUrl: ticket.attachmentUrl || null,
-        assignedTo: { id: 'agent-01', name: assignedName },
-        reporter: { id: reporterId, name: reporterName, email: reporterEmail },
-        user: ticket.user,
-        messages,
-        notes
-      };
-    }
-
     socket.on('request_ticket_thread', async (data: { id: string }) => {
       try {
         const thread = await formatSupportTicketThread(data?.id);
@@ -1358,6 +1443,19 @@ export function setupSockets(io: Server) {
             }
           }).catch(() => null);
 
+          // Dispatch notification to citizen
+          await dispatchNotificationToCitizen({
+            userId: ticket.userId,
+            title: 'New Reply on Support Ticket 💬',
+            body: `Official Response on Ticket #${ticket.refNumber}: "${data.text.trim().substring(0, 80)}..."`,
+            type: 'INFO',
+            metadata: {
+              ticketId: ticket.id,
+              refNumber: ticket.refNumber,
+            },
+            io
+          });
+
           const formatted = await formatSupportTicketThread(ticket.id);
           socket.emit('response_ticket_thread', formatted);
           socket.emit('response_ticket_detail', formatted);
@@ -1377,10 +1475,21 @@ export function setupSockets(io: Server) {
         const isMongoId = /^[0-9a-fA-F]{24}$/.test(targetId);
         let ticket: any = null;
         if (isMongoId) {
-          ticket = await prisma.supportTicket.findUnique({ where: { id: targetId } });
+          ticket = await prisma.supportTicket.findUnique({ where: { id: targetId }, include: { user: { include: { profile: true } } } });
         }
         if (!ticket) {
-          ticket = await prisma.supportTicket.findFirst({ where: { refNumber: targetId } });
+          ticket = await prisma.supportTicket.findFirst({ where: { refNumber: targetId }, include: { user: { include: { profile: true } } } });
+        }
+        if (!ticket) {
+          ticket = await prisma.supportTicket.findFirst({
+            where: {
+              OR: [
+                { refNumber: { contains: targetId, mode: 'insensitive' } },
+                { id: { contains: targetId, mode: 'insensitive' } }
+              ]
+            },
+            include: { user: { include: { profile: true } } }
+          });
         }
         if (ticket) {
           await prisma.supportTicket.update({
@@ -1391,17 +1500,36 @@ export function setupSockets(io: Server) {
             }
           });
 
+          const resolutionSummary = data.resolutionSummary || 'Grievance verification completed. Issue marked as resolved.';
           await prisma.auditLog.create({
             data: {
-              userId: (data.adminId && /^[0-9a-fA-F]{24}$/.test(data.adminId)) ? data.adminId : null,
+              userId: (data.adminId && /^[0-9a-fA-F]{24}$/.test(data.adminId)) ? data.adminId : (ticket.userId || null),
               action: 'SUPPORT_TICKET_RESOLVED',
-              details: `Ticket ${ticket.refNumber} marked as resolved: ${data.resolutionSummary || 'Resolved by admin'}`,
+              details: `Ticket ${ticket.refNumber} marked as resolved: ${resolutionSummary}`,
             }
           }).catch(() => null);
+
+          // Dispatch notification to citizen
+          await dispatchNotificationToCitizen({
+            userId: ticket.userId,
+            title: 'Support Ticket Resolved ✅',
+            body: `Admin has resolved your grievance ticket #${ticket.refNumber || ticket.id}: "${resolutionSummary.substring(0, 80)}"`,
+            type: 'INFO',
+            metadata: {
+              ticketId: ticket.id,
+              refNumber: ticket.refNumber,
+              status: 'RESOLVED',
+              category: data.resolutionCategory || ticket.category,
+              rootCause: data.rootCause,
+              summary: resolutionSummary
+            },
+            io
+          });
 
           const formatted = await formatSupportTicketThread(ticket.id);
           socket.emit('resolve_ticket_success', formatted);
           io.emit('support_tickets_updated');
+          io.emit('support_ticket_resolved', formatted);
           io.emit('response_ticket_thread', formatted);
           io.emit('response_ticket_detail', formatted);
         }
