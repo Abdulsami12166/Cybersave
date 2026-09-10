@@ -2,7 +2,7 @@ import { Server, Socket } from 'socket.io';
 import { PrismaClient } from '@prisma/client';
 import { messaging } from './firebase';
 import bcrypt from 'bcrypt';
-import { findUserByIdOrCit, fetchCitizenFullDetails, fetchCitizensList } from './citizenService';
+import { findUserByIdOrCit, fetchCitizenFullDetails, fetchCitizensList, fetchRealTransactionsData } from './citizenService';
 
 const prisma = new PrismaClient();
 
@@ -953,21 +953,11 @@ export function setupSockets(io: Server) {
 
     socket.on('request_transactions_data', async () => {
       try {
-        const apps = await fetchApplicationsWithUsers({}, 50);
-        const formattedTransactions = apps.map(a => ({
-          id: `TXN-${a.id.substring(0, 8).toUpperCase()}`,
-          date: a.submittedAt.toISOString(),
-          customer: a.user?.profile?.fullName || 'Unknown',
-          service: a.serviceTitle,
-          amount: a.feePaid,
-          status: 'SUCCESS'
-        }));
-        const totalAmount = apps.reduce((sum, a) => sum + (a.feePaid || 0), 0);
-        socket.emit('response_transactions_data', {
-          transactions: formattedTransactions,
-          stats: { totalCount: apps.length, totalAmount }
-        });
-      } catch (e) { console.error(e); }
+        const data = await fetchRealTransactionsData();
+        socket.emit('response_transactions_data', data);
+      } catch (e) {
+        console.error('[Socket] request_transactions_data error:', e);
+      }
     });
 
     socket.on('request_operator_detail', async (data: { id: string }) => {

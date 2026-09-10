@@ -22,7 +22,7 @@ const io = new Server(server, {
 });
 setupSockets(io);
 
-import { findUserByIdOrCit, fetchCitizenFullDetails, fetchCitizensList } from './citizenService';
+import { findUserByIdOrCit, fetchCitizenFullDetails, fetchCitizensList, fetchRealTransactionsData } from './citizenService';
 
 const prisma = new PrismaClient();
 const PORT = process.env.ADMIN_PORT || 3001;
@@ -300,6 +300,15 @@ app.get('/api/admin/dashboard', async (req, res) => {
   } catch (error) {
     console.error(error);
     res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+app.get(['/api/admin/transactions', '/api/v1/transactions', '/api/transactions'], async (req: any, res: any) => {
+  try {
+    const data = await fetchRealTransactionsData();
+    res.json(data);
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
   }
 });
 
