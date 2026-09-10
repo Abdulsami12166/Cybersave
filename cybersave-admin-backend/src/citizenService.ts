@@ -617,23 +617,47 @@ export async function fetchRealTransactionsData() {
     withTimeout(prisma.application.findMany({
       orderBy: { submittedAt: 'desc' },
       take: 100,
-      include: {
-        service: true,
-        user: { include: { profile: true } }
+      select: {
+        id: true,
+        refNumber: true,
+        userId: true,
+        serviceTitle: true,
+        status: true,
+        rejectionReason: true,
+        feePaid: true,
+        paymentStatus: true,
+        razorpayPaymentId: true,
+        submittedAt: true,
+        updatedAt: true,
+        refundStatus: true,
+        formData: true,
+        user: {
+          select: {
+            id: true,
+            email: true,
+            phone: true,
+            profile: { select: { fullName: true } }
+          }
+        }
       }
-    }), 2000, []),
+    }), 4000, []),
     withTimeout(prisma.walletTransaction.findMany({
       orderBy: { createdAt: 'desc' },
       take: 100
-    }), 2000, []),
+    }), 4000, []),
     withTimeout(prisma.refundRequest.findMany({
       orderBy: { createdAt: 'desc' },
       take: 100,
-      include: {
-        application: { include: { user: { include: { profile: true } } } },
-        user: { include: { profile: true } }
+      select: {
+        id: true,
+        refNumber: true,
+        amount: true,
+        status: true,
+        createdAt: true,
+        applicationId: true,
+        userId: true
       }
-    }), 2000, [])
+    }), 4000, [])
   ]);
 
   const walletUserIds = [...new Set(walletTxns.map((w: any) => w.userId).filter(Boolean))];
@@ -645,56 +669,79 @@ export async function fetchRealTransactionsData() {
     : [];
   const walletUserMap = new Map<string, any>(walletUsers.map(u => [u.id, u]));
 
+  // Build map of approved refunds to link directly to applications
+  const approvedRefundMap = new Map<string, any>();
+  refunds.forEach((r: any) => {
+    if ((r.status || '').toUpperCase() === 'APPROVED') {
+      if (r.applicationId) approvedRefundMap.set(r.applicationId, r);
+      if (r.refNumber) approvedRefundMap.set(r.refNumber, r);
+    }
+  });
+
   const transactions: any[] = [];
   const seenTxnKeys = new Set<string>();
 
-  // 1. Process Wallet transactions (credits, debits, refunds)
+  // 1. Process Wallet transactions (genuine wallet top-ups via UPI / Razorpay)
   walletTxns.forEach((w: any) => {
+    const isRefundCredit = (w.title || '').toLowerCase().includes('refund') || (w.subtitle || '').toLowerCase().includes('application');
+    
+    // If this wallet transaction is the credit payout of an application refund, skip to avoid double counting
+    // because the application transaction itself is listed with status REFUNDED and the exact refund reference!
+    if (isRefundCredit) {
+      return;
+    }
+
     const key = `wt_${w.id}`;
     if (!seenTxnKeys.has(key)) {
       seenTxnKeys.add(key);
       const isCredit = (w.type || '').toUpperCase() === 'CREDIT';
-      const isRefund = (w.title || '').toLowerCase().includes('refund') || (w.subtitle || '').toLowerCase().includes('application');
       const u = walletUserMap.get(w.userId);
       const citizenName = u?.profile?.fullName || (u?.phone ? `Citizen ${u.phone.slice(-4)}` : (u?.email ? u.email.split('@')[0] : 'Citizen User'));
       const amt = Number(w.amount || 0);
+      const dateIso = w.createdAt ? new Date(w.createdAt).toISOString() : new Date().toISOString();
 
       transactions.push({
         id: w.refId || `TXN-W${w.id.substring(0, 8).toUpperCase()}`,
         refNumber: w.refId || `REF-${w.id.substring(0, 8).toUpperCase()}`,
-        date: w.createdAt ? new Date(w.createdAt).toISOString() : new Date().toISOString(),
+        date: dateIso,
+        dateOnly: dateIso.slice(0, 10),
         customer: citizenName,
         service: w.title || (isCredit ? 'Wallet Top-up' : 'Service Fee Payment'),
-        paymentMethod: w.title?.includes('UPI') ? 'UPI Payment' : (w.title?.includes('Razorpay') ? 'Razorpay UPI' : 'Wallet Transfer'),
+        paymentMethod: w.title?.includes('Razorpay') ? 'Razorpay UPI' : (w.title?.includes('UPI') ? 'UPI Payment' : 'Portal Payment'),
         amount: amt,
-        status: isRefund ? 'REFUNDED' : (w.status || 'SUCCESS'),
-        isRefunded: isRefund,
-        refundRef: isRefund ? (w.refId || `REF-${w.id.substring(0, 6).toUpperCase()}`) : undefined,
+        status: w.status || 'SUCCESS',
+        isRefunded: false,
+        refundRef: undefined,
       });
     }
   });
 
   // 2. Process Application payment transactions
   apps.forEach((a: any) => {
-    const isRef = (a.refundStatus || '').toUpperCase() === 'APPROVED' || (a.paymentStatus || '').toLowerCase() === 'refunded';
+    const matchingRefund = approvedRefundMap.get(a.id) || (a.refNumber ? approvedRefundMap.get(a.refNumber) : null);
+    const isRef = (a.refundStatus || '').toUpperCase() === 'APPROVED' || (a.paymentStatus || '').toLowerCase() === 'refunded' || !!matchingRefund;
     const txId = a.razorpayPaymentId || `TXN-APP${a.id.substring(0, 8).toUpperCase()}`;
     const key = `app_${a.id}`;
     if (!seenTxnKeys.has(key)) {
       seenTxnKeys.add(key);
       const fee = a.feePaid || 50;
       const citizenName = a.user?.profile?.fullName || a.formData?.fullName || a.formData?.applicantName || (a.user?.phone ? `Citizen ${a.user.phone.slice(-4)}` : (a.user?.email ? a.user.email.split('@')[0] : 'Citizen Applicant'));
-      
+      const dateIso = (a.submittedAt || a.updatedAt || new Date()).toISOString();
+      const refNumber = a.refNumber || `CSB-${a.id.substring(0, 8).toUpperCase()}`;
+      const refundRef = matchingRefund?.refNumber || (isRef ? `REF-${refNumber.replace(/\D/g, '').slice(-6) || '202619'}` : undefined);
+
       transactions.push({
         id: txId,
-        refNumber: a.refNumber || `CSB-${a.id.substring(0, 8).toUpperCase()}`,
-        date: (a.submittedAt || a.createdAt || new Date()).toISOString(),
+        refNumber,
+        date: dateIso,
+        dateOnly: dateIso.slice(0, 10),
         customer: citizenName,
-        service: a.serviceTitle || a.service?.title || 'Government Service',
+        service: a.serviceTitle || 'Government Service',
         paymentMethod: a.razorpayPaymentId ? 'Razorpay UPI' : 'Portal Payment',
         amount: Number(fee),
         status: isRef ? 'REFUNDED' : (a.paymentStatus === 'FAILED' ? 'FAILED' : 'SUCCESS'),
         isRefunded: isRef,
-        refundRef: isRef ? `REF-${(a.refNumber || a.id).slice(-6).toUpperCase()}` : undefined,
+        refundRef: isRef ? refundRef : undefined,
       });
     }
   });
@@ -702,27 +749,64 @@ export async function fetchRealTransactionsData() {
   // Sort by date descending
   transactions.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
 
-  // Real statistics calculation
-  const totalAmount = transactions
-    .filter((t: any) => t.status !== 'REFUNDED' && t.status !== 'FAILED')
+  // Real statistics calculation:
+  // Gross Inflow = Total collected fees & deposits
+  const grossInflow = transactions
+    .filter((t: any) => t.status !== 'FAILED')
     .reduce((sum: number, t: any) => sum + (t.amount || 0), 0);
 
+  // Refunded Amount = Total approved refunds returned to citizens
   const refundedAmount = transactions
     .filter((t: any) => t.status === 'REFUNDED' || t.isRefunded)
     .reduce((sum: number, t: any) => sum + (t.amount || 0), 0);
 
-  const todayStart = new Date();
-  todayStart.setHours(0, 0, 0, 0);
+  // Total Realized (Net) = Gross inflow minus all refunds realized!
+  const totalRealizedNet = grossInflow - refundedAmount;
 
-  const revenueToday = transactions
-    .filter((t: any) => new Date(t.date) >= todayStart && t.status !== 'REFUNDED' && t.status !== 'FAILED')
+  // Calculate Today's exact Realized Revenue
+  const todayYMD = new Date().toISOString().slice(0, 10);
+  const todayTransactions = transactions.filter((t: any) => (t.dateOnly || t.date || '').slice(0, 10) === todayYMD);
+  
+  const todayGross = todayTransactions
+    .filter((t: any) => t.status !== 'FAILED')
     .reduce((sum: number, t: any) => sum + (t.amount || 0), 0);
 
+  const todayRefunds = todayTransactions
+    .filter((t: any) => t.status === 'REFUNDED' || t.isRefunded)
+    .reduce((sum: number, t: any) => sum + (t.amount || 0), 0);
+
+  const revenueToday = todayGross - todayRefunds;
+
+  // Daily summary map for all transaction dates
+  const dailyBreakdown: Record<string, { date: string; label: string; count: number; gross: number; refunds: number; net: number }> = {};
+  transactions.forEach((t: any) => {
+    const day = t.dateOnly || (t.date || '').slice(0, 10) || 'Unknown';
+    if (!dailyBreakdown[day]) {
+      const dObj = new Date(t.date);
+      const label = isNaN(dObj.getTime())
+        ? day
+        : dObj.toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' });
+      dailyBreakdown[day] = { date: day, label, count: 0, gross: 0, refunds: 0, net: 0 };
+    }
+    dailyBreakdown[day].count++;
+    if (t.status === 'REFUNDED' || t.isRefunded) {
+      dailyBreakdown[day].refunds += (t.amount || 0);
+    }
+    if (t.status !== 'FAILED') {
+      dailyBreakdown[day].gross += (t.amount || 0);
+    }
+    dailyBreakdown[day].net = dailyBreakdown[day].gross - dailyBreakdown[day].refunds;
+  });
+
   const stats = {
-    totalAmount,
+    grossInflow,
+    totalAmount: totalRealizedNet,
     refundedAmount,
     totalCount: transactions.length,
-    revenueToday: revenueToday || (totalAmount > 0 ? Math.round(totalAmount * 0.4) : 0),
+    revenueToday,
+    todayGross,
+    todayRefunds,
+    dailyBreakdown,
   };
 
   return { transactions, stats };
