@@ -18,11 +18,15 @@ async function bootstrap() {
   app.use(json({ limit: '50mb' }));
   app.use(urlencoded({ extended: true, limit: '50mb' }));
 
-  // Enable CORS
+  // Enable full dynamic CORS with credentials support across all web & mobile clients
   app.enableCors({
-    origin: '*', // In production, replace with specific domain list
+    origin: (requestOrigin: string | undefined, callback: (err: Error | null, allow?: boolean) => void) => {
+      // Allow all origins and reflect origin for browser credential compatibility
+      callback(null, true);
+    },
     methods: 'GET,HEAD,PUT,PATCH,POST,DELETE,OPTIONS',
     credentials: true,
+    allowedHeaders: 'Origin,X-Requested-With,Content-Type,Accept,Authorization',
   });
 
   // Security Headers using Helmet
@@ -34,9 +38,9 @@ async function bootstrap() {
   // Global Validation Pipe
   app.useGlobalPipes(
     new ValidationPipe({
-      whitelist: true,
+      whitelist: false,
       transform: true,
-      forbidNonWhitelisted: true,
+      forbidNonWhitelisted: false,
       transformOptions: {
         enableImplicitConversion: true,
       },
@@ -62,7 +66,7 @@ async function bootstrap() {
   SwaggerModule.setup('api/docs', app, document);
 
   const port = process.env.PORT || 3000;
-  await app.listen(port);
+  await app.listen(port, '0.0.0.0');
   winstonLoggerInstance.log(
     `Application is running on: http://localhost:${port}`,
   );

@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Param, Post, Query } from '@nestjs/common';
+import { Body, Controller, Get, Param, Patch, Post, Put, Query } from '@nestjs/common';
 import {
   ApplicationsService,
   CreateApplicationDto,
@@ -15,16 +15,70 @@ export class ApplicationsController {
 
   @Get()
   async getUserApplications(
-    @Query('userId') userId: string,
+    @Query('userId') userId?: string,
     @Query('status') status?: string,
   ) {
-    // If no userId query, fallback to system default for testing
-    const targetUserId = userId || 'default-user-id';
-    return this.applicationsService.getUserApplications(targetUserId, status);
+    return this.applicationsService.getUserApplications(userId, status);
   }
 
   @Get(':id')
   async getApplicationById(@Param('id') id: string) {
     return this.applicationsService.getApplicationById(id);
+  }
+
+  @Patch(':id/status')
+  async updateStatusPatch(
+    @Param('id') id: string,
+    @Body() body: { status: string; rejectionReason?: string; adminId?: string; adminEmail?: string; adminName?: string; adminRole?: string },
+  ) {
+    return this.applicationsService.updateStatus(id, body.status, body.rejectionReason, body);
+  }
+
+  @Put(':id/status')
+  async updateStatusPut(
+    @Param('id') id: string,
+    @Body() body: { status: string; rejectionReason?: string; adminId?: string; adminEmail?: string; adminName?: string; adminRole?: string },
+  ) {
+    return this.applicationsService.updateStatus(id, body.status, body.rejectionReason, body);
+  }
+
+  @Post(':id/status')
+  async updateStatusPost(
+    @Param('id') id: string,
+    @Body() body: { status: string; rejectionReason?: string; adminId?: string; adminEmail?: string; adminName?: string; adminRole?: string },
+  ) {
+    return this.applicationsService.updateStatus(id, body.status, body.rejectionReason, body);
+  }
+
+  @Post(':id/approve')
+  async approveApplication(
+    @Param('id') id: string,
+    @Body() body?: { rejectionReason?: string; adminId?: string; adminEmail?: string; adminName?: string; adminRole?: string },
+  ) {
+    return this.applicationsService.updateStatus(id, 'APPROVED', undefined, body);
+  }
+
+  @Post(':id/reject')
+  async rejectApplication(
+    @Param('id') id: string,
+    @Body() body?: { rejectionReason?: string; adminId?: string; adminEmail?: string; adminName?: string; adminRole?: string },
+  ) {
+    return this.applicationsService.updateStatus(id, 'REJECTED', body?.rejectionReason, body);
+  }
+
+  @Post(':id/assign')
+  async assignApplicationPost(
+    @Param('id') id: string,
+    @Body() body: { operatorName: string; operatorId?: string },
+  ) {
+    return this.applicationsService.assignOperator(id, body.operatorName, body.operatorId);
+  }
+
+  @Put(':id/assign')
+  async assignApplicationPut(
+    @Param('id') id: string,
+    @Body() body: { operatorName: string; operatorId?: string },
+  ) {
+    return this.applicationsService.assignOperator(id, body.operatorName, body.operatorId);
   }
 }

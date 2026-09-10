@@ -2,7 +2,6 @@ import { Global, Module } from '@nestjs/common';
 import { CloudinaryService } from './cloudinary.service';
 import { ResendService } from './resend.service';
 import { TwilioService } from './twilio.service';
-import { FirebaseService } from './firebase.service';
 import { RedisService } from './redis.service';
 import { QueueService } from './queue.service';
 import { AppWorker } from '../workers/app.worker';
@@ -13,7 +12,6 @@ import { AppWorker } from '../workers/app.worker';
     CloudinaryService,
     ResendService,
     TwilioService,
-    FirebaseService,
     RedisService,
     QueueService,
     AppWorker,
@@ -22,7 +20,6 @@ import { AppWorker } from '../workers/app.worker';
     CloudinaryService,
     ResendService,
     TwilioService,
-    FirebaseService,
     RedisService,
     QueueService,
   ],

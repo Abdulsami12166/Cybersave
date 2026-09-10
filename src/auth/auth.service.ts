@@ -1,24 +1,9 @@
-import {
-  Injectable,
-  UnauthorizedException,
-  BadRequestException,
-  ConflictException,
-  Logger,
-} from '@nestjs/common';
-import { JwtService } from '@nestjs/jwt';
+import { Injectable, Logger, UnauthorizedException, BadRequestException } from '@nestjs/common';
 import { PrismaService } from '../database/prisma.service';
-import { FirebaseService } from '../common/services/firebase.service';
+import * as bcrypt from 'bcrypt';
+import { JwtService } from '@nestjs/jwt';
 import { RedisService } from '../common/services/redis.service';
 import { SmsService } from '../common/services/sms.service';
-import { ResendService } from '../common/services/resend.service';
-import {
-  hashPassword,
-  comparePassword,
-} from '../common/utils/password-crypto.util';
-import { SendOtpDto } from './dto/send-otp.dto';
-import { VerifyOtpDto } from './dto/verify-otp.dto';
-import { RegisterDto } from './dto/register.dto';
-import { LoginDto } from './dto/login.dto';
 
 @Injectable()
 export class AuthService {
@@ -26,28 +11,76 @@ export class AuthService {
 
   constructor(
     private readonly prisma: PrismaService,
-    private readonly firebaseService: FirebaseService,
+    private readonly jwtService: JwtService,
     private readonly redisService: RedisService,
     private readonly smsService: SmsService,
-    private readonly resendService: ResendService,
-    private readonly jwtService: JwtService,
   ) {}
 
-  /**
-   * Generates a 6-digit dummy OTP and stores it in Redis for development.
-   */
-  async sendOtp(sendOtpDto: SendOtpDto) {
-    const cleanPhone = sendOtpDto.phone.trim().replace(/\s+/g, '');
-    const devOtpEnabled = process.env.DEV_OTP_ENABLED !== 'false'; // Default true for this task unless explicitly false
+  private generateOtp(): string {
+    return Math.floor(100000 + Math.random() * 900000).toString();
+  }
 
+  async register(email: string, passwordHash: string, fullName: string, phone?: string) {
+    const cleanEmail = email.trim().toLowerCase();
+    const cleanPhone = phone?.trim().replace(/\s+/g, '') || null;
+
+    // Check email uniqueness (case-insensitive)
+    const existingEmail = await this.prisma.user.findUnique({ where: { email: cleanEmail } });
+    if (existingEmail) {
+      throw new BadRequestException('An account with this email already exists. Please sign in instead.');
+    }
+
+    // Check phone uniqueness (only if provided)
+    if (cleanPhone) {
+      const existingPhone = await this.prisma.user.findFirst({ where: { phone: cleanPhone } });
+      if (existingPhone) {
+        throw new BadRequestException('An account with this phone number already exists.');
+      }
+    }
+
+    const salt = await bcrypt.genSalt(10);
+    const hashed = await bcrypt.hash(passwordHash, salt);
+
+    const user = await this.prisma.user.create({
+      data: {
+        email: cleanEmail,
+        phone: cleanPhone,
+        passwordHash: hashed,
+        profile: {
+          create: {
+            fullName: fullName.trim(),
+            email: cleanEmail,
+            phone: cleanPhone,
+          },
+        },
+        wallet: {
+          create: {
+            balance: 0.0,
+          },
+        },
+      },
+      include: { profile: true },
+    });
+
+    this.logger.log(`Created new user via standard auth: ${user.id}`);
+    return { success: true, message: 'User registered successfully' };
+  }
+
+  async sendOtp(phone: string) {
+    if (!phone) throw new BadRequestException('Phone number is required');
+    const cleanPhone = phone.trim().replace(/\s+/g, '');
+    
     // Generate 6 digit OTP
     const otp = Math.floor(100000 + Math.random() * 900000).toString();
-    
+
     // Store in Redis (valid for 5 minutes)
     await this.redisService.set(`otp:${cleanPhone}`, otp, 300);
+    this.logger.log(`[AuthService] Generated OTP ${otp} for phone ${cleanPhone}`);
 
-    this.logger.log(`[AuthService] Generated OTP ${otp} for ${cleanPhone}`);
+    // Send SMS
+    await this.smsService.sendSms(cleanPhone, otp);
 
+    const devOtpEnabled = process.env.DEV_OTP_ENABLED === 'true'; // ponytail: safe default — must explicitly opt in
     return {
       success: true,
       message: 'OTP sent successfully.',
@@ -55,226 +88,256 @@ export class AuthService {
     };
   }
 
-  /**
-   * Verifies the 6-digit OTP from Redis and logs in/registers user.
-   */
-  async verifyOtp(verifyOtpDto: VerifyOtpDto) {
-    const cleanPhone = verifyOtpDto.phone.trim().replace(/\s+/g, '');
-    const { fullName, email, otp } = verifyOtpDto;
-
-    const storedOtp = await this.redisService.get(`otp:${cleanPhone}`);
-    if (!storedOtp || storedOtp !== otp) {
-      throw new BadRequestException('Invalid or expired OTP.');
-    }
-
-    // Delete OTP after successful verification to prevent reuse
-    await this.redisService.del(`otp:${cleanPhone}`);
-
-    let user: any = await this.prisma.user.findFirst({
+  async login(emailOrPhone: string, password?: string) {
+    const cleanId = (emailOrPhone || '').trim();
+    
+    // Check by email or phone
+    const user = await this.prisma.user.findFirst({
       where: {
-        OR: [{ phone: cleanPhone }, { phone: verifyOtpDto.phone }],
+        OR: [
+          { email: cleanId.toLowerCase() },
+          { phone: cleanId },
+        ],
       },
       include: { profile: true },
     });
 
     if (!user) {
-      const userEmail =
-        email || `user_${cleanPhone.slice(-4)}_${Date.now()}@cybersave.gov.in`;
-      const userName = fullName || 'Citizen User';
-
-      user = await this.prisma.user.create({
-        data: {
-          phone: cleanPhone,
-          email: userEmail,
-          profile: {
-            create: { fullName: userName, phone: cleanPhone, email: userEmail },
-          },
-          wallet: { create: { balance: 0.0 } },
-          auditLogs: {
-            create: { action: 'USER_REGISTER', details: 'Registered via OTP' },
-          },
-        },
-        include: { profile: true },
-      });
-      this.logger.log(`OTP user created: ${user.id}`);
-    } else {
-      await this.prisma.auditLog.create({
-        data: { userId: user.id, action: 'USER_LOGIN', details: 'Logged in via Mobile Phone OTP' },
-      });
+      throw new UnauthorizedException('Invalid email or password');
     }
 
-    const userEmail = user.email || 'user@cybersave.gov.in';
-    const tokens = await this.generateTokens(user.id, userEmail, user.role);
-
-    return {
-      user: {
-        id: user.id,
-        phone: user.phone,
-        email: user.email,
-        role: user.role,
-        fullName: user.profile?.fullName || 'Citizen User',
-      },
-      ...tokens,
-    };
-  }
-
-  /**
-   * Registers a new user account with Email & Password.
-   */
-  async registerWithEmail(registerDto: RegisterDto) {
-    const cleanEmail = registerDto.email.trim().toLowerCase();
-
-    const existingUser = await this.prisma.user.findUnique({
-      where: { email: cleanEmail },
-    });
-
-    if (existingUser) {
-      throw new ConflictException(
-        'An account with this email address already exists.',
-      );
+    if (user.status === 'BLOCKED' || user.status === 'SUSPENDED') {
+      throw new UnauthorizedException('Your account has been suspended/blocked by an Administrator. Please contact support.');
     }
 
-    const makeUserData = (phone?: string) => ({
-      email: cleanEmail,
-      passwordHash,
-      ...(phone ? { phone } : {}),
-      profile: {
-        create: {
-          fullName: registerDto.fullName,
-          email: cleanEmail,
-          phone: phone && registerDto.phone ? phone : undefined,
-        },
-      },
-      wallet: { create: { balance: 0.0 } },
-      auditLogs: {
-        create: { action: 'USER_REGISTER', details: 'User registered via Email & Password' },
-      },
-    });
-
-    let user: any;
-    try {
-      user = await this.prisma.user.create({
-        data: makeUserData(cleanPhone || undefined),
-        include: { profile: true },
-      });
-    } catch (e) {
-      // ponytail: P2002 on phone = stale unique index still exists in MongoDB.
-      // Fallback: use a unique dummy phone so the constraint is satisfied.
-      if (e.code === 'P2002') {
-        const fallbackPhone = `_nophone_${Date.now()}_${Math.random().toString(36).slice(2)}`;
-        user = await this.prisma.user.create({
-          data: makeUserData(fallbackPhone),
-          include: { profile: true },
-        });
-        this.logger.warn(`Used fallback phone for ${cleanEmail} — stale phone unique index still present in MongoDB.`);
-      } else {
-        throw e;
+    if (password && user.passwordHash) {
+      const isMatch = await bcrypt.compare(password, user.passwordHash);
+      if (!isMatch) {
+        throw new UnauthorizedException('Invalid email or password');
       }
+
+      // Direct login successful with valid password
+      const payload = { sub: user.id, email: user.email, role: user.role };
+      const accessToken = this.jwtService.sign(payload);
+
+      return {
+        success: true,
+        accessToken,
+        token: accessToken,
+        user: {
+          id: user.id,
+          email: user.email,
+          phone: user.phone,
+          role: user.role,
+          fullName: user.profile?.fullName || 'Citizen User',
+          avatarUrl: user.profile?.avatarUrl || null,
+        },
+      };
     }
 
-    this.logger.log(`Created new Cybersave user account via Email: ${user.id}`);
+    // Fallback: Generate OTP for phone/email verification if no password provided
+    const otpCode = this.generateOtp();
+    const otpExpiry = new Date(Date.now() + 10 * 60 * 1000); // 10 mins
 
-    try {
-      await this.resendService.sendEmail(
-        cleanEmail,
-        'Welcome to CyberSave!',
-        `<h1>Welcome to CyberSave, ${registerDto.fullName}!</h1><p>Your account has been successfully created and your digital wallet has been credited with ₹100.00 as a welcome bonus.</p>`
-      );
-      this.logger.log(`Welcome email sent to ${cleanEmail}`);
-    } catch (e) {
-      this.logger.warn(`Failed to send welcome email to ${cleanEmail}: ${e.message}`);
-    }
+    await this.prisma.user.update({
+      where: { id: user.id },
+      data: { otpCode, otpExpiry },
+    });
 
-    const userEmail = user.email || cleanEmail;
-    const tokens = await this.generateTokens(user.id, userEmail, user.role);
-
+    const devOtpEnabled = process.env.DEV_OTP_ENABLED === 'true';
     return {
-      user: {
-        id: user.id,
-        phone: user.phone,
-        email: user.email,
-        role: user.role,
-        fullName: user.profile?.fullName || registerDto.fullName,
-      },
-      ...tokens,
+      success: true,
+      message: 'OTP sent to mobile/email',
+      email: user.email,
+      phone: user.phone,
+      devOtp: devOtpEnabled ? otpCode : undefined,
     };
   }
 
-  /**
-   * Authenticates user via Email / Phone and Password.
-   */
-  async loginWithEmail(loginDto: LoginDto) {
-    const identifier = loginDto.emailOrPhone.trim().toLowerCase();
+  async googleLogin(data: { token?: string; email?: string; fullName?: string; photoUrl?: string }) {
+    const email = (data.email || '').trim().toLowerCase();
+    if (!email) {
+      throw new BadRequestException('Google email is required');
+    }
 
-    const user: any = await this.prisma.user.findFirst({
-      where: {
-        OR: [{ email: identifier }, { phone: identifier }],
-      },
+    let user = await this.prisma.user.findUnique({
+      where: { email },
       include: { profile: true },
     });
 
-    if (!user || user.deletedAt) {
-      throw new UnauthorizedException('Invalid email/phone or password.');
+    if (!user) {
+      const fullName = data.fullName || 'Citizen User';
+      user = await this.prisma.user.create({
+        data: {
+          email,
+          role: 'USER',
+          profile: {
+            create: {
+              fullName,
+              email,
+              avatarUrl: data.photoUrl || null,
+            },
+          },
+          wallet: {
+            create: {
+              balance: 0.0,
+            },
+          },
+        },
+        include: { profile: true },
+      });
+      this.logger.log(`Created new user via Google Login: ${user.id}`);
     }
 
-    const userPassHash = user.passwordHash;
-    if (!userPassHash || !comparePassword(loginDto.password, userPassHash)) {
-      throw new UnauthorizedException('Invalid email/phone or password.');
+    if (user.status === 'BLOCKED') {
+      throw new UnauthorizedException('Your account has been blocked by the Administrator.');
     }
 
-    await this.prisma.auditLog.create({
-      data: {
-        userId: user.id,
-        action: 'USER_LOGIN',
-        details: 'User logged in via Email & Password',
-      },
-    });
-
-    const userEmail = user.email || 'user@cybersave.gov.in';
-    const tokens = await this.generateTokens(user.id, userEmail, user.role);
+    const payload = { sub: user.id, email: user.email, role: user.role };
+    const accessToken = this.jwtService.sign(payload);
 
     return {
+      success: true,
+      accessToken,
+      token: accessToken,
       user: {
         id: user.id,
-        phone: user.phone,
         email: user.email,
+        phone: user.phone,
         role: user.role,
-        fullName: user.profile?.fullName || 'Citizen User',
+        fullName: user.profile?.fullName || data.fullName || 'Citizen User',
+        avatarUrl: user.profile?.avatarUrl || data.photoUrl || null,
       },
-      ...tokens,
     };
   }
 
-  /**
-   * Verifies Firebase or Google ID Token and logs in / registers user.
-   */
-  async verifyFirebaseToken(token: string) {
-    try {
-      const decoded = await this.firebaseService.verifyIdToken(token);
-      const uid = decoded.uid;
-      const email = decoded.email || `${uid}@cybersave.gov.in`;
-      const phone = (decoded as any).phone_number || null;
-      const fullName =
-        (decoded as any).name || (email ? email.split('@')[0] : 'Rajesh Kumar');
+  async fingerprintAuth(data: { fingerprintId?: string; deviceId?: string; userId?: string }) {
+    let cleanFingerprintId = (data.fingerprintId || '').trim();
+    if (!cleanFingerprintId) {
+      cleanFingerprintId = `FP-${Date.now().toString(36).toUpperCase()}-${Math.floor(1000 + Math.random() * 9000)}`;
+    }
 
-      let user: any = await this.prisma.user.findFirst({
-        where: {
-          OR: [{ firebaseUid: uid }, { email }, ...(phone ? [{ phone }] : [])],
+    // ponytail: Re-login flow — if mobile sends userId from enrolled biometric data, find the real user
+    if (data.userId) {
+      const existingUser = await this.prisma.user.findUnique({
+        where: { id: data.userId },
+        include: { profile: true },
+      });
+
+      if (existingUser) {
+        if (existingUser.status === 'BLOCKED') {
+          throw new UnauthorizedException('Your account has been blocked by an Administrator.');
+        }
+
+        const payload = { sub: existingUser.id, email: existingUser.email, role: existingUser.role };
+        const accessToken = this.jwtService.sign(payload);
+        this.logger.log(`Fingerprint re-login for existing user: ${existingUser.id}`);
+
+        return {
+          success: true,
+          accessToken,
+          token: accessToken,
+          fingerprintId: cleanFingerprintId,
+          user: {
+            id: existingUser.id,
+            email: existingUser.profile?.email || existingUser.email || null,
+            phone: existingUser.phone || null,
+            role: existingUser.role,
+            fullName: existingUser.profile?.fullName || 'Citizen User',
+            avatarUrl: existingUser.profile?.avatarUrl || null,
+          },
+        };
+      }
+      // If userId not found in DB, fall through to normal fingerprint flow below
+    }
+
+    const syntheticEmail = `fp.${cleanFingerprintId.toLowerCase().replace(/[^a-z0-9]/g, '')}@cybersave.local`;
+
+    // 1. Check if user already exists for this fingerprint
+    let user = await this.prisma.user.findUnique({
+      where: { email: syntheticEmail },
+      include: { profile: true },
+    });
+
+    // 2. If no existing user, directly create a new account without OTP or password
+    if (!user) {
+      // Unique name format as requested: e.g. "Citizen_4821" (only name is unique, other details empty)
+      const uniqueSuffix = Math.floor(1000 + Math.random() * 9000);
+      const uniqueName = `Citizen_${uniqueSuffix}`;
+
+      user = await this.prisma.user.create({
+        data: {
+          email: syntheticEmail,
+          role: 'USER',
+          profile: {
+            create: {
+              fullName: uniqueName,
+              email: null,
+              phone: null,
+            },
+          },
+          wallet: {
+            create: {
+              balance: 0.0,
+            },
+          },
         },
+        include: { profile: true },
+      });
+      this.logger.log(`Created new citizen account via direct Fingerprint auth: ${user.id} with unique name ${uniqueName}`);
+    }
+
+    if (user.status === 'BLOCKED') {
+      throw new UnauthorizedException('Your account has been blocked by an Administrator.');
+    }
+
+    const payload = { sub: user.id, email: user.email, role: user.role };
+    const accessToken = this.jwtService.sign(payload);
+
+    return {
+      success: true,
+      accessToken,
+      token: accessToken,
+      fingerprintId: cleanFingerprintId,
+      user: {
+        id: user.id,
+        email: user.profile?.email || null,
+        phone: user.phone || null,
+        role: user.role,
+        fullName: user.profile?.fullName || `Citizen_${user.id.slice(-4).toUpperCase()}`,
+        avatarUrl: user.profile?.avatarUrl || null,
+      },
+    };
+  }
+
+  async verifyOtp(identifier: string, otp: string) {
+    if (!identifier || !otp) throw new BadRequestException('Identifier and OTP are required');
+    const cleanId = identifier.trim().replace(/\s+/g, '');
+    const isPhone = /^\+?[0-9]{10,15}$/.test(cleanId);
+
+    if (isPhone) {
+      const storedOtp = await this.redisService.get(`otp:${cleanId}`);
+      if (!storedOtp || storedOtp !== otp) {
+        throw new UnauthorizedException('Invalid or expired OTP');
+      }
+      await this.redisService.del(`otp:${cleanId}`);
+
+      let user = await this.prisma.user.findFirst({
+        where: { phone: cleanId },
         include: { profile: true },
       });
 
       if (!user) {
+        const userEmail = `user_${cleanId.slice(-4)}_${Date.now()}@cybersave.gov.in`;
         user = await this.prisma.user.create({
           data: {
-            firebaseUid: uid,
-            email,
-            phone,
+            phone: cleanId,
+            email: userEmail,
             profile: {
               create: {
-                fullName,
-                phone: phone || null,
-                email,
+                fullName: 'Citizen User',
+                phone: cleanId,
+                email: userEmail,
               },
             },
             wallet: {
@@ -282,89 +345,142 @@ export class AuthService {
                 balance: 0.0,
               },
             },
-            auditLogs: {
-              create: {
-                action: 'USER_REGISTER',
-                details: 'User registered via Firebase / Google Sign-In',
-              },
-            },
           },
           include: { profile: true },
         });
-        this.logger.log(
-          `Created new Cybersave user account via Google/Firebase: ${user.id}`,
-        );
-      } else {
-        await this.prisma.auditLog.create({
-          data: {
-            userId: user.id,
-            action: 'USER_LOGIN',
-            details: 'User logged in via Firebase / Google verification',
-          },
-        });
+        this.logger.log(`Created new user via mobile OTP: ${user.id}`);
       }
 
-      const userEmail = user.email || 'user@cybersave.gov.in';
-      const tokens = await this.generateTokens(user.id, userEmail, user.role);
+      const payload = { sub: user.id, email: user.email, role: user.role };
+      const accessToken = this.jwtService.sign(payload);
 
       return {
+        accessToken,
         user: {
           id: user.id,
           phone: user.phone,
           email: user.email,
           role: user.role,
-          fullName: user.profile?.fullName || fullName,
+          fullName: user.profile?.fullName || 'Citizen User',
         },
-        ...tokens,
       };
-    } catch (error) {
-      this.logger.error('Firebase sign-in token verification failed', error);
-      throw new UnauthorizedException('Invalid Google / Firebase credentials.');
-    }
-  }
-
-  async refreshToken(tokenStr: string) {
-    try {
-      const payload = this.jwtService.verify(tokenStr, {
-        secret:
-          process.env.JWT_REFRESH_SECRET ||
-          'cybersave-prod-jwt-refresh-secret-key-321-secure',
-      });
-
-      const user = await this.prisma.user.findUnique({
-        where: { id: payload.sub },
-      });
-
-      if (!user || user.deletedAt) {
-        throw new UnauthorizedException('User no longer exists.');
+    } else {
+      const user = await this.prisma.user.findUnique({ where: { email: cleanId }, include: { profile: true } });
+      if (!user) {
+        throw new UnauthorizedException('Invalid credentials');
       }
 
-      const userEmail = user.email || 'user@cybersave.gov.in';
-      return this.generateTokens(user.id, userEmail, user.role);
-    } catch (error) {
-      throw new UnauthorizedException('Invalid or expired refresh token.');
+      if (!user.otpCode || user.otpCode !== otp || !user.otpExpiry || user.otpExpiry < new Date()) {
+        throw new UnauthorizedException('Invalid or expired OTP');
+      }
+
+      // Clear OTP
+      await this.prisma.user.update({
+        where: { id: user.id },
+        data: { otpCode: null, otpExpiry: null }
+      });
+
+      const payload = { sub: user.id, email: user.email, role: user.role };
+      const accessToken = this.jwtService.sign(payload);
+
+      return {
+        accessToken,
+        user: {
+          id: user.id,
+          email: user.email,
+          role: user.role,
+          fullName: user.profile?.fullName || 'Citizen User',
+        }
+      };
     }
   }
 
-  private async generateTokens(userId: string, email: string, role: string) {
-    const payload = { email, role, sub: userId };
+  async resendOtp(email: string) {
+    const user = await this.prisma.user.findUnique({ where: { email } });
+    if (!user) {
+      throw new BadRequestException('User not found');
+    }
 
-    const accessToken = this.jwtService.sign(payload, {
-      secret:
-        process.env.JWT_SECRET || 'cybersave-prod-jwt-secret-key-321-secure',
-      expiresIn: '7d', // Hardcoded to 7d to prevent rapid expiration lockouts
+    const otpCode = this.generateOtp();
+    const otpExpiry = new Date(Date.now() + 10 * 60 * 1000); // 10 mins
+
+    await this.prisma.user.update({
+      where: { id: user.id },
+      data: { otpCode, otpExpiry }
     });
 
-    const refreshToken = this.jwtService.sign(payload, {
-      secret:
-        process.env.JWT_REFRESH_SECRET ||
-        'cybersave-prod-jwt-refresh-secret-key-321-secure',
-      expiresIn: (process.env.JWT_REFRESH_EXPIRATION || '7d') as any,
-    });
+    // Simulate sending email
+    this.logger.log(`[SIMULATED EMAIL] RESENT OTP for ${email} is ${otpCode}`);
 
+    return { success: true, message: 'OTP resent to email' };
+  }
+
+  async recordAuditLog(userId?: string, action: string = 'USER_LOGIN', details?: string, ipAddress?: string) {
+    try {
+      if (userId && /^[0-9a-fA-F]{24}$/.test(userId)) {
+        await this.prisma.auditLog.create({
+          data: {
+            userId,
+            action,
+            details: details || 'CyberSave Android App Session',
+            ipAddress: ipAddress || '127.0.0.1 (Mobile App)',
+          },
+        });
+      }
+    } catch (e: any) {
+      this.logger.warn(`Failed to record audit log: ${e?.message}`);
+    }
+  }
+
+  async getLoginHistory(userId?: string) {
+    try {
+      const logs = await this.prisma.auditLog.findMany({
+        where: userId && /^[0-9a-fA-F]{24}$/.test(userId) ? { userId } : {},
+        orderBy: { createdAt: 'desc' },
+        take: 30,
+      });
+
+      if (logs.length === 0) {
+        return [
+          {
+            id: 'sess_curr',
+            action: 'USER_LOGIN',
+            details: 'Android Mobile App • Current Session',
+            ipAddress: 'Active Session',
+            createdAt: new Date().toISOString(),
+          },
+        ];
+      }
+
+      return logs;
+    } catch (e: any) {
+      this.logger.error(`Error fetching login history: ${e?.message}`);
+      return [
+        {
+          id: 'sess_curr',
+          action: 'USER_LOGIN',
+          details: 'Android Mobile App • Current Session',
+          ipAddress: 'Active Session',
+          createdAt: new Date().toISOString(),
+        },
+      ];
+    }
+  }
+
+  async getMe(userId: string) {
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      include: { profile: true }
+    });
+    if (!user) throw new BadRequestException('User not found');
     return {
-      accessToken,
-      refreshToken,
+      user: {
+        id: user.id,
+        email: user.email,
+        phone: user.phone,
+        role: user.role,
+        fullName: user.profile?.fullName,
+      }
     };
   }
 }

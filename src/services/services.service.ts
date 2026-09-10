@@ -1,5 +1,6 @@
 import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { PrismaService } from '../database/prisma.service';
+import { AdminGateway } from '../admin/admin.gateway';
 
 @Injectable()
 export class ServicesService implements OnModuleInit {
@@ -127,9 +128,13 @@ export class ServicesService implements OnModuleInit {
       if (category && category !== 'All') {
         return await this.prisma.service.findMany({
           where: { category, isActive: true },
+          orderBy: { updatedAt: 'desc' },
         });
       }
-      return await this.prisma.service.findMany({ where: { isActive: true } });
+      return await this.prisma.service.findMany({
+        where: { isActive: true },
+        orderBy: { updatedAt: 'desc' },
+      });
     } catch (error) {
       this.logger.warn(
         `Database query fallback for services: ${error.message}`,
@@ -138,19 +143,112 @@ export class ServicesService implements OnModuleInit {
     }
   }
 
-  async getServiceBySlug(slug: string) {
+  async getServiceByIdOrSlug(idOrSlug: string) {
     try {
-      return await this.prisma.service.findUnique({ where: { slug } });
+      const isMongoId = /^[0-9a-fA-F]{24}$/.test(idOrSlug);
+      if (isMongoId) {
+        const byId = await this.prisma.service.findUnique({ where: { id: idOrSlug } });
+        if (byId) return byId;
+      }
+      return await this.prisma.service.findFirst({
+        where: {
+          OR: [{ slug: idOrSlug }, { title: { equals: idOrSlug, mode: 'insensitive' } }],
+        },
+      });
     } catch (error) {
       return null;
     }
   }
 
-  async getServiceById(id: string) {
+  async getServiceBySlug(slug: string) {
+    return this.getServiceByIdOrSlug(slug);
+  }
+
+  async createOrUpdateService(data: any) {
+    const rawTitle = data.title || data.name || 'Custom Service';
+    const slug = (data.slug || rawTitle)
+      .toLowerCase()
+      .trim()
+      .replace(/[^a-z0-9]+/g, '-');
+
+    const feeVal = typeof data.fee === 'number'
+      ? data.fee
+      : parseFloat(data.pricing?.fee || data.fee || '50.0') || 50.0;
+
+    const defaultDocs = [
+      { type: 'Government-Issued Identity Proof', req: 'Required' },
+      { type: 'Address Proof', req: 'Required' },
+      { type: 'Application Supporting Document', req: 'Required' },
+    ];
+
+    const defaultSchema = [
+      { label: 'Full Name', type: 'text', required: true },
+      { label: 'Date of Birth', type: 'date', required: true },
+      { label: 'Gender', type: 'select', required: true },
+      { label: "Father's Name", type: 'text', required: true },
+      { label: "Mother's Name", type: 'text', required: true },
+      { label: 'Place of Birth', type: 'text', required: true },
+      { label: 'State', type: 'text', required: true },
+      { label: 'District', type: 'text', required: true },
+      { label: 'PIN Code', type: 'text', required: true },
+    ];
+
+    const resolvedIcon = data.iconUrl || data.imageUrl || data.iconName || 'file-document-outline';
+    const pricingObj = {
+      ...(typeof data.pricingConfig === 'object' ? data.pricingConfig : (typeof data.pricing === 'object' ? data.pricing : { fee: feeVal })),
+      iconUrl: data.iconUrl || data.imageUrl || (resolvedIcon.startsWith('http') ? resolvedIcon : undefined),
+    };
+
+    const isExisting = await this.prisma.service.findUnique({ where: { slug } }).catch(() => null);
+
+    const service = await this.prisma.service.upsert({
+      where: { slug },
+      update: {
+        title: rawTitle,
+        description: data.description || 'Government certified digital service workflow.',
+        category: data.category || 'Government',
+        department: data.department || data.departmentRole || 'General Administration',
+        fee: feeVal,
+        processingTime: data.processingTime || '7-15 Days',
+        eligibility: data.eligibility || ['Citizen of India', 'Valid ID verification credentials'],
+        requiredDocs: data.requiredDocs || data.documents || defaultDocs,
+        subServices: data.subServices || [],
+        formDataSchema: data.formDataSchema || data.formElements || defaultSchema,
+        pricingConfig: pricingObj,
+        iconName: resolvedIcon,
+        colorHex: data.colorHex || '#2563eb',
+        isActive: data.isActive !== undefined ? data.isActive : true,
+      },
+      create: {
+        slug,
+        title: rawTitle,
+        description: data.description || 'Government certified digital service workflow.',
+        category: data.category || 'Government',
+        department: data.department || data.departmentRole || 'General Administration',
+        fee: feeVal,
+        processingTime: data.processingTime || '7-15 Days',
+        eligibility: data.eligibility || ['Citizen of India', 'Valid ID verification credentials'],
+        requiredDocs: data.requiredDocs || data.documents || defaultDocs,
+        subServices: data.subServices || [],
+        formDataSchema: data.formDataSchema || data.formElements || defaultSchema,
+        pricingConfig: pricingObj,
+        iconName: resolvedIcon,
+        colorHex: data.colorHex || '#2563eb',
+        isActive: data.isActive !== undefined ? data.isActive : true,
+      },
+    });
+
     try {
-      return await this.prisma.service.findUnique({ where: { id } });
-    } catch (error) {
-      return null;
+      await AdminGateway.logActivity(this.prisma, {
+        action: isExisting ? 'SERVICE_SCHEME_UPDATED' : 'SERVICE_SCHEME_CREATED',
+        details: `${isExisting ? 'Updated' : 'Created'} e-governance service scheme "${rawTitle}" (Category: ${service.category}, Fee: ₹${feeVal}, SLA: ${service.processingTime})`,
+      });
+      AdminGateway.broadcast('services_updated', service);
+    } catch (auditErr: any) {
+      this.logger.warn(`Service audit log warning: ${auditErr?.message}`);
     }
+
+    this.logger.log(`Service created/updated: ${service.title} (${service.slug})`);
+    return service;
   }
 }

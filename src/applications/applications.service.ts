@@ -62,17 +62,14 @@ export class ApplicationsService {
     return `CSB2026${randomNum}`;
   }
 
-  private isMongoId(id?: string): boolean {
-    return typeof id === 'string' && /^[0-9a-fA-F]{24}$/.test(id);
-  }
-
   async createApplication(dto: CreateApplicationDto) {
     const refNumber = this.generateRefNumber();
+    const isMongoId = (id?: string) => typeof id === 'string' && /^[0-9a-fA-F]{24}$/.test(id);
 
     let validUserId = dto.userId;
 
     const userOrConditions: any[] = [];
-    if (validUserId && this.isMongoId(validUserId)) userOrConditions.push({ id: validUserId });
+    if (validUserId && isMongoId(validUserId)) userOrConditions.push({ id: validUserId });
     if (validUserId && validUserId.includes('@')) userOrConditions.push({ email: validUserId.trim().toLowerCase() });
     if (validUserId && /^\+?[0-9]{10,13}$/.test(validUserId)) userOrConditions.push({ phone: validUserId.trim() });
     if (dto.formData?.email) userOrConditions.push({ email: String(dto.formData.email).trim().toLowerCase() });
@@ -230,6 +227,12 @@ export class ApplicationsService {
         status: application.status,
         serviceTitle: application.serviceTitle,
       });
+
+      await AdminGateway.logActivity(this.prisma, {
+        userId: application.userId,
+        action: 'APPLICATION_SUBMITTED',
+        details: `New citizen application #${refNumber} created & submitted for "${dto.serviceTitle}"`,
+      });
     } catch (wsErr) {
       this.logger.warn(`WS broadcast error: ${wsErr.message}`);
     }
@@ -240,7 +243,7 @@ export class ApplicationsService {
   async getUserApplications(userId?: string, status?: string) {
     const isMongoId = (id?: string) => typeof id === 'string' && /^[0-9a-fA-F]{24}$/.test(id);
     const whereClause: any = {};
-    if (status && status !== 'All') {
+    if (status && status !== 'All' && status !== 'ALL') {
       const upper = status.toUpperCase().replace(/\s+/g, '_');
       if (
         Object.values(ApplicationStatus).includes(upper as ApplicationStatus)
@@ -249,35 +252,50 @@ export class ApplicationsService {
       }
     }
 
-    if (userId && userId !== 'all') {
-      const userOrConditions: any[] = [];
-      if (isMongoId(userId)) userOrConditions.push({ id: userId });
-      userOrConditions.push({ phone: userId }, { email: userId });
-
-      const matchedUser = await this.prisma.user.findFirst({
-        where: { OR: userOrConditions },
-      }).catch(() => null);
-
-      const targetIds: string[] = [];
-      if (isMongoId(userId)) targetIds.push(userId);
-      if (matchedUser && isMongoId(matchedUser.id) && !targetIds.includes(matchedUser.id)) {
-        targetIds.push(matchedUser.id);
-      }
-
-      if (targetIds.length > 0) {
-        return this.prisma.application.findMany({
-          where: {
-            ...whereClause,
-            userId: { in: targetIds },
-          },
-          orderBy: { submittedAt: 'desc' },
-          include: { service: true, user: { include: { profile: true } } },
-        });
-      }
-
-      // User has no applications - return empty array to maintain strict privacy
-      return [];
+    // If userId is omitted or 'all' or 'admin', return all applications (for Admin Web Panel)
+    if (!userId || userId === 'all' || userId === 'admin' || userId === 'default-user-id') {
+      return this.prisma.application.findMany({
+        where: whereClause,
+        orderBy: { submittedAt: 'desc' },
+        include: {
+          service: true,
+          user: { include: { profile: true } },
+          refundRequests: true,
+        },
+      });
     }
+
+    const userOrConditions: any[] = [];
+    if (isMongoId(userId)) userOrConditions.push({ id: userId });
+    userOrConditions.push({ phone: userId }, { email: userId });
+
+    const matchedUser = await this.prisma.user.findFirst({
+      where: { OR: userOrConditions },
+    }).catch(() => null);
+
+    const targetIds: string[] = [];
+    if (isMongoId(userId)) targetIds.push(userId);
+    if (matchedUser && isMongoId(matchedUser.id) && !targetIds.includes(matchedUser.id)) {
+      targetIds.push(matchedUser.id);
+    }
+
+    if (targetIds.length > 0) {
+      return this.prisma.application.findMany({
+        where: {
+          ...whereClause,
+          userId: { in: targetIds },
+        },
+        orderBy: { submittedAt: 'desc' },
+        include: {
+          service: true,
+          user: { include: { profile: true } },
+          refundRequests: true,
+        },
+      });
+    }
+
+    // User has no applications - return empty array to maintain strict privacy
+    return [];
   }
 
   async getApplicationById(id: string) {
@@ -294,6 +312,8 @@ export class ApplicationsService {
       include: { 
         service: true,
         user: { include: { profile: true } },
+        documentUploads: true,
+        refundRequests: true,
       },
     });
 
@@ -304,7 +324,12 @@ export class ApplicationsService {
     return application;
   }
 
-  async updateStatus(id: string, status: string, rejectionReason?: string) {
+  async updateStatus(
+    id: string,
+    status: string,
+    rejectionReason?: string,
+    adminInfo?: { adminId?: string; adminEmail?: string; adminName?: string; adminRole?: string },
+  ) {
     const isMongoId = (idStr?: string) => typeof idStr === 'string' && /^[0-9a-fA-F]{24}$/.test(idStr);
     const orConditions: any[] = [{ refNumber: id }];
     if (isMongoId(id)) {
@@ -354,6 +379,29 @@ export class ApplicationsService {
     try {
       AdminGateway.broadcast('applications_updated', updated);
       AdminGateway.broadcast('application_status_changed', updated);
+
+      const actingName = adminInfo?.adminName || (adminInfo?.adminEmail ? adminInfo.adminEmail.split('@')[0] : (updated.officialOfficer || 'Field Operator'));
+      const actingEmail = adminInfo?.adminEmail || '';
+      const actingId = adminInfo?.adminId;
+      const actingRole = adminInfo?.adminRole || (actingEmail === 'admin@cybersave.com' ? 'Super Administrator' : 'Sub-Admin / Operator');
+
+      let auditAct = `APPLICATION_${targetStatus}`;
+      let auditDet = `Application #${updated.refNumber} (${updated.serviceTitle}) status transitioned to ${targetStatus} by ${actingRole} ${actingName}`;
+      if (targetStatus === ApplicationStatus.APPROVED) {
+        auditAct = 'APPLICATION_APPROVED';
+        auditDet = `Application #${updated.refNumber} (${updated.serviceTitle}) verified & APPROVED by ${actingRole} ${actingName}. Digital certificate authorized.`;
+      } else if (targetStatus === ApplicationStatus.REJECTED) {
+        auditAct = 'APPLICATION_REJECTED';
+        auditDet = `Application #${updated.refNumber} (${updated.serviceTitle}) REJECTED by ${actingRole} ${actingName}. Reason: ${rejectionReason || 'Document verification issue'}`;
+      }
+
+      await AdminGateway.logActivity(this.prisma, {
+        userId: actingId,
+        userEmail: actingEmail,
+        userName: actingName,
+        action: auditAct,
+        details: auditDet,
+      });
     } catch (wsErr) {
       this.logger.warn(`WS broadcast error: ${wsErr.message}`);
     }
@@ -373,5 +421,52 @@ export class ApplicationsService {
     }
 
     return updated;
+  }
+
+  async assignOperator(id: string, operatorName: string, operatorId?: string) {
+    const isMongoId = (idStr?: string) => typeof idStr === 'string' && /^[0-9a-fA-F]{24}$/.test(idStr);
+    const orConditions: any[] = [{ refNumber: id }];
+    if (isMongoId(id)) {
+      orConditions.push({ id });
+    }
+
+    const app = await this.prisma.application.findFirst({
+      where: { OR: orConditions },
+    });
+
+    if (!app) {
+      throw new NotFoundException(`Application ${id} not found`);
+    }
+
+    const updated = await this.prisma.application.update({
+      where: { id: app.id },
+      data: {
+        officialOfficer: operatorName,
+        updatedAt: new Date(),
+      },
+      include: {
+        user: { include: { profile: true } },
+        service: true,
+      },
+    });
+
+    await AdminGateway.logActivity(this.prisma, {
+      userId: app.userId,
+      action: 'APPLICATION_ASSIGNED',
+      details: `Application #${app.refNumber} (${app.serviceTitle || 'Citizen Application'}) assigned to verification officer: ${operatorName}`,
+    });
+
+    try {
+      AdminGateway.broadcast('applications_updated', updated);
+      AdminGateway.broadcast('application_assigned', { applicationId: app.id, assignedTo: operatorName });
+    } catch (wsErr) {
+      this.logger.warn(`WS broadcast error: ${wsErr.message}`);
+    }
+
+    return {
+      success: true,
+      message: `Application successfully assigned to ${operatorName}`,
+      application: updated,
+    };
   }
 }
