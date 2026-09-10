@@ -350,6 +350,182 @@ app.get(['/api/admin/applications', '/api/v1/applications', '/api/applications']
   }
 });
 
+app.post(['/api/admin/applications', '/api/v1/applications', '/api/applications', '/applications'], async (req: any, res: any) => {
+  try {
+    const {
+      userId,
+      serviceId,
+      serviceSlug,
+      serviceTitle,
+      formData = {},
+      documents = [],
+      feePaid,
+      paymentStatus = 'Success',
+      razorpayOrderId,
+      razorpayPaymentId,
+      razorpaySignature,
+    } = req.body;
+
+    const isMongoId = (id?: string) => typeof id === 'string' && /^[0-9a-fA-F]{24}$/.test(id);
+    const citizenEmail = formData.email || (userId && userId.includes('@') ? userId.trim().toLowerCase() : `citizen_${Date.now()}@cybersave.app`);
+    const citizenPhone = formData.phone || (userId && /^\+?[0-9]{10,13}$/.test(userId) ? userId.trim() : '+91 98765 43210');
+    const citizenName = formData.fullName || formData.applicantName || 'Citizen Applicant';
+
+    let matchedUser = null;
+    const userOrConditions: any[] = [];
+    if (userId && isMongoId(userId)) userOrConditions.push({ id: userId });
+    if (citizenEmail && citizenEmail.includes('@')) userOrConditions.push({ email: citizenEmail });
+    if (citizenPhone && citizenPhone.length >= 10) userOrConditions.push({ phone: citizenPhone });
+
+    if (userOrConditions.length > 0) {
+      matchedUser = await prisma.user.findFirst({
+        where: { OR: userOrConditions },
+        include: { profile: true },
+      }).catch(() => null);
+    }
+
+    if (!matchedUser) {
+      matchedUser = await prisma.user.create({
+        data: {
+          email: citizenEmail,
+          phone: citizenPhone,
+          role: 'USER',
+          status: 'ACTIVE',
+          profile: {
+            create: {
+              fullName: citizenName,
+              phone: citizenPhone,
+              email: citizenEmail,
+              district: formData.district || 'Central District',
+              state: formData.stateName || formData.state || 'Delhi',
+              pinCode: formData.pinCode || '110001',
+              address: formData.address || 'New Delhi, India',
+            }
+          }
+        },
+        include: { profile: true }
+      });
+    }
+
+    // Resolve service
+    let resolvedServiceId = serviceId;
+    let finalServiceTitle = serviceTitle || 'Government Citizen Service';
+    if (!resolvedServiceId && serviceSlug) {
+      const srv = await prisma.service.findUnique({ where: { slug: serviceSlug } }).catch(() => null);
+      if (srv) {
+        resolvedServiceId = srv.id;
+        finalServiceTitle = srv.title || finalServiceTitle;
+      }
+    }
+    if (!resolvedServiceId) {
+      const srv = await prisma.service.findFirst({ where: { isActive: true } }).catch(() => null);
+      if (srv) resolvedServiceId = srv.id;
+    }
+
+    // Generate unique official reference number
+    const randomNum = Math.floor(100000 + Math.random() * 900000);
+    const refNumber = `CSB2026${randomNum}`;
+
+    // Normalize documents
+    const cleanDocs = Array.isArray(documents)
+      ? documents.map((d: any, i: number) => {
+          if (typeof d === 'string') return { label: `Supporting Proof #${i + 1}`, fileName: `proof_${i + 1}.jpg`, fileUrl: d, type: 'Identity Proof', size: '1.4 MB' };
+          return {
+            label: d.label || d.name || d.fileName || `Supporting Proof #${i + 1}`,
+            fileName: d.fileName || d.name || `proof_${i + 1}.pdf`,
+            fileUrl: d.fileUrl || d.url || d.uri || '',
+            type: d.type || 'Identity & Address Proof',
+            size: d.size || '1.4 MB',
+            uploadedAt: d.uploadedAt || new Date().toISOString(),
+          };
+        })
+      : [];
+
+    const newApp = await prisma.application.create({
+      data: {
+        refNumber,
+        userId: matchedUser.id,
+        serviceId: resolvedServiceId,
+        serviceTitle: finalServiceTitle,
+        status: 'SUBMITTED',
+        officialOfficer: 'Principal Verification Officer (SDM)',
+        estimatedCompletion: '3-5 Business Days',
+        feePaid: feePaid !== undefined ? Number(feePaid) : 50,
+        paymentStatus: paymentStatus || 'Success',
+        razorpayOrderId: razorpayOrderId || null,
+        razorpayPaymentId: razorpayPaymentId || null,
+        razorpaySignature: razorpaySignature || null,
+        formData: {
+          ...formData,
+          fullName: citizenName,
+          email: citizenEmail,
+          phone: citizenPhone,
+        },
+        documents: cleanDocs,
+        submittedAt: new Date(),
+        updatedAt: new Date(),
+      },
+      include: {
+        user: { include: { profile: true } },
+        service: true,
+        refundRequests: true,
+      }
+    });
+
+    // Record Audit Log
+    await prisma.auditLog.create({
+      data: {
+        userId: matchedUser.id,
+        userEmail: citizenEmail,
+        userName: citizenName,
+        action: 'APPLICATION_SUBMITTED',
+        details: `Citizen application #${refNumber} submitted for "${finalServiceTitle}" with ${cleanDocs.length} supporting document(s).`,
+      }
+    }).catch(() => null);
+
+    // Broadcast real-time WebSocket events cluster-wide
+    const socketPayload = {
+      id: newApp.id,
+      dbId: newApp.id,
+      rawId: newApp.id,
+      refNumber: newApp.refNumber,
+      userId: newApp.userId,
+      serviceTitle: newApp.serviceTitle,
+      status: 'SUBMITTED',
+      feePaid: newApp.feePaid,
+      paymentStatus: newApp.paymentStatus,
+      submittedAt: newApp.submittedAt.toISOString(),
+      updatedAt: newApp.updatedAt.toISOString(),
+      documents: newApp.documents,
+      formData: newApp.formData,
+      officialOfficer: newApp.officialOfficer,
+      user: {
+        id: matchedUser.id,
+        email: matchedUser.email,
+        phone: matchedUser.phone,
+        profile: matchedUser.profile,
+      }
+    };
+
+    if (io) {
+      io.emit('new_application_submitted', socketPayload);
+      io.emit('applications_updated', socketPayload);
+      io.emit('application_status_changed', socketPayload);
+      io.emit('transactions_updated');
+    }
+
+    res.status(201).json({
+      success: true,
+      refNumber: newApp.refNumber,
+      id: newApp.id,
+      application: newApp,
+    });
+  } catch (e: any) {
+    console.error('[POST /api/v1/applications] Error:', e);
+    res.status(500).json({ error: e.message || 'Failed to submit application' });
+  }
+});
+
 app.get(['/api/admin/applications/:id', '/api/v1/applications/:id', '/api/applications/:id'], async (req: any, res: any) => {
   try {
     const targetId = String(req.params.id).trim();
