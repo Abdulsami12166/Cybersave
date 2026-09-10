@@ -681,42 +681,7 @@ export async function fetchRealTransactionsData() {
   const transactions: any[] = [];
   const seenTxnKeys = new Set<string>();
 
-  // 1. Process Wallet transactions (genuine wallet top-ups via UPI / Razorpay)
-  walletTxns.forEach((w: any) => {
-    const isRefundCredit = (w.title || '').toLowerCase().includes('refund') || (w.subtitle || '').toLowerCase().includes('application');
-    
-    // If this wallet transaction is the credit payout of an application refund, skip to avoid double counting
-    // because the application transaction itself is listed with status REFUNDED and the exact refund reference!
-    if (isRefundCredit) {
-      return;
-    }
-
-    const key = `wt_${w.id}`;
-    if (!seenTxnKeys.has(key)) {
-      seenTxnKeys.add(key);
-      const isCredit = (w.type || '').toUpperCase() === 'CREDIT';
-      const u = walletUserMap.get(w.userId);
-      const citizenName = u?.profile?.fullName || (u?.phone ? `Citizen ${u.phone.slice(-4)}` : (u?.email ? u.email.split('@')[0] : 'Citizen User'));
-      const amt = Number(w.amount || 0);
-      const dateIso = w.createdAt ? new Date(w.createdAt).toISOString() : new Date().toISOString();
-
-      transactions.push({
-        id: w.refId || `TXN-W${w.id.substring(0, 8).toUpperCase()}`,
-        refNumber: w.refId || `REF-${w.id.substring(0, 8).toUpperCase()}`,
-        date: dateIso,
-        dateOnly: dateIso.slice(0, 10),
-        customer: citizenName,
-        service: w.title || (isCredit ? 'Wallet Top-up' : 'Service Fee Payment'),
-        paymentMethod: w.title?.includes('Razorpay') ? 'Razorpay UPI' : (w.title?.includes('UPI') ? 'UPI Payment' : 'Portal Payment'),
-        amount: amt,
-        status: w.status || 'SUCCESS',
-        isRefunded: false,
-        refundRef: undefined,
-      });
-    }
-  });
-
-  // 2. Process Application payment transactions
+  // Process Application payment transactions directly from the live application ledger
   apps.forEach((a: any) => {
     const matchingRefund = approvedRefundMap.get(a.id) || (a.refNumber ? approvedRefundMap.get(a.refNumber) : null);
     const isRef = (a.refundStatus || '').toUpperCase() === 'APPROVED' || (a.paymentStatus || '').toLowerCase() === 'refunded' || !!matchingRefund;
@@ -810,5 +775,145 @@ export async function fetchRealTransactionsData() {
   };
 
   return { transactions, stats };
+}
+
+export async function performApplicationStatusUpdate(params: {
+  targetId: string;
+  status: string;
+  rejectionReason?: string;
+  adminId?: string;
+  adminName?: string;
+  adminEmail?: string;
+  adminRole?: string;
+  io?: any;
+}) {
+  const { targetId, status, rejectionReason, adminId, adminName, adminEmail, adminRole, io } = params;
+  if (!targetId) throw new Error('Target application ID or reference number is required');
+
+  const cleanTargetId = String(targetId).trim();
+  const isMongoId = /^[0-9a-fA-F]{24}$/.test(cleanTargetId);
+  let app: any = null;
+
+  if (isMongoId) {
+    app = await prisma.application.findUnique({
+      where: { id: cleanTargetId },
+      include: {
+        user: { include: { profile: true } },
+        service: true,
+        refundRequests: true,
+      }
+    });
+  }
+
+  if (!app) {
+    app = await prisma.application.findFirst({
+      where: isMongoId
+        ? { OR: [{ refNumber: cleanTargetId }, { id: cleanTargetId }] }
+        : { refNumber: cleanTargetId },
+      include: {
+        user: { include: { profile: true } },
+        service: true,
+        refundRequests: true,
+      }
+    });
+  }
+
+  if (!app) {
+    throw new Error(`Application not found for identifier: ${cleanTargetId}`);
+  }
+
+  const validStatusMap: Record<string, string> = {
+    approved: 'APPROVED',
+    Approved: 'APPROVED',
+    APPROVED: 'APPROVED',
+    rejected: 'REJECTED',
+    Rejected: 'REJECTED',
+    REJECTED: 'REJECTED',
+    in_progress: 'IN_PROGRESS',
+    'In Progress': 'IN_PROGRESS',
+    Processing: 'IN_PROGRESS',
+    IN_PROGRESS: 'IN_PROGRESS',
+    submitted: 'SUBMITTED',
+    'In Review': 'SUBMITTED',
+    SUBMITTED: 'SUBMITTED',
+    verifying: 'VERIFYING',
+    VERIFYING: 'VERIFYING',
+    completed: 'COMPLETED',
+    Completed: 'COMPLETED',
+    COMPLETED: 'COMPLETED',
+  };
+
+  const finalStatus = validStatusMap[status] || (status ? status.toUpperCase() : 'APPROVED');
+  const finalRejectionReason = finalStatus === 'REJECTED'
+    ? (rejectionReason || 'Documents could not be verified by administrative verification officer.')
+    : null;
+
+  const updated = await prisma.application.update({
+    where: { id: app.id },
+    data: {
+      status: finalStatus as any,
+      rejectionReason: finalRejectionReason,
+      updatedAt: new Date(),
+    },
+    include: {
+      user: { include: { profile: true } },
+      service: true,
+      refundRequests: true,
+    }
+  });
+
+  const actingName = adminName || (adminEmail ? adminEmail.split('@')[0] : (updated.officialOfficer || 'Administrative Officer'));
+  const actingEmail = adminEmail || '';
+  const actingRole = adminRole || (actingEmail === 'admin@cybersave.com' ? 'Super Administrator' : 'Verification Officer');
+
+  let auditAction = `APPLICATION_${finalStatus}`;
+  let auditDetails = `Application #${updated.refNumber} (${updated.serviceTitle}) updated to ${finalStatus} by ${actingRole} ${actingName}.`;
+  if (finalStatus === 'APPROVED') {
+    auditAction = 'APPLICATION_APPROVED';
+    auditDetails = `Application #${updated.refNumber} (${updated.serviceTitle}) officially APPROVED by ${actingRole} ${actingName}. Digital certificate authorized.`;
+  } else if (finalStatus === 'REJECTED') {
+    auditAction = 'APPLICATION_REJECTED';
+    auditDetails = `Application #${updated.refNumber} (${updated.serviceTitle}) REJECTED by ${actingRole} ${actingName}. Reason: ${finalRejectionReason}`;
+  }
+
+  await prisma.auditLog.create({
+    data: {
+      userId: adminId || app.userId,
+      userName: actingName,
+      userEmail: actingEmail,
+      action: auditAction,
+      details: auditDetails,
+    }
+  }).catch(() => null);
+
+  const payload = {
+    id: updated.id,
+    dbId: updated.id,
+    rawId: updated.id,
+    refNumber: updated.refNumber,
+    userId: updated.userId,
+    serviceTitle: updated.serviceTitle,
+    status: finalStatus,
+    rejectionReason: finalRejectionReason,
+    paymentStatus: updated.paymentStatus,
+    refundStatus: updated.refundStatus,
+    updatedAt: updated.updatedAt.toISOString(),
+    officialOfficer: updated.officialOfficer,
+    user: {
+      id: updated.user?.id,
+      email: updated.user?.email,
+      phone: updated.user?.phone,
+      name: updated.user?.profile?.fullName,
+    }
+  };
+
+  if (io) {
+    io.emit('application_status_changed', payload);
+    io.emit('applications_updated', payload);
+    io.emit('update_application_status_success', payload);
+    io.emit('transactions_updated');
+  }
+
+  return { success: true, application: updated, payload };
 }
 

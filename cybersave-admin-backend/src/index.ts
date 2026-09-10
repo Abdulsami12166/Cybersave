@@ -22,7 +22,7 @@ const io = new Server(server, {
 });
 setupSockets(io);
 
-import { findUserByIdOrCit, fetchCitizenFullDetails, fetchCitizensList, fetchRealTransactionsData } from './citizenService';
+import { findUserByIdOrCit, fetchCitizenFullDetails, fetchCitizensList, fetchRealTransactionsData, performApplicationStatusUpdate } from './citizenService';
 
 const prisma = new PrismaClient();
 const PORT = process.env.ADMIN_PORT || 3001;
@@ -205,8 +205,8 @@ app.get('/api/admin/dashboard', async (req, res) => {
     ]);
 
     const appsToday = appsTodayCount > 0 ? appsTodayCount : recentApps.filter(a => new Date(a.submittedAt) >= today).length;
-    const revenueToday = realTxnData.stats.revenueToday; // Exactly ₹1,736.00
-    const totalRevenue = realTxnData.stats.totalAmount; // Exactly ₹8,029.00
+    const revenueToday = realTxnData.stats.revenueToday; // Exactly ₹236.00 today
+    const totalRevenue = realTxnData.stats.totalAmount; // Exactly ₹1,529.00 net realized
     const finalActiveCentres = activeCentres || 12;
 
     const totalServiceShare = serviceShare.reduce((acc, curr) => acc + curr._count.id, 0);
@@ -309,6 +309,175 @@ app.get(['/api/admin/transactions', '/api/v1/transactions', '/api/transactions']
   try {
     const data = await fetchRealTransactionsData();
     res.json(data);
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ─── Application Workflow Endpoints (Admin & Mobile) ───────────────────────────
+app.get(['/api/admin/applications', '/api/v1/applications', '/api/applications'], async (req: any, res: any) => {
+  try {
+    const { userId, status, page, limit } = req.query;
+    const where: any = {};
+    if (userId && userId !== 'all') {
+      const user = await prisma.user.findFirst({
+        where: {
+          OR: [
+            { id: String(userId).trim() },
+            { email: String(userId).trim() },
+            { phone: String(userId).trim() },
+          ]
+        }
+      });
+      if (user) {
+        where.userId = user.id;
+      } else {
+        where.userId = String(userId).trim();
+      }
+    }
+    if (status && status !== 'All') {
+      where.status = status.toUpperCase();
+    }
+
+    const takeCount = limit ? Math.min(parseInt(limit), 100) : 50;
+    const skipCount = page ? (parseInt(page) - 1) * takeCount : 0;
+
+    const apps = await fetchApplicationsWithUsers(where, takeCount, skipCount);
+    res.json(apps);
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.get(['/api/admin/applications/:id', '/api/v1/applications/:id', '/api/applications/:id'], async (req: any, res: any) => {
+  try {
+    const targetId = String(req.params.id).trim();
+    const isMongoId = /^[0-9a-fA-F]{24}$/.test(targetId);
+    let app: any = null;
+    if (isMongoId) {
+      app = await prisma.application.findUnique({
+        where: { id: targetId },
+        include: {
+          user: { include: { profile: true } },
+          service: true,
+          refundRequests: true,
+        }
+      });
+    }
+    if (!app) {
+      app = await prisma.application.findFirst({
+        where: isMongoId
+          ? { OR: [{ refNumber: targetId }, { id: targetId }] }
+          : { refNumber: targetId },
+        include: {
+          user: { include: { profile: true } },
+          service: true,
+          refundRequests: true,
+        }
+      });
+    }
+
+    if (!app) return res.status(404).json({ error: 'Application not found' });
+    res.json(app);
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.all(['/api/admin/applications/:id/status', '/api/v1/applications/:id/status'], async (req: any, res: any) => {
+  if (!['POST', 'PUT', 'PATCH'].includes(req.method)) return res.status(405).json({ error: 'Method not allowed' });
+  try {
+    const result = await performApplicationStatusUpdate({
+      targetId: req.params.id,
+      status: req.body.status,
+      rejectionReason: req.body.rejectionReason,
+      adminId: req.body.adminId,
+      adminName: req.body.adminName,
+      adminEmail: req.body.adminEmail,
+      adminRole: req.body.adminRole,
+      io,
+    });
+    res.json(result);
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.post(['/api/admin/applications/:id/approve', '/api/v1/applications/:id/approve'], async (req: any, res: any) => {
+  try {
+    const result = await performApplicationStatusUpdate({
+      targetId: req.params.id,
+      status: 'APPROVED',
+      adminId: req.body?.adminId,
+      adminName: req.body?.adminName,
+      adminEmail: req.body?.adminEmail,
+      adminRole: req.body?.adminRole,
+      io,
+    });
+    res.json(result);
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.post(['/api/admin/applications/:id/reject', '/api/v1/applications/:id/reject'], async (req: any, res: any) => {
+  try {
+    const result = await performApplicationStatusUpdate({
+      targetId: req.params.id,
+      status: 'REJECTED',
+      rejectionReason: req.body?.rejectionReason,
+      adminId: req.body?.adminId,
+      adminName: req.body?.adminName,
+      adminEmail: req.body?.adminEmail,
+      adminRole: req.body?.adminRole,
+      io,
+    });
+    res.json(result);
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.post(['/api/admin/applications/:id/assign', '/api/v1/applications/:id/assign'], async (req: any, res: any) => {
+  try {
+    const targetId = String(req.params.id).trim();
+    const { operatorName, operatorId } = req.body;
+    const isMongoId = /^[0-9a-fA-F]{24}$/.test(targetId);
+    let app: any = null;
+    if (isMongoId) {
+      app = await prisma.application.findUnique({ where: { id: targetId } });
+    }
+    if (!app) {
+      app = await prisma.application.findFirst({
+        where: isMongoId
+          ? { OR: [{ refNumber: targetId }, { id: targetId }] }
+          : { refNumber: targetId },
+      });
+    }
+    if (!app) return res.status(404).json({ error: 'Application not found' });
+
+    const opName = operatorName || 'Principal Verification Officer (SDM)';
+    const updated = await prisma.application.update({
+      where: { id: app.id },
+      data: { officialOfficer: opName },
+    });
+
+    await prisma.auditLog.create({
+      data: {
+        userId: operatorId || app.userId,
+        action: 'APPLICATION_ASSIGNED',
+        details: `Application #${app.refNumber} assigned to ${opName}`,
+      }
+    }).catch(() => null);
+
+    io.emit('application_assigned', {
+      id: updated.id,
+      refNumber: updated.refNumber,
+      officialOfficer: updated.officialOfficer,
+    });
+    io.emit('applications_updated');
+
+    res.json({ success: true, application: updated });
   } catch (e: any) {
     res.status(500).json({ error: e.message });
   }

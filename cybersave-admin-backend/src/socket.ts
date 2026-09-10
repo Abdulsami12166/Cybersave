@@ -2,7 +2,7 @@ import { Server, Socket } from 'socket.io';
 import { PrismaClient } from '@prisma/client';
 import { messaging } from './firebase';
 import bcrypt from 'bcrypt';
-import { findUserByIdOrCit, fetchCitizenFullDetails, fetchCitizensList, fetchRealTransactionsData } from './citizenService';
+import { findUserByIdOrCit, fetchCitizenFullDetails, fetchCitizensList, fetchRealTransactionsData, performApplicationStatusUpdate } from './citizenService';
 
 const prisma = new PrismaClient();
 
@@ -564,6 +564,96 @@ export function setupSockets(io: Server) {
           });
         }
       } catch (e) { console.error('[Socket] request_application_detail error:', e); }
+    });
+
+    socket.on('update_application_status', async (data: any) => {
+      try {
+        const targetId = data?.applicationId || data?.id || data?.refNumber;
+        if (!targetId) return;
+        const result = await performApplicationStatusUpdate({
+          targetId,
+          status: data.status,
+          rejectionReason: data.rejectionReason,
+          adminId: data.adminId,
+          adminName: data.adminName,
+          adminEmail: data.adminEmail,
+          adminRole: data.adminRole,
+          io,
+        });
+        socket.emit('update_application_status_success', result.payload);
+      } catch (e: any) {
+        console.error('[Socket] update_application_status error:', e.message);
+      }
+    });
+
+    socket.on('approve_application', async (data: any) => {
+      try {
+        const targetId = data?.applicationId || data?.id || data?.refNumber;
+        if (!targetId) return;
+        await performApplicationStatusUpdate({
+          targetId,
+          status: 'APPROVED',
+          adminId: data.adminId,
+          adminName: data.adminName,
+          adminEmail: data.adminEmail,
+          adminRole: data.adminRole,
+          io,
+        });
+      } catch (e: any) {
+        console.error('[Socket] approve_application error:', e.message);
+      }
+    });
+
+    socket.on('reject_application', async (data: any) => {
+      try {
+        const targetId = data?.applicationId || data?.id || data?.refNumber;
+        if (!targetId) return;
+        await performApplicationStatusUpdate({
+          targetId,
+          status: 'REJECTED',
+          rejectionReason: data.rejectionReason,
+          adminId: data.adminId,
+          adminName: data.adminName,
+          adminEmail: data.adminEmail,
+          adminRole: data.adminRole,
+          io,
+        });
+      } catch (e: any) {
+        console.error('[Socket] reject_application error:', e.message);
+      }
+    });
+
+    socket.on('assign_application', async (data: any) => {
+      try {
+        const targetId = String(data?.applicationId || data?.id).trim();
+        const opName = data?.operatorName || 'Principal Verification Officer (SDM)';
+        const isMongoId = /^[0-9a-fA-F]{24}$/.test(targetId);
+        let app: any = null;
+        if (isMongoId) {
+          app = await prisma.application.findUnique({ where: { id: targetId } });
+        }
+        if (!app) {
+          app = await prisma.application.findFirst({
+            where: isMongoId
+              ? { OR: [{ refNumber: targetId }, { id: targetId }] }
+              : { refNumber: targetId }
+          });
+        }
+        if (app) {
+          const updated = await prisma.application.update({
+            where: { id: app.id },
+            data: { officialOfficer: opName }
+          });
+          io.emit('application_assigned', {
+            id: updated.id,
+            refNumber: updated.refNumber,
+            officialOfficer: updated.officialOfficer
+          });
+          io.emit('applications_updated');
+        }
+      } catch (e: any) {
+        console.error('[Socket] assign_application error:', e.message);
+      }
     });
 
     socket.on('request_services_data', async () => {
