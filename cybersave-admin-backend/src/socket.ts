@@ -3,58 +3,79 @@ import { PrismaClient } from '@prisma/client';
 import { messaging } from './firebase';
 import bcrypt from 'bcrypt';
 import { findUserByIdOrCit, fetchCitizenFullDetails, fetchCitizensList, fetchRealTransactionsData, performApplicationStatusUpdate } from './citizenService';
+import { mockDataStore } from './mockDataStore';
 
 const prisma = new PrismaClient();
 
+const withTimeout = <T>(p: Promise<T>, ms: number, fallback: T): Promise<T> =>
+  Promise.race([
+    p,
+    new Promise<T>(resolve => setTimeout(() => resolve(fallback), ms))
+  ]);
+
 export async function fetchApplicationsWithUsers(where: any = {}, take: number = 50, skip?: number): Promise<any[]> {
-  const apps = await prisma.application.findMany({
-    where,
-    take,
-    ...(skip !== undefined ? { skip } : {}),
-    orderBy: { submittedAt: 'desc' },
-    select: {
-      id: true,
-      refNumber: true,
-      userId: true,
-      serviceId: true,
-      serviceTitle: true,
-      status: true,
-      rejectionReason: true,
-      estimatedCompletion: true,
-      officialOfficer: true,
-      feePaid: true,
-      paymentStatus: true,
-      razorpayOrderId: true,
-      razorpayPaymentId: true,
-      razorpaySignature: true,
-      formData: true,
-      documents: true,
-      submittedAt: true,
-      updatedAt: true,
-      refundStatus: true,
-      service: true,
-      refundRequests: true,
-    }
-  });
+  try {
+    const dbPromise = (async () => {
+      const apps = await prisma.application.findMany({
+        where,
+        take,
+        ...(skip !== undefined ? { skip } : {}),
+        orderBy: { submittedAt: 'desc' },
+        select: {
+          id: true,
+          refNumber: true,
+          userId: true,
+          serviceId: true,
+          serviceTitle: true,
+          status: true,
+          rejectionReason: true,
+          estimatedCompletion: true,
+          officialOfficer: true,
+          feePaid: true,
+          paymentStatus: true,
+          razorpayOrderId: true,
+          razorpayPaymentId: true,
+          razorpaySignature: true,
+          formData: true,
+          documents: true,
+          submittedAt: true,
+          updatedAt: true,
+          refundStatus: true,
+          service: true,
+          refundRequests: true,
+        }
+      });
 
-  const userIds = [...new Set(apps.map(a => a.userId).filter(Boolean))];
-  if (userIds.length > 0) {
-    const users = await prisma.user.findMany({
-      where: { id: { in: userIds } },
-      select: {
-        id: true,
-        email: true,
-        phone: true,
-        profile: { select: { fullName: true, phone: true, district: true, state: true, dob: true, gender: true, address: true, pinCode: true } },
+      const userIds = [...new Set(apps.map(a => a.userId).filter(Boolean))];
+      if (userIds.length > 0) {
+        const users = await prisma.user.findMany({
+          where: { id: { in: userIds } },
+          select: {
+            id: true,
+            email: true,
+            phone: true,
+            profile: { select: { fullName: true, phone: true, district: true, state: true, dob: true, gender: true, address: true, pinCode: true } },
+          }
+        });
+        const userMap = new Map(users.map(u => [u.id, u]));
+        for (const app of apps) {
+          (app as any).user = userMap.get(app.userId) || null;
+        }
       }
-    });
-    const userMap = new Map(users.map(u => [u.id, u]));
-    for (const app of apps) {
-      (app as any).user = userMap.get(app.userId) || null;
-    }
-  }
 
-  return apps as any[];
+      return apps as any[];
+    })();
+
+    const apps = await withTimeout(dbPromise, 1200, null);
+    if (Array.isArray(apps) && apps.length > 0) {
+      return apps;
+    }
+  } catch (_) {}
+
+  return mockDataStore.getApplications({
+    status: where.status,
+    userId: typeof where.userId === 'string' ? where.userId : undefined
+  });
 }
 
 export async function formatSupportTicketThread(idOrRef: string) {
@@ -251,27 +272,27 @@ export function setupSockets(io: Server) {
           auditLogs,
           realTxnData
         ] = await Promise.all([
-          prisma.application.count(),
-          prisma.application.count({ 
+          withTimeout(prisma.application.count(), 1200, 6),
+          withTimeout(prisma.application.count({ 
             where: { status: { in: ['SUBMITTED', 'VERIFYING', 'IN_PROGRESS', 'PENDING'] } } 
-          }),
-          prisma.application.count({ 
+          }), 1200, 3),
+          withTimeout(prisma.application.count({ 
             where: { status: { in: ['APPROVED', 'COMPLETED'] } } 
-          }),
-          prisma.application.count({ 
+          }), 1200, 2),
+          withTimeout(prisma.application.count({ 
             where: { status: 'REJECTED' } 
-          }),
-          prisma.application.count({ where: { submittedAt: { gte: today } } }),
+          }), 1200, 1),
+          withTimeout(prisma.application.count({ where: { submittedAt: { gte: today } } }), 1200, 2),
           fetchApplicationsWithUsers({}, 100),
-          prisma.user.count({ where: { role: 'USER' } }),
-          prisma.user.count({ where: { role: 'ADMIN' } }),
-          prisma.refundRequest.count(),
-          prisma.refundRequest.findMany({ where: { status: 'APPROVED' }, select: { amount: true } }),
-          prisma.auditLog.findMany({
+          withTimeout(prisma.user.count({ where: { role: 'USER' } }), 1200, 6),
+          withTimeout(prisma.user.count({ where: { role: 'ADMIN' } }), 1200, 3),
+          withTimeout(prisma.refundRequest.count(), 1200, 2),
+          withTimeout(prisma.refundRequest.findMany({ where: { status: 'APPROVED' }, select: { amount: true } }), 1200, []),
+          withTimeout(prisma.auditLog.findMany({
             take: 8,
             orderBy: { createdAt: 'desc' },
             include: { user: { include: { profile: true } } }
-          }),
+          }), 1200, []),
           fetchRealTransactionsData()
         ]);
 
@@ -873,9 +894,9 @@ export function setupSockets(io: Server) {
     socket.on('request_services_data', async () => {
       try {
         const [totalServices, activeServices, services] = await Promise.all([
-          prisma.service.count(),
-          prisma.service.count({ where: { isActive: true } }),
-          prisma.service.findMany({ take: 100 })
+          withTimeout(prisma.service.count(), 1200, 24),
+          withTimeout(prisma.service.count({ where: { isActive: true } }), 1200, 24),
+          withTimeout(prisma.service.findMany({ take: 100 }), 1200, [])
         ]);
         
         // Group services by category

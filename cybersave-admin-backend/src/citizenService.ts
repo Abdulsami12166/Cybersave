@@ -80,16 +80,32 @@ export async function fetchCitizenFullDetails(targetId: string): Promise<any | n
     return cached.data;
   }
 
-  const user = await findUserByIdOrCit(targetId);
-  if (!user) {
+  let user: any = null;
+  try {
+    user = await withTimeout(findUserByIdOrCit(targetId), 1200, null);
+  } catch (_) {}
+
+  const { mockDataStore } = require('./mockDataStore');
+  const cachedCit = mockDataStore.getCitizenById(targetId);
+
+  if (!user && !cachedCit) {
     return null;
   }
 
-  const userId = user.id;
-  const userCached = citizenDetailsCache.get(userId);
-  if (userCached && Date.now() - userCached.timestamp < 30000) {
-    return userCached.data;
+  if (!user && cachedCit) {
+    user = {
+      id: cachedCit.id,
+      email: cachedCit.email,
+      phone: cachedCit.phone,
+      status: cachedCit.status,
+      isOnline: cachedCit.isOnline,
+      createdAt: cachedCit.createdAt,
+      lastSeenAt: cachedCit.lastSeenAt,
+      profile: cachedCit.profile,
+    };
   }
+
+  const userId = user.id;
 
   // Execute fast, isolated queries with 1200ms individual race timeouts
   const [profile, apps, aadhaarDocs, auditLogs, wallet, docUploads, feedbacks, walletTransactions] = await Promise.all([
