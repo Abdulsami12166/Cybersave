@@ -1,6 +1,7 @@
 {
   "version": 2,
-  "buildCommand": "prisma generate && nest build",
+  "buildCommand": "npm --prefix cybersave-admin-frontend install && npm --prefix cybersave-admin-frontend run build && npm run build",
+  "outputDirectory": "cybersave-admin-frontend/dist",
   "functions": {
     "api/index.js": {
       "includeFiles": "dist/**",
@@ -9,8 +10,16 @@
   },
   "rewrites": [
     {
-      "source": "/(.*)",
+      "source": "/api/(.*)",
       "destination": "/api/index.js"
+    },
+    {
+      "source": "/health",
+      "destination": "/api/index.js"
+    },
+    {
+      "source": "/((?!api/|health).*)",
+      "destination": "/index.html"
     }
   ]
 }
