@@ -68,19 +68,15 @@ async function bootstrap() {
 }
 
 export default async function handler(req: Request, res: Response) {
-  // Restore original request path if Vercel internal rewrite changed req.url to /api
   const matchedPath = 
     (req.headers['x-matched-path'] as string) || 
     (req.headers['x-forwarded-uri'] as string) || 
-    (req.headers['x-vercel-matched-path'] as string);
+    (req.headers['x-vercel-matched-path'] as string) ||
+    req.url;
 
-  if (matchedPath && (req.url === '/api' || req.url === '/api/' || req.url?.startsWith('/api?') || req.url?.startsWith('/api/index'))) {
-    const queryPart = req.url.includes('?') ? req.url.substring(req.url.indexOf('?')) : '';
-    req.url = matchedPath.includes('?') ? matchedPath : `${matchedPath}${queryPart}`;
-  }
+  const urlToCheck = (matchedPath || req.url || '/').split('?')[0];
 
-  const cleanUrl = (req.url || '/').split('?')[0];
-  if (cleanUrl === '/' || cleanUrl === '/health' || cleanUrl === '/api/health') {
+  if (urlToCheck === '/' || urlToCheck === '/api' || urlToCheck === '/health' || urlToCheck === '/api/health') {
     return res.status(200).json({
       status: 'ok',
       service: 'CyberSave Production Backend (Vercel Serverless)',
@@ -88,6 +84,11 @@ export default async function handler(req: Request, res: Response) {
       timestamp: new Date().toISOString(),
       uptime: process.uptime(),
     });
+  }
+
+  if (matchedPath && (req.url === '/api' || req.url === '/api/' || req.url?.startsWith('/api?') || req.url?.startsWith('/api/index'))) {
+    const queryPart = req.url.includes('?') ? req.url.substring(req.url.indexOf('?')) : '';
+    req.url = matchedPath.includes('?') ? matchedPath : `${matchedPath}${queryPart}`;
   }
 
   if (req.method === 'OPTIONS') {
