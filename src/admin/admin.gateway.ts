@@ -1408,122 +1408,106 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
       const apps = await this.prisma.application.findMany({
         take: 100,
         orderBy: { submittedAt: 'desc' },
-        include: {
-          user: { include: { profile: true } },
-          service: true,
-        },
       });
 
-      const formattedApps = await Promise.all(
-        apps.map(async (a) => {
-          const userProfile = a.user?.profile;
-          const formData = (a.formData as any) || {};
-          let docs = (a.documents as any) || [];
+      const userIds: string[] = Array.from(new Set(apps.map((a) => a.userId).filter(Boolean))) as string[];
+      const [users, profiles] = await Promise.all([
+        userIds.length > 0
+          ? this.prisma.user.findMany({
+              where: { id: { in: userIds } },
+              select: { id: true, email: true, phone: true },
+            }).catch(() => [])
+          : [],
+        userIds.length > 0
+          ? this.prisma.profile.findMany({
+              where: { userId: { in: userIds } },
+              select: { userId: true, fullName: true, phone: true, state: true, district: true, pinCode: true, address: true, dob: true, gender: true },
+            }).catch(() => [])
+          : [],
+      ]);
+      const userMap = new Map((users as any[]).map((u) => [u.id, u]));
+      const profileMap = new Map((profiles as any[]).map((p) => [p.userId, p]));
 
-          // If docs is empty, has empty arrays, or lacks valid fileUrl, look up DocumentUpload for this user
-          const hasValidDocs =
-            Array.isArray(docs) &&
-            docs.length > 0 &&
-            docs.some(
-              (d: any) =>
-                d &&
-                typeof d === 'object' &&
-                !Array.isArray(d) &&
-                (d.fileUrl || d.url || d.uri),
-            );
+      const formattedApps = apps.map((a) => {
+        const u: any = userMap.get(a.userId);
+        const p: any = profileMap.get(a.userId);
+        const formData = (a.formData as any) || {};
+        const docs = (a.documents as any) || [];
 
-          if (!hasValidDocs && a.userId) {
-            const userDocs = await this.prisma.documentUpload.findMany({
-              where: { userId: a.userId },
-              orderBy: { uploadedAt: 'desc' },
-              take: 4,
-            });
-            if (userDocs.length > 0) {
-              docs = userDocs.map((ud, idx) => ({
-                label: `Document Proof #${idx + 1}`,
-                fileName: ud.fileName || `proof_${idx + 1}.jpg`,
-                fileUrl: ud.fileUrl,
-                type: 'Identity Proof',
-              }));
-            }
-          }
+        const cleanedDocs = (Array.isArray(docs) ? docs : [])
+          .filter((d: any) => d && typeof d === 'object' && !Array.isArray(d) && (d.fileUrl || d.url || d.uri || d.fileName || d.label))
+          .map((d: any, idx: number) => ({
+            label: d.label || `Document Proof #${idx + 1}`,
+            fileName: d.fileName || `proof_${idx + 1}.jpg`,
+            fileUrl: d.fileUrl || d.url || d.uri || '',
+            type: d.type || 'Identity Proof',
+          }));
 
-          // Clean docs array so no empty arrays or invalid objects remain
-          const cleanedDocs = (Array.isArray(docs) ? docs : [])
-            .filter((d: any) => d && typeof d === 'object' && !Array.isArray(d) && (d.fileUrl || d.url || d.uri || d.fileName || d.label))
-            .map((d: any, idx: number) => ({
-              label: d.label || `Document Proof #${idx + 1}`,
-              fileName: d.fileName || `proof_${idx + 1}.jpg`,
-              fileUrl: d.fileUrl || d.url || d.uri || '',
-              type: d.type || 'Identity Proof',
-            }));
-
-          return {
-            id: a.refNumber || `APP-2026-${a.id.substring(0, 4).toUpperCase()}`,
-            rawId: a.id,
-            refNumber: a.refNumber,
-            citizen: userProfile?.fullName || formData.fullName || a.user?.email || 'Citizen Applicant',
-            citizenEmail: a.user?.email || formData.email || '',
-            citizenPhone: a.user?.phone || userProfile?.phone || formData.phone || '',
-            serviceType: a.serviceTitle || a.service?.title || 'Government Service',
-            serviceCategory: a.service?.category || 'Government',
-            priority: 'Medium',
-            rawStatus: a.status,
-            status:
-              a.status === 'SUBMITTED'
-                ? 'In Review'
-                : a.status === 'VERIFYING'
-                  ? 'Pending'
-                  : a.status === 'IN_PROGRESS'
-                    ? 'Processing'
-                    : a.status === 'APPROVED'
-                      ? 'Approved'
-                      : a.status === 'COMPLETED'
-                        ? 'Completed'
-                        : a.status === 'REJECTED'
-                          ? 'Rejected'
-                          : 'Pending',
-            assigned: a.officialOfficer || 'Auto Assigned (SDM)',
-            submitted: a.submittedAt ? a.submittedAt.toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' }) : 'Today',
-            submittedAtFull: a.submittedAt ? a.submittedAt.toLocaleString('en-IN', { dateStyle: 'medium', timeStyle: 'short' }) : new Date().toLocaleString('en-IN'),
-            sla: '24h',
-            amount: a.feePaid || 50.0,
-            paymentStatus: a.paymentStatus || 'Success',
-            razorpayPaymentId: a.razorpayPaymentId || '',
-            razorpayOrderId: a.razorpayOrderId || '',
-            rejectionReason: a.rejectionReason || '',
-            formData: {
-              fullName: formData.fullName || userProfile?.fullName || '',
-              email: formData.email || a.user?.email || '',
-              phone: formData.phone || a.user?.phone || userProfile?.phone || '',
-              dob: formData.dob || userProfile?.dob || '',
-              gender: formData.gender || userProfile?.gender || '',
-              fatherName: formData.fatherName || '',
-              motherName: formData.motherName || '',
-              placeOfBirth: formData.placeOfBirth || '',
-              state: formData.state || userProfile?.state || '',
-              district: formData.district || userProfile?.district || '',
-              pinCode: formData.pinCode || userProfile?.pinCode || '',
-              address: formData.address || userProfile?.address || '',
-              ...formData,
-            },
-            documents: cleanedDocs,
-            applicantProfile: {
-              fullName: userProfile?.fullName || formData.fullName || 'Citizen Applicant',
-              aadhaar: (userProfile as any)?.aadhaarNumber || formData.aadhaarNumber || 'Verified ID Vault',
-              dob: userProfile?.dob || formData.dob || 'Not Provided',
-              gender: userProfile?.gender || formData.gender || 'Not Provided',
-              fatherName: formData.fatherName || 'Not Provided',
-              motherName: formData.motherName || 'Not Provided',
-              placeOfBirth: formData.placeOfBirth || 'Not Provided',
-              state: userProfile?.state || formData.state || 'Not Provided',
-              district: userProfile?.district || formData.district || 'Not Provided',
-              pinCode: userProfile?.pinCode || formData.pinCode || 'Not Provided',
-              address: userProfile?.address || formData.address || 'Not Provided',
-            },
-          };
-        }),
-      );
+        return {
+          id: a.refNumber || `APP-2026-${a.id.substring(0, 4).toUpperCase()}`,
+          rawId: a.id,
+          refNumber: a.refNumber,
+          citizen: p?.fullName || formData.fullName || (u?.email ? u.email.split('@')[0] : 'Citizen Applicant'),
+          citizenEmail: u?.email || formData.email || '',
+          citizenPhone: u?.phone || p?.phone || formData.phone || '',
+          serviceType: a.serviceTitle || 'Government Service',
+          serviceCategory: 'Government',
+          priority: 'Medium',
+          rawStatus: a.status,
+          status:
+            a.status === 'SUBMITTED'
+              ? 'In Review'
+              : a.status === 'VERIFYING'
+                ? 'Pending'
+                : a.status === 'IN_PROGRESS'
+                  ? 'Processing'
+                  : a.status === 'APPROVED'
+                    ? 'Approved'
+                    : a.status === 'COMPLETED'
+                      ? 'Completed'
+                      : a.status === 'REJECTED'
+                        ? 'Rejected'
+                        : 'Pending',
+          assigned: a.officialOfficer || 'Auto Assigned (SDM)',
+          submitted: a.submittedAt ? a.submittedAt.toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' }) : 'Today',
+          submittedAtFull: a.submittedAt ? a.submittedAt.toLocaleString('en-IN', { dateStyle: 'medium', timeStyle: 'short' }) : new Date().toLocaleString('en-IN'),
+          sla: '24h',
+          amount: a.feePaid || 50.0,
+          paymentStatus: a.paymentStatus || 'Success',
+          razorpayPaymentId: a.razorpayPaymentId || '',
+          razorpayOrderId: a.razorpayOrderId || '',
+          rejectionReason: a.rejectionReason || '',
+          formData: {
+            fullName: formData.fullName || p?.fullName || '',
+            email: formData.email || u?.email || '',
+            phone: formData.phone || u?.phone || p?.phone || '',
+            dob: formData.dob || p?.dob || '',
+            gender: formData.gender || p?.gender || '',
+            fatherName: formData.fatherName || '',
+            motherName: formData.motherName || '',
+            placeOfBirth: formData.placeOfBirth || '',
+            state: formData.state || p?.state || '',
+            district: formData.district || p?.district || '',
+            pinCode: formData.pinCode || p?.pinCode || '',
+            address: formData.address || p?.address || '',
+            ...formData,
+          },
+          documents: cleanedDocs,
+          applicantProfile: {
+            fullName: p?.fullName || formData.fullName || 'Citizen Applicant',
+            aadhaar: formData.aadhaarNumber || 'Verified ID Vault',
+            dob: p?.dob || formData.dob || 'Not Provided',
+            gender: p?.gender || formData.gender || 'Not Provided',
+            fatherName: formData.fatherName || 'Not Provided',
+            motherName: formData.motherName || 'Not Provided',
+            placeOfBirth: formData.placeOfBirth || 'Not Provided',
+            state: p?.state || formData.state || 'Not Provided',
+            district: p?.district || formData.district || 'Not Provided',
+            pinCode: p?.pinCode || formData.pinCode || 'Not Provided',
+            address: p?.address || formData.address || 'Not Provided',
+          },
+        };
+      });
 
       client.emit('response_applications_data', {
         stats: { totalApps, todayApps, pending, processing, completed },
@@ -2001,62 +1985,49 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
   @SubscribeMessage('request_operators_data')
   async handleOperatorsData(@ConnectedSocket() client: Socket) {
     try {
-      let ops = await this.prisma.user.findMany({
+      const ops = await this.prisma.user.findMany({
         where: { role: 'ADMIN' },
-        include: { profile: true },
+        select: { id: true, email: true, phone: true, role: true, permissions: true, status: true, createdAt: true },
         orderBy: { createdAt: 'desc' },
       });
 
-      if (ops.length === 0) {
-        const salt = await bcrypt.genSalt(10);
-        const passwordHash = await bcrypt.hash('operator123', salt);
-        const createdOp = await this.prisma.user.create({
-          data: {
-            email: 'rajesh.kumar@cybersave.gov.in',
-            phone: '+91 98765 43210',
-            role: 'ADMIN',
-            passwordHash,
-            permissions: ['DASHBOARD', 'APPLICATIONS', 'OPERATORS', 'SETTINGS', 'USERS', 'REPORTS'],
-            status: 'ACTIVE',
-            profile: {
-              create: {
-                fullName: 'Rajesh Kumar',
-                phone: '+91 98765 43210',
-                email: 'rajesh.kumar@cybersave.gov.in',
-                address: '45, Sector 4, HSR Layout, Bengaluru, Karnataka - 560102',
-                district: 'Bengaluru',
-                state: 'Karnataka',
-                pinCode: '560102',
-                dob: '15/08/1988',
-                gender: 'Male',
-              },
-            },
-          },
-          include: { profile: true },
-        });
-        ops = [createdOp];
-      }
+      const opIds = ops.map((o) => o.id);
+      const profiles = opIds.length > 0
+        ? await this.prisma.profile.findMany({
+            where: { userId: { in: opIds } },
+            select: { userId: true, fullName: true, phone: true, district: true, state: true, dob: true },
+          }).catch(() => [])
+        : [];
+      const profileMap = new Map((profiles as any[]).map((p: any) => [p.userId, p]));
 
       const totalOps = ops.length;
       const active = ops.filter((o) => o.status !== 'SUSPENDED').length;
       const suspended = ops.filter((o) => o.status === 'SUSPENDED').length;
 
-      const formatOps = (list: any[]) => list.map((o, idx) => ({
-        id: o.id,
-        employeeId: `OPS-${new Date(o.createdAt).getFullYear()}-${o.id.slice(-4).toUpperCase()}`,
-        name: o.profile?.fullName || (o.email ? o.email.split('@')[0] : `Operator ${idx + 1}`),
-        role: o.email === 'admin@cybersave.com' ? 'Super Administrator' : 'Field Operator',
-        department: o.profile?.district ? `${o.profile.district} Seva Kendra` : 'Operations',
-        joinedDate: new Date(o.createdAt).toLocaleDateString('en-GB'),
-        lastActive: 'Active recently',
-        status: o.status === 'SUSPENDED' ? 'Suspended' : 'Active',
-        permissions: Array.isArray(o.permissions) ? o.permissions : [],
-        email: o.email || '',
-        phone: o.phone || o.profile?.phone || '+91 98765 43210',
-        avatarUrl: o.profile?.avatarUrl || '',
-      }));
-
-      const formattedOps = formatOps(ops);
+      const formattedOps = ops.map((o, idx) => {
+        const prof: any = profileMap.get(o.id);
+        const name = prof?.fullName || (o.email ? o.email.split('@')[0] : `Operator ${idx + 1}`);
+        const role = o.email === 'admin@cybersave.com' ? 'Super Administrator' : (prof?.dob ? 'Senior Field Operator' : 'Field Operator');
+        const department = prof?.district ? `${prof.district} Seva Kendra` : 'Operations';
+        return {
+          id: o.id,
+          employeeId: `OPS-${new Date(o.createdAt).getFullYear()}-${o.id.slice(-4).toUpperCase()}`,
+          name,
+          fullName: name,
+          role,
+          designation: role,
+          department,
+          center: department,
+          joinedDate: new Date(o.createdAt).toLocaleDateString('en-GB'),
+          lastActive: 'Active recently',
+          status: o.status === 'SUSPENDED' ? 'Suspended' : 'Active',
+          permissions: Array.isArray(o.permissions) ? o.permissions : ['DASHBOARD', 'APPLICATIONS'],
+          email: o.email || '',
+          phone: o.phone || prof?.phone || '+91 98765 43210',
+          avatarUrl: '',
+          applicationsProcessed: 3,
+        };
+      });
 
       client.emit('response_operators_data', {
         stats: { totalOps, active, pending: 0, suspended },

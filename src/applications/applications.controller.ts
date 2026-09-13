@@ -17,8 +17,9 @@ export class ApplicationsController {
   async getUserApplications(
     @Query('userId') userId?: string,
     @Query('status') status?: string,
+    @Query('refNumbers') refNumbers?: string,
   ) {
-    return this.applicationsService.getUserApplications(userId, status);
+    return this.applicationsService.getUserApplications(userId, status, refNumbers);
   }
 
   @Get(':id')
