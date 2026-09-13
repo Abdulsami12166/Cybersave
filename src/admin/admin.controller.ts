@@ -771,7 +771,13 @@ export class AdminController {
     };
   }
 
-  @Get('api/admin/dashboard')
+  @Get([
+    'api/admin/dashboard',
+    'api/admin/dashboard-stats',
+    'admin/dashboard',
+    'admin/dashboard-stats',
+    'api/v1/admin/dashboard',
+  ])
   @ApiOperation({ summary: 'Admin Dashboard Data' })
   async getDashboard() {
     const today = new Date();
