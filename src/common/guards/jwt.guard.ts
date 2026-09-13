@@ -47,15 +47,21 @@ export class JwtAuthGuard implements CanActivate {
           });
           payload = verified.payload;
         } catch (keycloakErr) {
-          throw new UnauthorizedException('Invalid or expired authentication token.');
+          throw new UnauthorizedException(
+            'Invalid or expired authentication token.',
+          );
         }
       } else {
-        throw new UnauthorizedException('Invalid or expired authentication token.');
+        throw new UnauthorizedException(
+          'Invalid or expired authentication token.',
+        );
       }
     }
 
     if (!payload) {
-      throw new UnauthorizedException('Invalid or expired authentication token.');
+      throw new UnauthorizedException(
+        'Invalid or expired authentication token.',
+      );
     }
 
     const userId = payload.sub || payload.id;
@@ -69,7 +75,9 @@ export class JwtAuthGuard implements CanActivate {
       }
 
       if (user.status === 'BLOCKED') {
-        throw new UnauthorizedException('Your account has been blocked by the Administrator.');
+        throw new UnauthorizedException(
+          'Your account has been blocked by the Administrator.',
+        );
       }
 
       (request as any).user = { ...payload, status: user.status };

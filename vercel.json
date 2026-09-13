@@ -1,0 +1,10 @@
+{
+  "version": 2,
+  "buildCommand": "prisma generate && nest build",
+  "rewrites": [
+    {
+      "source": "/(.*)",
+      "destination": "/api"
+    }
+  ]
+}

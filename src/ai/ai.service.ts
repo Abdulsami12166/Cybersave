@@ -26,7 +26,9 @@ export class AiService implements OnModuleInit {
         this.model = this.genAI.getGenerativeModel({
           model: 'gemini-3.6-flash',
         });
-        this.logger.log('Gemini AI Service initialized successfully for CyberBot.');
+        this.logger.log(
+          'Gemini AI Service initialized successfully for CyberBot.',
+        );
         return true;
       } catch (error) {
         this.logger.error('Failed to initialize Gemini AI Client', error);
@@ -171,7 +173,11 @@ Instructions for formatting your response:
 5. The PVC card will be printed and delivered to your registered address within 7-10 working days via India Post.`;
       }
 
-      if (q.includes('mobile') || q.includes('phone') || q.includes('link mobile')) {
+      if (
+        q.includes('mobile') ||
+        q.includes('phone') ||
+        q.includes('link mobile')
+      ) {
         return `Namaste! Here is how to link or update your mobile number with Aadhaar:
 
 ℹ️ Important: Biometric authentication (fingerprint/iris) is mandatory by UIDAI for mobile number linking.
@@ -185,7 +191,11 @@ Instructions for formatting your response:
 6. Your mobile number will be updated within 24-48 hours.`;
       }
 
-      if (q.includes('download') || q.includes('pdf') || q.includes('e-aadhaar')) {
+      if (
+        q.includes('download') ||
+        q.includes('pdf') ||
+        q.includes('e-aadhaar')
+      ) {
         return `Namaste! Here is how to download your official e-Aadhaar PDF:
 
 📲 Steps in Cybersave:
@@ -277,7 +287,13 @@ Tap "Aadhaar Services" on the Home Screen to get started!`;
 7. Download digitally signed certificate with QR code directly in the app!`;
       }
 
-      if (q.includes('caste') || q.includes('sc') || q.includes('st') || q.includes('obc') || q.includes('ews')) {
+      if (
+        q.includes('caste') ||
+        q.includes('sc') ||
+        q.includes('st') ||
+        q.includes('obc') ||
+        q.includes('ews')
+      ) {
         return `Namaste! Here is how to apply for a Caste / Category Certificate (SC/ST/OBC/EWS):
 
 📋 Required Documents:
@@ -295,7 +311,11 @@ Tap "Aadhaar Services" on the Home Screen to get started!`;
 6. The digitally signed certificate will be issued by the SDM/Tehsildar office within 7-15 days.`;
       }
 
-      if (q.includes('domicile') || q.includes('residence') || q.includes('niwas')) {
+      if (
+        q.includes('domicile') ||
+        q.includes('residence') ||
+        q.includes('niwas')
+      ) {
         return `Namaste! Here is how to apply for a Domicile / Residence Certificate:
 
 📋 Required Documents:
@@ -393,7 +413,12 @@ Tap "Transport Services" in Cybersave to start your application!`;
 5. Complete Mandatory e-KYC in the app to start receiving payments.`;
       }
 
-      if (q.includes('ayushman') || q.includes('pm-jay') || q.includes('golden card') || q.includes('health')) {
+      if (
+        q.includes('ayushman') ||
+        q.includes('pm-jay') ||
+        q.includes('golden card') ||
+        q.includes('health')
+      ) {
         return `Namaste! Here is how to apply for Ayushman Bharat PM-JAY (₹5 Lakh Free Treatment):
 
 🏥 Benefit: Free cashless health insurance cover up to ₹5,00,000 per family per year across 28,000+ empanelled government and private hospitals.

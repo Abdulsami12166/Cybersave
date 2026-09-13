@@ -1,4 +1,13 @@
-import { Body, Controller, Get, Param, Patch, Post, Put, Query } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Get,
+  Param,
+  Patch,
+  Post,
+  Put,
+  Query,
+} from '@nestjs/common';
 import {
   ApplicationsService,
   CreateApplicationDto,
@@ -29,41 +38,104 @@ export class ApplicationsController {
   @Patch(':id/status')
   async updateStatusPatch(
     @Param('id') id: string,
-    @Body() body: { status: string; rejectionReason?: string; adminId?: string; adminEmail?: string; adminName?: string; adminRole?: string },
+    @Body()
+    body: {
+      status: string;
+      rejectionReason?: string;
+      adminId?: string;
+      adminEmail?: string;
+      adminName?: string;
+      adminRole?: string;
+    },
   ) {
-    return this.applicationsService.updateStatus(id, body.status, body.rejectionReason, body);
+    return this.applicationsService.updateStatus(
+      id,
+      body.status,
+      body.rejectionReason,
+      body,
+    );
   }
 
   @Put(':id/status')
   async updateStatusPut(
     @Param('id') id: string,
-    @Body() body: { status: string; rejectionReason?: string; adminId?: string; adminEmail?: string; adminName?: string; adminRole?: string },
+    @Body()
+    body: {
+      status: string;
+      rejectionReason?: string;
+      adminId?: string;
+      adminEmail?: string;
+      adminName?: string;
+      adminRole?: string;
+    },
   ) {
-    return this.applicationsService.updateStatus(id, body.status, body.rejectionReason, body);
+    return this.applicationsService.updateStatus(
+      id,
+      body.status,
+      body.rejectionReason,
+      body,
+    );
   }
 
   @Post(':id/status')
   async updateStatusPost(
     @Param('id') id: string,
-    @Body() body: { status: string; rejectionReason?: string; adminId?: string; adminEmail?: string; adminName?: string; adminRole?: string },
+    @Body()
+    body: {
+      status: string;
+      rejectionReason?: string;
+      adminId?: string;
+      adminEmail?: string;
+      adminName?: string;
+      adminRole?: string;
+    },
   ) {
-    return this.applicationsService.updateStatus(id, body.status, body.rejectionReason, body);
+    return this.applicationsService.updateStatus(
+      id,
+      body.status,
+      body.rejectionReason,
+      body,
+    );
   }
 
   @Post(':id/approve')
   async approveApplication(
     @Param('id') id: string,
-    @Body() body?: { rejectionReason?: string; adminId?: string; adminEmail?: string; adminName?: string; adminRole?: string },
+    @Body()
+    body?: {
+      rejectionReason?: string;
+      adminId?: string;
+      adminEmail?: string;
+      adminName?: string;
+      adminRole?: string;
+    },
   ) {
-    return this.applicationsService.updateStatus(id, 'APPROVED', undefined, body);
+    return this.applicationsService.updateStatus(
+      id,
+      'APPROVED',
+      undefined,
+      body,
+    );
   }
 
   @Post(':id/reject')
   async rejectApplication(
     @Param('id') id: string,
-    @Body() body?: { rejectionReason?: string; adminId?: string; adminEmail?: string; adminName?: string; adminRole?: string },
+    @Body()
+    body?: {
+      rejectionReason?: string;
+      adminId?: string;
+      adminEmail?: string;
+      adminName?: string;
+      adminRole?: string;
+    },
   ) {
-    return this.applicationsService.updateStatus(id, 'REJECTED', body?.rejectionReason, body);
+    return this.applicationsService.updateStatus(
+      id,
+      'REJECTED',
+      body?.rejectionReason,
+      body,
+    );
   }
 
   @Post(':id/assign')
@@ -71,7 +143,11 @@ export class ApplicationsController {
     @Param('id') id: string,
     @Body() body: { operatorName: string; operatorId?: string },
   ) {
-    return this.applicationsService.assignOperator(id, body.operatorName, body.operatorId);
+    return this.applicationsService.assignOperator(
+      id,
+      body.operatorName,
+      body.operatorId,
+    );
   }
 
   @Put(':id/assign')
@@ -79,6 +155,10 @@ export class ApplicationsController {
     @Param('id') id: string,
     @Body() body: { operatorName: string; operatorId?: string },
   ) {
-    return this.applicationsService.assignOperator(id, body.operatorName, body.operatorId);
+    return this.applicationsService.assignOperator(
+      id,
+      body.operatorName,
+      body.operatorId,
+    );
   }
 }

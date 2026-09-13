@@ -39,6 +39,10 @@ export class RefundsController {
     @Body() body?: { rejectionReason?: string; adminName?: string },
   ) {
     const adminName = body?.adminName || 'Admin Authority';
-    return this.refundsService.rejectRefund(id, body?.rejectionReason, adminName);
+    return this.refundsService.rejectRefund(
+      id,
+      body?.rejectionReason,
+      adminName,
+    );
   }
 }

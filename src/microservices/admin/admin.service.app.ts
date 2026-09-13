@@ -31,7 +31,9 @@ export async function bootstrapAdminService() {
 
   const port = parseInt(process.env.ADMIN_SERVICE_PORT || '3006', 10);
   await app.listen(port, '0.0.0.0');
-  console.log(`[Admin & Real-Time Microservice] Running on http://0.0.0.0:${port}`);
+  console.log(
+    `[Admin & Real-Time Microservice] Running on http://0.0.0.0:${port}`,
+  );
   return app;
 }
 

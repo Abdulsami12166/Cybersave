@@ -19,24 +19,26 @@ export class PrismaService
     while (attempts < maxAttempts) {
       try {
         await this.$connect();
-        this.logger.log(
-          'Prisma connected to MongoDB database successfully.',
-        );
+        this.logger.log('Prisma connected to MongoDB database successfully.');
 
-    // ponytail: stale User_phone_key and User_keycloakId_key unique indexes block registration.
-    // We drop them if they exist in MongoDB.
-    const candidates = [
-      'User_phone_key', 'phone_1', 'phone',
-      'User_keycloakId_key', 'keycloakId_1', 'keycloakId'
-    ];
-    for (const name of candidates) {
-      try {
-        await this.$runCommandRaw({ dropIndexes: 'User', index: name });
-        this.logger.log(`Dropped index ${name} from User collection`);
-      } catch (e) {
-        // ignore if index doesn't exist
-      }
-    }
+        // ponytail: stale User_phone_key and User_keycloakId_key unique indexes block registration.
+        // We drop them if they exist in MongoDB.
+        const candidates = [
+          'User_phone_key',
+          'phone_1',
+          'phone',
+          'User_keycloakId_key',
+          'keycloakId_1',
+          'keycloakId',
+        ];
+        for (const name of candidates) {
+          try {
+            await this.$runCommandRaw({ dropIndexes: 'User', index: name });
+            this.logger.log(`Dropped index ${name} from User collection`);
+          } catch (e) {
+            // ignore if index doesn't exist
+          }
+        }
 
         break;
       } catch (error) {

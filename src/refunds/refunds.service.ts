@@ -1,4 +1,9 @@
-import { Injectable, Logger, NotFoundException, BadRequestException } from '@nestjs/common';
+import {
+  Injectable,
+  Logger,
+  NotFoundException,
+  BadRequestException,
+} from '@nestjs/common';
 import { PrismaService } from '../database/prisma.service';
 import { AdminGateway } from '../admin/admin.gateway';
 import { RefundStatus } from '@prisma/client';
@@ -23,7 +28,8 @@ export class RefundsService {
   }
 
   async createRefundRequest(dto: CreateRefundDto) {
-    const isMongoId = (id?: string) => typeof id === 'string' && /^[0-9a-fA-F]{24}$/.test(id);
+    const isMongoId = (id?: string) =>
+      typeof id === 'string' && /^[0-9a-fA-F]{24}$/.test(id);
 
     // 1. Locate application
     const application = await this.prisma.application.findFirst({
@@ -59,14 +65,17 @@ export class RefundsService {
         refNumber: existingPending.refNumber,
         amount: existingPending.amount,
         status: existingPending.status,
-        message: 'A refund request is already pending review for this application.',
+        message:
+          'A refund request is already pending review for this application.',
         refund: existingPending,
         alreadyPending: true,
       };
     }
 
     // 3. Resolve user
-    const resolvedUserId: string = String(application.userId || dto.userId || 'system');
+    const resolvedUserId: string = String(
+      application.userId || dto.userId || 'system',
+    );
     const refundRefNumber = this.generateRefNumber();
     const refundAmount = Number(application.feePaid) || 50.0;
 
@@ -129,8 +138,13 @@ export class RefundsService {
     };
   }
 
-  async getAllRefunds(query?: { userId?: string; status?: string; applicationId?: string }) {
-    const isMongoId = (id?: string) => typeof id === 'string' && /^[0-9a-fA-F]{24}$/.test(id);
+  async getAllRefunds(query?: {
+    userId?: string;
+    status?: string;
+    applicationId?: string;
+  }) {
+    const isMongoId = (id?: string) =>
+      typeof id === 'string' && /^[0-9a-fA-F]{24}$/.test(id);
     const where: any = {};
 
     if (query?.userId && query.userId !== 'all') {
@@ -163,9 +177,12 @@ export class RefundsService {
   }
 
   async getRefundById(id: string) {
-    const isMongoId = (val?: string) => typeof val === 'string' && /^[0-9a-fA-F]{24}$/.test(val);
+    const isMongoId = (val?: string) =>
+      typeof val === 'string' && /^[0-9a-fA-F]{24}$/.test(val);
     const refund = await this.prisma.refundRequest.findFirst({
-      where: isMongoId(id) ? { OR: [{ id }, { refNumber: id }] } : { refNumber: id },
+      where: isMongoId(id)
+        ? { OR: [{ id }, { refNumber: id }] }
+        : { refNumber: id },
       include: {
         user: { include: { profile: true } },
         application: true,
@@ -179,9 +196,12 @@ export class RefundsService {
   }
 
   async approveRefund(id: string, adminName: string = 'Admin Authority') {
-    const isMongoId = (val?: string) => typeof val === 'string' && /^[0-9a-fA-F]{24}$/.test(val);
+    const isMongoId = (val?: string) =>
+      typeof val === 'string' && /^[0-9a-fA-F]{24}$/.test(val);
     const refund = await this.prisma.refundRequest.findFirst({
-      where: isMongoId(id) ? { OR: [{ id }, { refNumber: id }] } : { refNumber: id },
+      where: isMongoId(id)
+        ? { OR: [{ id }, { refNumber: id }] }
+        : { refNumber: id },
       include: {
         user: { include: { profile: true } },
         application: true,
@@ -193,7 +213,9 @@ export class RefundsService {
     }
 
     if (refund.status === RefundStatus.APPROVED) {
-      throw new BadRequestException('This refund request has already been approved and credited.');
+      throw new BadRequestException(
+        'This refund request has already been approved and credited.',
+      );
     }
 
     const refundAmount = Number(refund.amount) || 50.0;
@@ -286,7 +308,11 @@ export class RefundsService {
         notification,
       });
 
-      AdminGateway.emitToUser(refund.userId, 'notification_received', notification);
+      AdminGateway.emitToUser(
+        refund.userId,
+        'notification_received',
+        notification,
+      );
 
       AdminGateway.broadcast('refund_approved', updatedRefund);
       AdminGateway.broadcast('refunds_updated', updatedRefund);
@@ -314,10 +340,17 @@ export class RefundsService {
     };
   }
 
-  async rejectRefund(id: string, rejectionReason?: string, adminName: string = 'Admin Authority') {
-    const isMongoId = (val?: string) => typeof val === 'string' && /^[0-9a-fA-F]{24}$/.test(val);
+  async rejectRefund(
+    id: string,
+    rejectionReason?: string,
+    adminName: string = 'Admin Authority',
+  ) {
+    const isMongoId = (val?: string) =>
+      typeof val === 'string' && /^[0-9a-fA-F]{24}$/.test(val);
     const refund = await this.prisma.refundRequest.findFirst({
-      where: isMongoId(id) ? { OR: [{ id }, { refNumber: id }] } : { refNumber: id },
+      where: isMongoId(id)
+        ? { OR: [{ id }, { refNumber: id }] }
+        : { refNumber: id },
       include: {
         user: { include: { profile: true } },
         application: true,
@@ -332,7 +365,8 @@ export class RefundsService {
       where: { id: refund.id },
       data: {
         status: RefundStatus.REJECTED,
-        adminNotes: rejectionReason || 'Refund request declined by administration.',
+        adminNotes:
+          rejectionReason || 'Refund request declined by administration.',
         processedBy: adminName,
         processedAt: new Date(),
       },

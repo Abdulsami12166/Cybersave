@@ -6,7 +6,8 @@ export class CloudinaryService {
   private readonly logger = new Logger('CloudinaryService');
   private isConfigured = false;
   private readonly cloudName = process.env.CLOUDINARY_CLOUD_NAME || 'dzo4caeef';
-  private readonly uploadPreset = process.env.CLOUDINARY_UPLOAD_PRESET || 'cybersave_docs';
+  private readonly uploadPreset =
+    process.env.CLOUDINARY_UPLOAD_PRESET || 'cybersave_docs';
 
   constructor() {
     const name = process.env.CLOUDINARY_CLOUD_NAME;
@@ -32,7 +33,10 @@ export class CloudinaryService {
     }
   }
 
-  async uploadImage(fileBuffer: Buffer, folder = 'cybersave/documents'): Promise<string> {
+  async uploadImage(
+    fileBuffer: Buffer,
+    folder = 'cybersave/documents',
+  ): Promise<string> {
     if (this.isConfigured) {
       return new Promise((resolve) => {
         cloudinary.uploader
@@ -50,7 +54,10 @@ export class CloudinaryService {
     return this.uploadDirectBuffer(fileBuffer, folder);
   }
 
-  private async uploadDirectBuffer(fileBuffer: Buffer, folder: string): Promise<string> {
+  private async uploadDirectBuffer(
+    fileBuffer: Buffer,
+    folder: string,
+  ): Promise<string> {
     try {
       const base64Data = `data:image/jpeg;base64,${fileBuffer.toString('base64')}`;
       return await this.uploadBase64Image(base64Data, folder);
@@ -76,7 +83,9 @@ export class CloudinaryService {
         );
         return result.secure_url;
       } catch (error: any) {
-        this.logger.warn(`SDK upload failed, attempting direct preset upload: ${error.message}`);
+        this.logger.warn(
+          `SDK upload failed, attempting direct preset upload: ${error.message}`,
+        );
       }
     }
 
@@ -87,10 +96,13 @@ export class CloudinaryService {
       form.append('upload_preset', this.uploadPreset);
       form.append('folder', folder);
 
-      const res = await fetch(`https://api.cloudinary.com/v1_1/${this.cloudName}/auto/upload`, {
-        method: 'POST',
-        body: form,
-      });
+      const res = await fetch(
+        `https://api.cloudinary.com/v1_1/${this.cloudName}/auto/upload`,
+        {
+          method: 'POST',
+          body: form,
+        },
+      );
 
       const data: any = await res.json();
       if (data?.secure_url) {
@@ -98,11 +110,12 @@ export class CloudinaryService {
         return data.secure_url;
       }
     } catch (restErr: any) {
-      this.logger.error(`Direct Cloudinary preset upload failed: ${restErr.message}`);
+      this.logger.error(
+        `Direct Cloudinary preset upload failed: ${restErr.message}`,
+      );
     }
 
     // Fallback: return dataUri directly so the real user image is never lost
     return dataUri;
   }
 }
-

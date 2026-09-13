@@ -41,7 +41,10 @@ export class AadhaarController {
   }
 
   @Delete(':id')
-  async deleteDocument(@GetUser('sub') userId: string, @Param('id') id: string) {
+  async deleteDocument(
+    @GetUser('sub') userId: string,
+    @Param('id') id: string,
+  ) {
     return this.aadhaarService.deleteDocument(userId, id);
   }
 }

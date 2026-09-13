@@ -9,11 +9,7 @@ import { winstonLoggerInstance } from '../../common/config/winston.config';
 import { json, urlencoded } from 'express';
 
 @Module({
-  imports: [
-    ConfigModule.forRoot({ isGlobal: true }),
-    DatabaseModule,
-    AiModule,
-  ],
+  imports: [ConfigModule.forRoot({ isGlobal: true }), DatabaseModule, AiModule],
 })
 export class AiServiceAppModule {}
 

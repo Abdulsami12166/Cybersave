@@ -5,3 +5,5 @@ auth.json
 cyberbase-d3c1b-firebase-adminsdk-*.json
 google-services*.json
 cybersave-mobile/android/app/google-services*.json
+logs/
+scratch/

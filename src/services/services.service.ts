@@ -147,12 +147,17 @@ export class ServicesService implements OnModuleInit {
     try {
       const isMongoId = /^[0-9a-fA-F]{24}$/.test(idOrSlug);
       if (isMongoId) {
-        const byId = await this.prisma.service.findUnique({ where: { id: idOrSlug } });
+        const byId = await this.prisma.service.findUnique({
+          where: { id: idOrSlug },
+        });
         if (byId) return byId;
       }
       return await this.prisma.service.findFirst({
         where: {
-          OR: [{ slug: idOrSlug }, { title: { equals: idOrSlug, mode: 'insensitive' } }],
+          OR: [
+            { slug: idOrSlug },
+            { title: { equals: idOrSlug, mode: 'insensitive' } },
+          ],
         },
       });
     } catch (error) {
@@ -171,9 +176,10 @@ export class ServicesService implements OnModuleInit {
       .trim()
       .replace(/[^a-z0-9]+/g, '-');
 
-    const feeVal = typeof data.fee === 'number'
-      ? data.fee
-      : parseFloat(data.pricing?.fee || data.fee || '50.0') || 50.0;
+    const feeVal =
+      typeof data.fee === 'number'
+        ? data.fee
+        : parseFloat(data.pricing?.fee || data.fee || '50.0') || 50.0;
 
     const defaultDocs = [
       { type: 'Government-Issued Identity Proof', req: 'Required' },
@@ -193,27 +199,43 @@ export class ServicesService implements OnModuleInit {
       { label: 'PIN Code', type: 'text', required: true },
     ];
 
-    const resolvedIcon = data.iconUrl || data.imageUrl || data.iconName || 'file-document-outline';
+    const resolvedIcon =
+      data.iconUrl || data.imageUrl || data.iconName || 'file-document-outline';
     const pricingObj = {
-      ...(typeof data.pricingConfig === 'object' ? data.pricingConfig : (typeof data.pricing === 'object' ? data.pricing : { fee: feeVal })),
-      iconUrl: data.iconUrl || data.imageUrl || (resolvedIcon.startsWith('http') ? resolvedIcon : undefined),
+      ...(typeof data.pricingConfig === 'object'
+        ? data.pricingConfig
+        : typeof data.pricing === 'object'
+          ? data.pricing
+          : { fee: feeVal }),
+      iconUrl:
+        data.iconUrl ||
+        data.imageUrl ||
+        (resolvedIcon.startsWith('http') ? resolvedIcon : undefined),
     };
 
-    const isExisting = await this.prisma.service.findUnique({ where: { slug } }).catch(() => null);
+    const isExisting = await this.prisma.service
+      .findUnique({ where: { slug } })
+      .catch(() => null);
 
     const service = await this.prisma.service.upsert({
       where: { slug },
       update: {
         title: rawTitle,
-        description: data.description || 'Government certified digital service workflow.',
+        description:
+          data.description || 'Government certified digital service workflow.',
         category: data.category || 'Government',
-        department: data.department || data.departmentRole || 'General Administration',
+        department:
+          data.department || data.departmentRole || 'General Administration',
         fee: feeVal,
         processingTime: data.processingTime || '7-15 Days',
-        eligibility: data.eligibility || ['Citizen of India', 'Valid ID verification credentials'],
+        eligibility: data.eligibility || [
+          'Citizen of India',
+          'Valid ID verification credentials',
+        ],
         requiredDocs: data.requiredDocs || data.documents || defaultDocs,
         subServices: data.subServices || [],
-        formDataSchema: data.formDataSchema || data.formElements || defaultSchema,
+        formDataSchema:
+          data.formDataSchema || data.formElements || defaultSchema,
         pricingConfig: pricingObj,
         iconName: resolvedIcon,
         colorHex: data.colorHex || '#2563eb',
@@ -222,15 +244,21 @@ export class ServicesService implements OnModuleInit {
       create: {
         slug,
         title: rawTitle,
-        description: data.description || 'Government certified digital service workflow.',
+        description:
+          data.description || 'Government certified digital service workflow.',
         category: data.category || 'Government',
-        department: data.department || data.departmentRole || 'General Administration',
+        department:
+          data.department || data.departmentRole || 'General Administration',
         fee: feeVal,
         processingTime: data.processingTime || '7-15 Days',
-        eligibility: data.eligibility || ['Citizen of India', 'Valid ID verification credentials'],
+        eligibility: data.eligibility || [
+          'Citizen of India',
+          'Valid ID verification credentials',
+        ],
         requiredDocs: data.requiredDocs || data.documents || defaultDocs,
         subServices: data.subServices || [],
-        formDataSchema: data.formDataSchema || data.formElements || defaultSchema,
+        formDataSchema:
+          data.formDataSchema || data.formElements || defaultSchema,
         pricingConfig: pricingObj,
         iconName: resolvedIcon,
         colorHex: data.colorHex || '#2563eb',
@@ -240,7 +268,9 @@ export class ServicesService implements OnModuleInit {
 
     try {
       await AdminGateway.logActivity(this.prisma, {
-        action: isExisting ? 'SERVICE_SCHEME_UPDATED' : 'SERVICE_SCHEME_CREATED',
+        action: isExisting
+          ? 'SERVICE_SCHEME_UPDATED'
+          : 'SERVICE_SCHEME_CREATED',
         details: `${isExisting ? 'Updated' : 'Created'} e-governance service scheme "${rawTitle}" (Category: ${service.category}, Fee: ₹${feeVal}, SLA: ${service.processingTime})`,
       });
       AdminGateway.broadcast('services_updated', service);
@@ -248,7 +278,9 @@ export class ServicesService implements OnModuleInit {
       this.logger.warn(`Service audit log warning: ${auditErr?.message}`);
     }
 
-    this.logger.log(`Service created/updated: ${service.title} (${service.slug})`);
+    this.logger.log(
+      `Service created/updated: ${service.title} (${service.slug})`,
+    );
     return service;
   }
 }

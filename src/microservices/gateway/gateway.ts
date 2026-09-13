@@ -9,12 +9,17 @@ const app = express();
 const server = http.createServer(app);
 
 // Microservices Host & Port Mapping
-const AUTH_SERVICE_URL        = process.env.AUTH_SERVICE_URL        || 'http://localhost:3001';
-const APPLICATION_SERVICE_URL = process.env.APPLICATION_SERVICE_URL || 'http://localhost:3002';
-const PAYMENT_SERVICE_URL     = process.env.PAYMENT_SERVICE_URL     || 'http://localhost:3003';
-const DOCUMENT_SERVICE_URL    = process.env.DOCUMENT_SERVICE_URL    || 'http://localhost:3004';
-const AI_SERVICE_URL          = process.env.AI_SERVICE_URL          || 'http://localhost:3005';
-const ADMIN_SERVICE_URL       = process.env.ADMIN_SERVICE_URL       || 'http://localhost:3006';
+const AUTH_SERVICE_URL =
+  process.env.AUTH_SERVICE_URL || 'http://localhost:3001';
+const APPLICATION_SERVICE_URL =
+  process.env.APPLICATION_SERVICE_URL || 'http://localhost:3002';
+const PAYMENT_SERVICE_URL =
+  process.env.PAYMENT_SERVICE_URL || 'http://localhost:3003';
+const DOCUMENT_SERVICE_URL =
+  process.env.DOCUMENT_SERVICE_URL || 'http://localhost:3004';
+const AI_SERVICE_URL = process.env.AI_SERVICE_URL || 'http://localhost:3005';
+const ADMIN_SERVICE_URL =
+  process.env.ADMIN_SERVICE_URL || 'http://localhost:3006';
 
 // Global Middleware
 app.use(cors({ origin: true, credentials: true }));
@@ -40,42 +45,72 @@ app.get('/health', async (_req: Request, res: Response) => {
 
 // 1. Auth & User Service Proxy (/auth, /user, /profile)
 app.use(
-  ['/api/v1/auth', '/api/auth', '/auth', '/api/v1/user', '/api/v1/users', '/api/v1/profile', '/api/profile', '/profile'],
+  [
+    '/api/v1/auth',
+    '/api/auth',
+    '/auth',
+    '/api/v1/user',
+    '/api/v1/users',
+    '/api/v1/profile',
+    '/api/profile',
+    '/profile',
+  ],
   createProxyMiddleware({
     target: AUTH_SERVICE_URL,
     changeOrigin: true,
     ws: false,
-  })
+  }),
 );
 
 // 2. Application & Scheme Service Proxy (/applications, /services)
 app.use(
-  ['/api/v1/applications', '/api/applications', '/applications', '/api/v1/services', '/api/services', '/services'],
+  [
+    '/api/v1/applications',
+    '/api/applications',
+    '/applications',
+    '/api/v1/services',
+    '/api/services',
+    '/services',
+  ],
   createProxyMiddleware({
     target: APPLICATION_SERVICE_URL,
     changeOrigin: true,
     ws: false,
-  })
+  }),
 );
 
 // 3. Payment & Wallet Service Proxy (/wallet, /payment)
 app.use(
-  ['/api/v1/wallet', '/api/wallet', '/wallet', '/api/v1/payment', '/api/payment', '/payment'],
+  [
+    '/api/v1/wallet',
+    '/api/wallet',
+    '/wallet',
+    '/api/v1/payment',
+    '/api/payment',
+    '/payment',
+  ],
   createProxyMiddleware({
     target: PAYMENT_SERVICE_URL,
     changeOrigin: true,
     ws: false,
-  })
+  }),
 );
 
 // 4. Document Vault & KYC Service Proxy (/documents, /aadhaar)
 app.use(
-  ['/api/v1/documents', '/api/documents', '/documents', '/api/v1/aadhaar', '/api/aadhaar', '/aadhaar'],
+  [
+    '/api/v1/documents',
+    '/api/documents',
+    '/documents',
+    '/api/v1/aadhaar',
+    '/api/aadhaar',
+    '/aadhaar',
+  ],
   createProxyMiddleware({
     target: DOCUMENT_SERVICE_URL,
     changeOrigin: true,
     ws: false,
-  })
+  }),
 );
 
 // 5. AI CyberBot Service Proxy (/ai)
@@ -85,21 +120,37 @@ app.use(
     target: AI_SERVICE_URL,
     changeOrigin: true,
     ws: false,
-  })
+  }),
 );
 
 // 6. Admin & Real-Time Gateway Proxy (/admin, /support, /notifications, socket.io)
 app.use(
-  ['/api/v1/admin', '/api/admin', '/admin', '/api/v1/support', '/api/support', '/support', '/api/v1/notifications', '/api/notifications', '/notifications', '/socket.io'],
+  [
+    '/api/v1/admin',
+    '/api/admin',
+    '/admin',
+    '/api/v1/support',
+    '/api/support',
+    '/support',
+    '/api/v1/notifications',
+    '/api/notifications',
+    '/notifications',
+    '/socket.io',
+  ],
   createProxyMiddleware({
     target: ADMIN_SERVICE_URL,
     changeOrigin: true,
     ws: true,
-  })
+  }),
 );
 
-const PORT = parseInt(process.env.GATEWAY_PORT || process.env.PORT || '3000', 10);
+const PORT = parseInt(
+  process.env.GATEWAY_PORT || process.env.PORT || '3000',
+  10,
+);
 server.listen(PORT, '0.0.0.0', () => {
   console.log(`[Cybersave Gateway] Running on http://0.0.0.0:${PORT}`);
-  console.log(`[Cybersave Gateway] Proxying /api/v1 to microservices (Ports 3001-3006)`);
+  console.log(
+    `[Cybersave Gateway] Proxying /api/v1 to microservices (Ports 3001-3006)`,
+  );
 });

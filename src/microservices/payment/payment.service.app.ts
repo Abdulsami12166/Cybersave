@@ -33,7 +33,9 @@ export async function bootstrapPaymentService() {
 
   const port = parseInt(process.env.PAYMENT_SERVICE_PORT || '3003', 10);
   await app.listen(port, '0.0.0.0');
-  console.log(`[Payment & Wallet Microservice] Running on http://0.0.0.0:${port}`);
+  console.log(
+    `[Payment & Wallet Microservice] Running on http://0.0.0.0:${port}`,
+  );
   return app;
 }
 

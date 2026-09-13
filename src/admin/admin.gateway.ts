@@ -48,29 +48,38 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
   ) {
     try {
       let resolvedUserId = params.userId;
-      const isMongoId = (s?: string) => typeof s === 'string' && /^[0-9a-fA-F]{24}$/.test(s);
+      const isMongoId = (s?: string) =>
+        typeof s === 'string' && /^[0-9a-fA-F]{24}$/.test(s);
 
       let foundUser: any = null;
       if (resolvedUserId && isMongoId(resolvedUserId)) {
-        foundUser = await prisma.user.findUnique({
-          where: { id: resolvedUserId },
-          include: { profile: true },
-        }).catch(() => null);
+        foundUser = await prisma.user
+          .findUnique({
+            where: { id: resolvedUserId },
+            include: { profile: true },
+          })
+          .catch(() => null);
       }
 
       if (!foundUser && params.userEmail) {
-        foundUser = await prisma.user.findFirst({
-          where: { email: params.userEmail.toLowerCase().trim() },
-          include: { profile: true },
-        }).catch(() => null);
+        foundUser = await prisma.user
+          .findFirst({
+            where: { email: params.userEmail.toLowerCase().trim() },
+            include: { profile: true },
+          })
+          .catch(() => null);
         if (foundUser) resolvedUserId = foundUser.id;
       }
 
       if (!foundUser) {
-        foundUser = await prisma.user.findFirst({
-          where: { OR: [{ email: 'admin@cybersave.com' }, { role: 'ADMIN' }] },
-          include: { profile: true },
-        }).catch(() => null);
+        foundUser = await prisma.user
+          .findFirst({
+            where: {
+              OR: [{ email: 'admin@cybersave.com' }, { role: 'ADMIN' }],
+            },
+            include: { profile: true },
+          })
+          .catch(() => null);
         if (foundUser) resolvedUserId = foundUser.id;
       }
 
@@ -84,30 +93,50 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
         include: { user: { include: { profile: true } } },
       });
 
-      const officerName = params.userName || log.user?.profile?.fullName || log.user?.email?.split('@')[0] || 'Sub-Admin Operator';
+      const officerName =
+        params.userName ||
+        log.user?.profile?.fullName ||
+        log.user?.email?.split('@')[0] ||
+        'Sub-Admin Operator';
       const officerEmail = params.userEmail || log.user?.email || '';
 
       AdminGateway.broadcast('audit_logs_updated');
       AdminGateway.broadcast('audit_log_added', {
         id: log.id,
         timestamp: log.createdAt.toLocaleString('en-IN', {
-          day: '2-digit', month: 'short', year: 'numeric',
-          hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: true
+          day: '2-digit',
+          month: 'short',
+          year: 'numeric',
+          hour: '2-digit',
+          minute: '2-digit',
+          second: '2-digit',
+          hour12: true,
         }),
         user: officerName,
         userEmail: officerEmail,
         action: log.action,
         resource: log.details || '-',
         ipAddress: log.ipAddress || '192.168.1.1',
-        status: (log.action.includes('REJECT') || log.action.includes('SUSPEND') || log.action.includes('FAIL')) ? 'Failed' : 'Success',
+        status:
+          log.action.includes('REJECT') ||
+          log.action.includes('SUSPEND') ||
+          log.action.includes('FAIL')
+            ? 'Failed'
+            : 'Success',
       });
       return log;
     } catch (err: any) {
-      console.warn('[AdminGateway.logActivity] Warning recording audit log:', err?.message);
+      console.warn(
+        '[AdminGateway.logActivity] Warning recording audit log:',
+        err?.message,
+      );
     }
   }
 
-  static isUserOnline(userId: string, lastSeenAt?: Date | string | null): boolean {
+  static isUserOnline(
+    userId: string,
+    lastSeenAt?: Date | string | null,
+  ): boolean {
     const s = AdminGateway.userSockets.get(userId);
     if (s && s.size > 0) return true;
     if (lastSeenAt) {
@@ -145,15 +174,18 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
         if (userSet.size === 0) {
           AdminGateway.userSockets.delete(userId);
           try {
-            await this.prisma.user.update({
-              where: { id: userId },
-              data: { isOnline: false, lastSeenAt: new Date() },
-            }).catch(() => null);
+            await this.prisma.user
+              .update({
+                where: { id: userId },
+                data: { isOnline: false, lastSeenAt: new Date() },
+              })
+              .catch(() => null);
 
             await AdminGateway.logActivity(this.prisma, {
               userId,
               action: 'APP_CLOSED',
-              details: 'Citizen mobile connection disconnected / app terminated',
+              details:
+                'Citizen mobile connection disconnected / app terminated',
             });
           } catch {}
           AdminGateway.broadcast('user_status_changed', {
@@ -192,10 +224,12 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
       }
 
       if (/^[0-9a-fA-F]{24}$/.test(resolvedId)) {
-        await this.prisma.user.update({
-          where: { id: resolvedId },
-          data: { isOnline: false, lastSeenAt: new Date() },
-        }).catch(() => null);
+        await this.prisma.user
+          .update({
+            where: { id: resolvedId },
+            data: { isOnline: false, lastSeenAt: new Date() },
+          })
+          .catch(() => null);
 
         await AdminGateway.logActivity(this.prisma, {
           userId: resolvedId,
@@ -242,10 +276,12 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
       if (fcmToken) updateData.fcmToken = fcmToken;
 
       if (/^[0-9a-fA-F]{24}$/.test(resolvedId)) {
-        await this.prisma.user.update({
-          where: { id: resolvedId },
-          data: updateData,
-        }).catch(() => null);
+        await this.prisma.user
+          .update({
+            where: { id: resolvedId },
+            data: updateData,
+          })
+          .catch(() => null);
       }
 
       AdminGateway.broadcast('user_status_changed', {
@@ -266,10 +302,12 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
     try {
       const { userId, fcmToken } = data;
       if (userId && fcmToken && /^[0-9a-fA-F]{24}$/.test(userId)) {
-        await this.prisma.user.update({
-          where: { id: userId },
-          data: { fcmToken },
-        }).catch(() => null);
+        await this.prisma.user
+          .update({
+            where: { id: userId },
+            data: { fcmToken },
+          })
+          .catch(() => null);
       }
     } catch (e) {
       console.error('[AdminGateway] register_fcm_token error:', e);
@@ -301,11 +339,22 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
         return d >= today;
       });
 
-      const todayRefundedAmount = todayApprovedRefunds.reduce((sum, r) => sum + (Number(r.amount) || 0), 0);
-      const totalRefundedAmount = allApprovedRefunds.reduce((sum, r) => sum + (Number(r.amount) || 0), 0);
+      const todayRefundedAmount = todayApprovedRefunds.reduce(
+        (sum, r) => sum + (Number(r.amount) || 0),
+        0,
+      );
+      const totalRefundedAmount = allApprovedRefunds.reduce(
+        (sum, r) => sum + (Number(r.amount) || 0),
+        0,
+      );
 
       const grossRevenueToday = todayApps.reduce((sum, a) => {
-        const fee = typeof a.feePaid === 'number' && !isNaN(a.feePaid) ? a.feePaid : (a.feePaid ? Number(a.feePaid) : 55.0);
+        const fee =
+          typeof a.feePaid === 'number' && !isNaN(a.feePaid)
+            ? a.feePaid
+            : a.feePaid
+              ? Number(a.feePaid)
+              : 55.0;
         return sum + fee;
       }, 0);
 
@@ -313,7 +362,12 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
       const revenueToday = Math.max(0, grossRevenueToday - todayRefundedAmount);
 
       const grossTotalRevenue = allApps.reduce((sum, a) => {
-        const fee = typeof a.feePaid === 'number' && !isNaN(a.feePaid) ? a.feePaid : (a.feePaid ? Number(a.feePaid) : 55.0);
+        const fee =
+          typeof a.feePaid === 'number' && !isNaN(a.feePaid)
+            ? a.feePaid
+            : a.feePaid
+              ? Number(a.feePaid)
+              : 55.0;
         return sum + fee;
       }, 0);
 
@@ -322,7 +376,12 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
       const appsToday = todayApps.length;
       const pendingApps = allApps.filter((a) => {
         const st = (a.status || '').toUpperCase();
-        return st === 'PENDING' || st === 'SUBMITTED' || st === 'VERIFYING' || st === 'IN_PROGRESS';
+        return (
+          st === 'PENDING' ||
+          st === 'SUBMITTED' ||
+          st === 'VERIFYING' ||
+          st === 'IN_PROGRESS'
+        );
       }).length;
       const completedAppsToday = todayApps.filter((a) => {
         const st = (a.status || '').toUpperCase();
@@ -332,7 +391,9 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
         const st = (a.status || '').toUpperCase();
         return st === 'COMPLETED' || st === 'APPROVED';
       }).length;
-      const rejectedAppsToday = todayApps.filter((a) => (a.status || '').toUpperCase() === 'REJECTED').length;
+      const rejectedAppsToday = todayApps.filter(
+        (a) => (a.status || '').toUpperCase() === 'REJECTED',
+      ).length;
 
       const activeCentres = await this.prisma.user.count({
         where: { role: 'ADMIN' },
@@ -340,8 +401,20 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
 
       // Compute dynamic 7-day overview (<= 7 days)
       const dayNames = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
-      const revenueOverview: Array<{ day: string; date: string; value: number; gross?: number; refunds?: number }> = [];
-      const applicationTrends: Array<{ day: string; date: string; completed: number; pending: number; rejected: number }> = [];
+      const revenueOverview: Array<{
+        day: string;
+        date: string;
+        value: number;
+        gross?: number;
+        refunds?: number;
+      }> = [];
+      const applicationTrends: Array<{
+        day: string;
+        date: string;
+        completed: number;
+        pending: number;
+        rejected: number;
+      }> = [];
 
       for (let i = 6; i >= 0; i--) {
         const d = new Date();
@@ -367,7 +440,12 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
           .reduce((sum, r) => sum + (Number(r.amount) || 0), 0);
 
         const dayGross = dayApps.reduce((acc, a) => {
-          const fee = typeof a.feePaid === 'number' && !isNaN(a.feePaid) ? a.feePaid : (a.feePaid ? Number(a.feePaid) : 55.0);
+          const fee =
+            typeof a.feePaid === 'number' && !isNaN(a.feePaid)
+              ? a.feePaid
+              : a.feePaid
+                ? Number(a.feePaid)
+                : 55.0;
           return acc + fee;
         }, 0);
 
@@ -379,9 +457,16 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
         }).length;
         const dayPend = dayApps.filter((a) => {
           const st = (a.status || '').toUpperCase();
-          return st === 'PENDING' || st === 'SUBMITTED' || st === 'VERIFYING' || st === 'IN_PROGRESS';
+          return (
+            st === 'PENDING' ||
+            st === 'SUBMITTED' ||
+            st === 'VERIFYING' ||
+            st === 'IN_PROGRESS'
+          );
         }).length;
-        const dayRej = dayApps.filter((a) => (a.status || '').toUpperCase() === 'REJECTED').length;
+        const dayRej = dayApps.filter(
+          (a) => (a.status || '').toUpperCase() === 'REJECTED',
+        ).length;
 
         revenueOverview.push({
           day: dayShort,
@@ -478,11 +563,20 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
         if (!isOnline) {
           const lastTime = u.lastSeenAt || u.updatedAt || u.createdAt;
           if (lastTime) {
-            const diffSec = Math.floor((Date.now() - new Date(lastTime).getTime()) / 1000);
+            const diffSec = Math.floor(
+              (Date.now() - new Date(lastTime).getTime()) / 1000,
+            );
             if (diffSec < 60) lastActive = 'Just now';
-            else if (diffSec < 3600) lastActive = `${Math.floor(diffSec / 60)} mins ago`;
-            else if (diffSec < 86400) lastActive = `${Math.floor(diffSec / 3600)} hours ago`;
-            else lastActive = new Date(lastTime).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' });
+            else if (diffSec < 3600)
+              lastActive = `${Math.floor(diffSec / 60)} mins ago`;
+            else if (diffSec < 86400)
+              lastActive = `${Math.floor(diffSec / 3600)} hours ago`;
+            else
+              lastActive = new Date(lastTime).toLocaleDateString('en-GB', {
+                day: 'numeric',
+                month: 'short',
+                year: 'numeric',
+              });
           } else {
             lastActive = 'Offline';
           }
@@ -491,7 +585,9 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
         return {
           id: `CIT-${u.id.substring(0, 5).toUpperCase()}`,
           dbId: u.id,
-          fullName: u.profile?.fullName || (u.email ? u.email.split('@')[0] : 'Citizen'),
+          fullName:
+            u.profile?.fullName ||
+            (u.email ? u.email.split('@')[0] : 'Citizen'),
           aadhaar: u.profile?.dob
             ? '****' + Math.floor(1000 + Math.random() * 9000)
             : 'Not Given',
@@ -499,7 +595,7 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
           email: u.email || 'N/A',
           district: u.profile?.district || 'Central Delhi, DL',
           servicesUsed: u.applications?.length || 0,
-          status: u.status === 'BLOCKED' ? 'Blocked' : (u.status || 'Verified'),
+          status: u.status === 'BLOCKED' ? 'Blocked' : u.status || 'Verified',
           avatarUrl: u.profile?.avatarUrl || null,
           isOnline,
           lastActive,
@@ -527,18 +623,26 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
     @MessageBody() data: { id: string },
   ) {
     try {
-      let realId = data.id;
-      const isMongoId = (s?: string) => typeof s === 'string' && /^[0-9a-fA-F]{24}$/.test(s);
+      const realId = data.id;
+      const isMongoId = (s?: string) =>
+        typeof s === 'string' && /^[0-9a-fA-F]{24}$/.test(s);
       let u: any = null;
 
       const userInclude = {
         profile: true,
-        applications: { include: { service: true }, orderBy: { submittedAt: 'desc' as const } },
+        applications: {
+          include: { service: true },
+          orderBy: { submittedAt: 'desc' as const },
+        },
         documents: true,
         aadhaarDocs: true,
         auditLogs: { orderBy: { createdAt: 'desc' as const }, take: 100 },
         feedbacks: { orderBy: { createdAt: 'desc' as const } },
-        wallet: { include: { transactions: { orderBy: { createdAt: 'desc' as const } } } },
+        wallet: {
+          include: {
+            transactions: { orderBy: { createdAt: 'desc' as const } },
+          },
+        },
         refundRequests: { orderBy: { createdAt: 'desc' as const } },
       };
 
@@ -555,7 +659,10 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
           where: { role: 'USER' },
           include: userInclude,
         });
-        u = allUsers.find((x) => x.id.substring(0, 5).toUpperCase() === shortId) || null;
+        u =
+          allUsers.find(
+            (x) => x.id.substring(0, 5).toUpperCase() === shortId,
+          ) || null;
       }
 
       if (!u) {
@@ -595,20 +702,45 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
     @MessageBody() data: any,
   ) {
     try {
-      const { id, fullName, phone, email, address, district, state, pinCode, dob, gender, status } = data;
-      const isMongoId = (s?: string) => typeof s === 'string' && /^[0-9a-fA-F]{24}$/.test(s);
+      const {
+        id,
+        fullName,
+        phone,
+        email,
+        address,
+        district,
+        state,
+        pinCode,
+        dob,
+        gender,
+        status,
+      } = data;
+      const isMongoId = (s?: string) =>
+        typeof s === 'string' && /^[0-9a-fA-F]{24}$/.test(s);
       let u: any = null;
 
       if (isMongoId(id)) {
-        u = await this.prisma.user.findUnique({ where: { id }, include: { profile: true } });
+        u = await this.prisma.user.findUnique({
+          where: { id },
+          include: { profile: true },
+        });
       }
       if (!u && id?.startsWith('CIT-')) {
         const shortId = id.replace('CIT-', '').toUpperCase();
-        const allUsers = await this.prisma.user.findMany({ where: { role: 'USER' }, include: { profile: true } });
-        u = allUsers.find((x) => x.id.substring(0, 5).toUpperCase() === shortId) || null;
+        const allUsers = await this.prisma.user.findMany({
+          where: { role: 'USER' },
+          include: { profile: true },
+        });
+        u =
+          allUsers.find(
+            (x) => x.id.substring(0, 5).toUpperCase() === shortId,
+          ) || null;
       }
       if (!u && id) {
-        u = await this.prisma.user.findFirst({ where: { OR: [{ id }, { email: id }, { phone: id }] }, include: { profile: true } });
+        u = await this.prisma.user.findFirst({
+          where: { OR: [{ id }, { email: id }, { phone: id }] },
+          include: { profile: true },
+        });
       }
 
       if (!u) {
@@ -657,29 +789,41 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
         });
       }
 
-      await this.prisma.auditLog.create({
-        data: {
-          userId: u.id,
-          action: 'CITIZEN_PROFILE_UPDATED',
-          details: `Admin updated citizen profile information`,
-        },
-      }).catch(() => null);
+      await this.prisma.auditLog
+        .create({
+          data: {
+            userId: u.id,
+            action: 'CITIZEN_PROFILE_UPDATED',
+            details: `Admin updated citizen profile information`,
+          },
+        })
+        .catch(() => null);
 
       const updated = await this.prisma.user.findUnique({
         where: { id: u.id },
         include: {
           profile: true,
-          applications: { include: { service: true }, orderBy: { submittedAt: 'desc' as const } },
+          applications: {
+            include: { service: true },
+            orderBy: { submittedAt: 'desc' as const },
+          },
           documents: true,
           aadhaarDocs: true,
           auditLogs: { orderBy: { createdAt: 'desc' as const }, take: 100 },
           feedbacks: { orderBy: { createdAt: 'desc' as const } },
-          wallet: { include: { transactions: { orderBy: { createdAt: 'desc' as const } } } },
+          wallet: {
+            include: {
+              transactions: { orderBy: { createdAt: 'desc' as const } },
+            },
+          },
           refundRequests: { orderBy: { createdAt: 'desc' as const } },
         },
       });
 
-      const allAdmins = await this.prisma.user.findMany({ where: { role: 'ADMIN' }, include: { profile: true } });
+      const allAdmins = await this.prisma.user.findMany({
+        where: { role: 'ADMIN' },
+        include: { profile: true },
+      });
       const formatted = this.formatCitizenPayload(updated, allAdmins);
       client.emit('update_citizen_success', formatted);
       AdminGateway.broadcast('response_user_detail', formatted);
@@ -696,8 +840,9 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
     @MessageBody() data: { id: string; status?: string },
   ) {
     try {
-      let realId = data.id;
-      const isMongoId = (s?: string) => typeof s === 'string' && /^[0-9a-fA-F]{24}$/.test(s);
+      const realId = data.id;
+      const isMongoId = (s?: string) =>
+        typeof s === 'string' && /^[0-9a-fA-F]{24}$/.test(s);
       let u: any = null;
 
       if (isMongoId(realId)) {
@@ -705,11 +850,18 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
       }
       if (!u && realId?.startsWith('CIT-')) {
         const shortId = realId.replace('CIT-', '').toUpperCase();
-        const allUsers = await this.prisma.user.findMany({ where: { role: 'USER' } });
-        u = allUsers.find((x) => x.id.substring(0, 5).toUpperCase() === shortId) || null;
+        const allUsers = await this.prisma.user.findMany({
+          where: { role: 'USER' },
+        });
+        u =
+          allUsers.find(
+            (x) => x.id.substring(0, 5).toUpperCase() === shortId,
+          ) || null;
       }
       if (!u && realId) {
-        u = await this.prisma.user.findFirst({ where: { OR: [{ id: realId }, { email: realId }, { phone: realId }] } });
+        u = await this.prisma.user.findFirst({
+          where: { OR: [{ id: realId }, { email: realId }, { phone: realId }] },
+        });
       }
 
       if (!u) {
@@ -717,36 +869,50 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
         return;
       }
 
-      const nextStatus = data.status || (u.status === 'BLOCKED' ? 'Verified' : 'BLOCKED');
+      const nextStatus =
+        data.status || (u.status === 'BLOCKED' ? 'Verified' : 'BLOCKED');
 
       await this.prisma.user.update({
         where: { id: u.id },
         data: { status: nextStatus },
       });
 
-      await this.prisma.auditLog.create({
-        data: {
-          userId: u.id,
-          action: nextStatus === 'BLOCKED' ? 'USER_BLOCKED' : 'USER_UNBLOCKED',
-          details: `Admin changed citizen status to ${nextStatus}`,
-        },
-      }).catch(() => null);
+      await this.prisma.auditLog
+        .create({
+          data: {
+            userId: u.id,
+            action:
+              nextStatus === 'BLOCKED' ? 'USER_BLOCKED' : 'USER_UNBLOCKED',
+            details: `Admin changed citizen status to ${nextStatus}`,
+          },
+        })
+        .catch(() => null);
 
       const updated = await this.prisma.user.findUnique({
         where: { id: u.id },
         include: {
           profile: true,
-          applications: { include: { service: true }, orderBy: { submittedAt: 'desc' as const } },
+          applications: {
+            include: { service: true },
+            orderBy: { submittedAt: 'desc' as const },
+          },
           documents: true,
           aadhaarDocs: true,
           auditLogs: { orderBy: { createdAt: 'desc' as const }, take: 100 },
           feedbacks: { orderBy: { createdAt: 'desc' as const } },
-          wallet: { include: { transactions: { orderBy: { createdAt: 'desc' as const } } } },
+          wallet: {
+            include: {
+              transactions: { orderBy: { createdAt: 'desc' as const } },
+            },
+          },
           refundRequests: { orderBy: { createdAt: 'desc' as const } },
         },
       });
 
-      const allAdmins = await this.prisma.user.findMany({ where: { role: 'ADMIN' }, include: { profile: true } });
+      const allAdmins = await this.prisma.user.findMany({
+        where: { role: 'ADMIN' },
+        include: { profile: true },
+      });
       const formatted = this.formatCitizenPayload(updated, allAdmins);
       client.emit('block_citizen_success', formatted);
       AdminGateway.broadcast('response_user_detail', formatted);
@@ -759,25 +925,39 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
   @SubscribeMessage('send_push_notification')
   async handleSendPushNotification(
     @ConnectedSocket() client: Socket,
-    @MessageBody() data: { userId: string; title: string; body: string; type?: string },
+    @MessageBody()
+    data: { userId: string; title: string; body: string; type?: string },
   ) {
     try {
       const { userId, title, body, type } = data;
       if (!title || !body) {
-        client.emit('response_push_sent', { success: false, error: 'Subject title and message body are required' });
+        client.emit('response_push_sent', {
+          success: false,
+          error: 'Subject title and message body are required',
+        });
         return;
       }
 
-      const isMongoId = (s?: string) => typeof s === 'string' && /^[0-9a-fA-F]{24}$/.test(s);
+      const isMongoId = (s?: string) =>
+        typeof s === 'string' && /^[0-9a-fA-F]{24}$/.test(s);
       let targetUser: any = null;
 
       if (isMongoId(userId)) {
-        targetUser = await this.prisma.user.findUnique({ where: { id: userId }, include: { profile: true } });
+        targetUser = await this.prisma.user.findUnique({
+          where: { id: userId },
+          include: { profile: true },
+        });
       }
       if (!targetUser && userId?.startsWith('CIT-')) {
         const shortId = userId.replace('CIT-', '').toUpperCase();
-        const allUsers = await this.prisma.user.findMany({ where: { role: 'USER' }, include: { profile: true } });
-        targetUser = allUsers.find((x) => x.id.substring(0, 5).toUpperCase() === shortId) || null;
+        const allUsers = await this.prisma.user.findMany({
+          where: { role: 'USER' },
+          include: { profile: true },
+        });
+        targetUser =
+          allUsers.find(
+            (x) => x.id.substring(0, 5).toUpperCase() === shortId,
+          ) || null;
       }
       if (!targetUser && userId) {
         targetUser = await this.prisma.user.findFirst({
@@ -787,33 +967,40 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
       }
 
       if (!targetUser) {
-        client.emit('response_push_sent', { success: false, error: `Citizen target '${userId}' not found in records` });
+        client.emit('response_push_sent', {
+          success: false,
+          error: `Citizen target '${userId}' not found in records`,
+        });
         return;
       }
 
       // 1. Create Notification record in Database
-      const notifRecord = await this.prisma.notification.create({
-        data: {
-          userId: targetUser.id,
-          title: title.trim(),
-          body: body.trim(),
-          type: (type as any) || 'SYSTEM',
-          status: 'SENT',
-          sentAt: new Date(),
-        },
-      }).catch((err) => {
-        console.warn('[AdminGateway] DB Notification create note:', err);
-        return null;
-      });
+      const notifRecord = await this.prisma.notification
+        .create({
+          data: {
+            userId: targetUser.id,
+            title: title.trim(),
+            body: body.trim(),
+            type: (type as any) || 'SYSTEM',
+            status: 'SENT',
+            sentAt: new Date(),
+          },
+        })
+        .catch((err) => {
+          console.warn('[AdminGateway] DB Notification create note:', err);
+          return null;
+        });
 
       // 2. Log in AuditTrail
-      await this.prisma.auditLog.create({
-        data: {
-          userId: targetUser.id,
-          action: 'NOTIFICATION_SENT',
-          details: `Direct Push Notification sent: "${title.trim()}" - ${body.trim().substring(0, 55)}${body.length > 55 ? '...' : ''}`,
-        },
-      }).catch(() => null);
+      await this.prisma.auditLog
+        .create({
+          data: {
+            userId: targetUser.id,
+            action: 'NOTIFICATION_SENT',
+            details: `Direct Push Notification sent: "${title.trim()}" - ${body.trim().substring(0, 55)}${body.length > 55 ? '...' : ''}`,
+          },
+        })
+        .catch(() => null);
 
       // 3. Send FCM push notification to specific device token
       let fcmSent = false;
@@ -846,18 +1033,25 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
           fcmSent = true;
           console.log(`[AdminGateway] FCM Push sent to user ${targetUser.id}`);
         } catch (firebaseErr: any) {
-          console.warn('[AdminGateway] Firebase FCM note:', firebaseErr?.message || firebaseErr);
+          console.warn(
+            '[AdminGateway] Firebase FCM note:',
+            firebaseErr?.message || firebaseErr,
+          );
         }
       }
 
       // 4. Send targeted WebSocket event directly to citizen's active mobile socket & room
-      const socketDispatched = AdminGateway.emitToUser(targetUser.id, 'user_push_notification', {
-        id: notifRecord?.id || `notif_${Date.now()}`,
-        title: title.trim(),
-        body: body.trim(),
-        type: type || 'SYSTEM',
-        createdAt: new Date().toISOString(),
-      });
+      const socketDispatched = AdminGateway.emitToUser(
+        targetUser.id,
+        'user_push_notification',
+        {
+          id: notifRecord?.id || `notif_${Date.now()}`,
+          title: title.trim(),
+          body: body.trim(),
+          type: type || 'SYSTEM',
+          createdAt: new Date().toISOString(),
+        },
+      );
 
       AdminGateway.emitToUser(targetUser.id, 'new_notification', {
         id: notifRecord?.id || `notif_${Date.now()}`,
@@ -876,33 +1070,63 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
       });
 
       // 6. Broadcast updates to Admin Dashboards
-      AdminGateway.broadcast('user_activity_updated', { userId: targetUser.id });
+      AdminGateway.broadcast('user_activity_updated', {
+        userId: targetUser.id,
+      });
       AdminGateway.broadcast('audit_log_added');
     } catch (e: any) {
       console.error('[AdminGateway] send_push_notification error:', e);
-      client.emit('response_push_sent', { success: false, error: e.message || 'Failed to send notification' });
+      client.emit('response_push_sent', {
+        success: false,
+        error: e.message || 'Failed to send notification',
+      });
     }
   }
 
   public formatCitizenPayload(u: any, allAdmins?: any[]) {
     const apps = u.applications || [];
     const profile = u.profile || {};
-    const firstAppForm = (apps[0]?.formData as any) || {};
+    const firstAppForm = apps[0]?.formData || {};
 
-    const rawFullName = profile.fullName || firstAppForm.fullName || (u.email ? u.email.split('@')[0] : null) || (u.phone ? `Citizen ${u.phone.slice(-4)}` : '');
+    const rawFullName =
+      profile.fullName ||
+      firstAppForm.fullName ||
+      (u.email ? u.email.split('@')[0] : null) ||
+      (u.phone ? `Citizen ${u.phone.slice(-4)}` : '');
     const formattedFullName = rawFullName
-      ? rawFullName.trim().split(' ').map((w: string) => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase()).join(' ')
+      ? rawFullName
+          .trim()
+          .split(' ')
+          .map(
+            (w: string) => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase(),
+          )
+          .join(' ')
       : '';
 
-    const fatherName = profile.fatherName || firstAppForm.fatherName || firstAppForm.father_name || '';
-    const dob = profile.dob || u.aadhaarDocs?.[0]?.dateOfBirth || firstAppForm.dob || '';
-    const gender = profile.gender || u.aadhaarDocs?.[0]?.gender || firstAppForm.gender || '';
-    const aadhaar = profile.aadhaarNumber || u.aadhaarDocs?.[0]?.referenceId || firstAppForm.aadhaar || firstAppForm.aadhaarNumber || (profile.dob ? `•••• •••• ${u.id.slice(-4)}` : '');
+    const fatherName =
+      profile.fatherName ||
+      firstAppForm.fatherName ||
+      firstAppForm.father_name ||
+      '';
+    const dob =
+      profile.dob || u.aadhaarDocs?.[0]?.dateOfBirth || firstAppForm.dob || '';
+    const gender =
+      profile.gender || u.aadhaarDocs?.[0]?.gender || firstAppForm.gender || '';
+    const aadhaar =
+      profile.aadhaarNumber ||
+      u.aadhaarDocs?.[0]?.referenceId ||
+      firstAppForm.aadhaar ||
+      firstAppForm.aadhaarNumber ||
+      (profile.dob ? `•••• •••• ${u.id.slice(-4)}` : '');
     const pan = profile.pan || firstAppForm.pan || firstAppForm.panNumber || '';
     const mobile = u.phone || profile.phone || firstAppForm.phone || '';
     const email = u.email || profile.email || firstAppForm.email || '';
-    const address = profile.address || u.aadhaarDocs?.[0]?.address || firstAppForm.address || '';
-    
+    const address =
+      profile.address ||
+      u.aadhaarDocs?.[0]?.address ||
+      firstAppForm.address ||
+      '';
+
     // Geographical resolution for Centre & Operator
     let district = profile.district || '';
     let state = profile.state || '';
@@ -910,7 +1134,7 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
 
     if (!district || district === '-') {
       for (const a of apps) {
-        const form = (a.formData as any) || {};
+        const form = a.formData || {};
         if (form.district || form.districtName) {
           district = form.district || form.districtName;
           state = form.state || form.stateName || state;
@@ -921,7 +1145,7 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
     }
     if (!pinCode) {
       for (const a of apps) {
-        const form = (a.formData as any) || {};
+        const form = a.formData || {};
         if (form.pinCode || form.pincode || form.field_3_pin_code) {
           pinCode = form.pinCode || form.pincode || form.field_3_pin_code;
           break;
@@ -949,14 +1173,24 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
 
     // Real Assigned Operator determination
     let assignedOperator = '';
-    const appOfficer = apps.find((a: any) => a.officialOfficer && a.officialOfficer !== 'Officer Sharma (SDM)')?.officialOfficer;
+    const appOfficer = apps.find(
+      (a: any) =>
+        a.officialOfficer && a.officialOfficer !== 'Officer Sharma (SDM)',
+    )?.officialOfficer;
     if (appOfficer) {
       assignedOperator = appOfficer;
     } else if (Array.isArray(allAdmins) && allAdmins.length > 0) {
-      const matchOp = allAdmins.find((adm: any) => {
-        const d = adm.profile?.district || '';
-        return district && d.toLowerCase().includes(district.toLowerCase());
-      }) || allAdmins.find((adm: any) => adm.role === 'ADMIN' && adm.profile?.fullName && !adm.profile.fullName.toLowerCase().includes('super'));
+      const matchOp =
+        allAdmins.find((adm: any) => {
+          const d = adm.profile?.district || '';
+          return district && d.toLowerCase().includes(district.toLowerCase());
+        }) ||
+        allAdmins.find(
+          (adm: any) =>
+            adm.role === 'ADMIN' &&
+            adm.profile?.fullName &&
+            !adm.profile.fullName.toLowerCase().includes('super'),
+        );
 
       if (matchOp?.profile?.fullName) {
         const opId = matchOp.id.substring(0, 5).toUpperCase();
@@ -971,7 +1205,12 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
     }
 
     const totalAmountSpent = apps.reduce((sum: number, a: any) => {
-      const f = typeof a.feePaid === 'number' && !isNaN(a.feePaid) ? a.feePaid : (a.feePaid ? Number(a.feePaid) : 50.0);
+      const f =
+        typeof a.feePaid === 'number' && !isNaN(a.feePaid)
+          ? a.feePaid
+          : a.feePaid
+            ? Number(a.feePaid)
+            : 50.0;
       return sum + f;
     }, 0);
 
@@ -987,7 +1226,9 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
       u.documents.forEach((d: any) => {
         if (d.fileUrl && !seenDocUrls.has(d.fileUrl)) {
           seenDocUrls.add(d.fileUrl);
-          const isImg = d.fileUrl.startsWith('data:image') || (d.fileName && /\.(jpg|jpeg|png|webp|gif)$/i.test(d.fileName));
+          const isImg =
+            d.fileUrl.startsWith('data:image') ||
+            (d.fileName && /\.(jpg|jpeg|png|webp|gif)$/i.test(d.fileName));
           docList.push({
             id: d.id,
             name: d.fileName || 'Uploaded Identification.jpg',
@@ -995,7 +1236,13 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
             fileUrl: d.fileUrl,
             fileType: d.fileType || (isImg ? 'image/jpeg' : 'application/pdf'),
             fileSize: d.fileSize || 512000,
-            date: d.uploadedAt ? new Date(d.uploadedAt).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' }) : 'Recently',
+            date: d.uploadedAt
+              ? new Date(d.uploadedAt).toLocaleDateString('en-GB', {
+                  day: 'numeric',
+                  month: 'short',
+                  year: 'numeric',
+                })
+              : 'Recently',
             rawDate: d.uploadedAt,
             status: 'Verified',
           });
@@ -1015,9 +1262,18 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
             fileUrl: aUrl,
             fileType: 'application/pdf',
             fileSize: 1048576,
-            date: aDoc.createdAt ? new Date(aDoc.createdAt).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' }) : 'Recently',
+            date: aDoc.createdAt
+              ? new Date(aDoc.createdAt).toLocaleDateString('en-GB', {
+                  day: 'numeric',
+                  month: 'short',
+                  year: 'numeric',
+                })
+              : 'Recently',
             rawDate: aDoc.createdAt,
-            status: aDoc.verificationStatus === 'NOT_IMPORTED' ? 'Pending Review' : 'Verified',
+            status:
+              aDoc.verificationStatus === 'NOT_IMPORTED'
+                ? 'Pending Review'
+                : 'Verified',
           });
         }
       });
@@ -1029,15 +1285,25 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
           const url = d.fileUrl || d.url || d.uri || '';
           if (url && !seenDocUrls.has(url)) {
             seenDocUrls.add(url);
-            const isImg = url.startsWith('data:image') || (d.fileName && /\.(jpg|jpeg|png|webp|gif)$/i.test(d.fileName));
+            const isImg =
+              url.startsWith('data:image') ||
+              (d.fileName && /\.(jpg|jpeg|png|webp|gif)$/i.test(d.fileName));
             docList.push({
               id: `${a.id}_doc_${idx}`,
               name: d.fileName || d.label || `${a.serviceTitle} Document.jpg`,
-              fileName: d.fileName || d.label || `${a.serviceTitle} Document.jpg`,
+              fileName:
+                d.fileName || d.label || `${a.serviceTitle} Document.jpg`,
               fileUrl: url,
-              fileType: d.fileType || (isImg ? 'image/jpeg' : 'application/pdf'),
+              fileType:
+                d.fileType || (isImg ? 'image/jpeg' : 'application/pdf'),
               fileSize: d.fileSize || 512000,
-              date: a.submittedAt ? new Date(a.submittedAt).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' }) : 'Recently',
+              date: a.submittedAt
+                ? new Date(a.submittedAt).toLocaleDateString('en-GB', {
+                    day: 'numeric',
+                    month: 'short',
+                    year: 'numeric',
+                  })
+                : 'Recently',
               rawDate: a.submittedAt,
               status: 'Verified',
             });
@@ -1045,9 +1311,20 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
         });
       }
 
-      const form = (a.formData as any) || {};
-      ['documentUrl', 'photoUrl', 'proofUrl', 'signatureUrl', 'aadhaarUrl', 'panUrl'].forEach((k) => {
-        if (form[k] && typeof form[k] === 'string' && !seenDocUrls.has(form[k])) {
+      const form = a.formData || {};
+      [
+        'documentUrl',
+        'photoUrl',
+        'proofUrl',
+        'signatureUrl',
+        'aadhaarUrl',
+        'panUrl',
+      ].forEach((k) => {
+        if (
+          form[k] &&
+          typeof form[k] === 'string' &&
+          !seenDocUrls.has(form[k])
+        ) {
           seenDocUrls.add(form[k]);
           docList.push({
             id: `${a.id}_form_${k}`,
@@ -1056,7 +1333,13 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
             fileUrl: form[k],
             fileType: 'image/jpeg',
             fileSize: 450000,
-            date: a.submittedAt ? new Date(a.submittedAt).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' }) : 'Recently',
+            date: a.submittedAt
+              ? new Date(a.submittedAt).toLocaleDateString('en-GB', {
+                  day: 'numeric',
+                  month: 'short',
+                  year: 'numeric',
+                })
+              : 'Recently',
             rawDate: a.submittedAt,
             status: 'Verified',
           });
@@ -1079,14 +1362,31 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
           transactionsList.push({
             id: tx.id,
             refNumber: tx.refId || `TXN-${tx.id.substring(0, 8).toUpperCase()}`,
-            title: tx.title || (isCredit ? 'Wallet Balance Top-up' : 'Citizen Service Payment'),
+            title:
+              tx.title ||
+              (isCredit ? 'Wallet Balance Top-up' : 'Citizen Service Payment'),
             amount: `${isCredit ? '+' : '-'} ₹${Number(tx.amount || 0).toLocaleString('en-IN')}`,
             rawAmount: Number(tx.amount || 0),
             type: tx.type || (isCredit ? 'CREDIT' : 'DEBIT'),
-            category: tx.category || (isCredit ? 'Wallet Topup' : 'Gov Scheme Fee'),
+            category:
+              tx.category || (isCredit ? 'Wallet Topup' : 'Gov Scheme Fee'),
             status: tx.status || 'SUCCESS',
-            date: tx.createdAt ? new Date(tx.createdAt).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' }) : 'Recently',
-            dateTime: tx.createdAt ? new Date(tx.createdAt).toLocaleString('en-IN', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' }) : 'Recently',
+            date: tx.createdAt
+              ? new Date(tx.createdAt).toLocaleDateString('en-GB', {
+                  day: 'numeric',
+                  month: 'short',
+                  year: 'numeric',
+                })
+              : 'Recently',
+            dateTime: tx.createdAt
+              ? new Date(tx.createdAt).toLocaleString('en-IN', {
+                  day: '2-digit',
+                  month: 'short',
+                  year: 'numeric',
+                  hour: '2-digit',
+                  minute: '2-digit',
+                })
+              : 'Recently',
             rawDate: tx.createdAt,
           });
         }
@@ -1095,23 +1395,51 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
 
     // Application fee settlements
     apps.forEach((a: any) => {
-      const fee = typeof a.feePaid === 'number' && !isNaN(a.feePaid) ? a.feePaid : (a.feePaid ? Number(a.feePaid) : 50.0);
+      const fee =
+        typeof a.feePaid === 'number' && !isNaN(a.feePaid)
+          ? a.feePaid
+          : a.feePaid
+            ? Number(a.feePaid)
+            : 50.0;
       const appTxnId = `app_fee_${a.id}`;
       if (!seenTxnIds.has(appTxnId) && fee > 0) {
         seenTxnIds.add(appTxnId);
-        const isRefunded = a.paymentStatus === 'Refunded' || a.refundStatus === 'APPROVED';
+        const isRefunded =
+          a.paymentStatus === 'Refunded' || a.refundStatus === 'APPROVED';
         transactionsList.push({
           id: appTxnId,
-          refNumber: a.razorpayPaymentId || a.razorpayOrderId || a.refNumber || `SETTLE-${a.id.substring(0, 8).toUpperCase()}`,
+          refNumber:
+            a.razorpayPaymentId ||
+            a.razorpayOrderId ||
+            a.refNumber ||
+            `SETTLE-${a.id.substring(0, 8).toUpperCase()}`,
           title: `Service Fee: ${a.serviceTitle || 'Government Portal'}`,
           subtitle: `Application #${a.refNumber || a.id.substring(0, 8).toUpperCase()} • Official Portal Gateway`,
           amount: `- ₹${fee.toLocaleString('en-IN')}`,
           rawAmount: fee,
           type: 'DEBIT',
           category: 'Service Fee Gateway',
-          status: isRefunded ? 'REFUNDED' : (a.paymentStatus === 'Success' ? 'SUCCESS' : (a.paymentStatus || 'SUCCESS')),
-          date: a.submittedAt ? new Date(a.submittedAt).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' }) : 'Recently',
-          dateTime: a.submittedAt ? new Date(a.submittedAt).toLocaleString('en-IN', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' }) : 'Recently',
+          status: isRefunded
+            ? 'REFUNDED'
+            : a.paymentStatus === 'Success'
+              ? 'SUCCESS'
+              : a.paymentStatus || 'SUCCESS',
+          date: a.submittedAt
+            ? new Date(a.submittedAt).toLocaleDateString('en-GB', {
+                day: 'numeric',
+                month: 'short',
+                year: 'numeric',
+              })
+            : 'Recently',
+          dateTime: a.submittedAt
+            ? new Date(a.submittedAt).toLocaleString('en-IN', {
+                day: '2-digit',
+                month: 'short',
+                year: 'numeric',
+                hour: '2-digit',
+                minute: '2-digit',
+              })
+            : 'Recently',
           rawDate: a.submittedAt,
         });
       }
@@ -1126,7 +1454,8 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
           const isApproved = r.status === 'APPROVED';
           transactionsList.push({
             id: refundTxnId,
-            refNumber: r.refNumber || `REF-${r.id.substring(0, 8).toUpperCase()}`,
+            refNumber:
+              r.refNumber || `REF-${r.id.substring(0, 8).toUpperCase()}`,
             title: `Refund: ${r.serviceTitle || 'Service Fee'}`,
             subtitle: `Reason: ${r.reason || 'Citizen Grievance / Cancellation'}`,
             amount: `${isApproved ? '+' : ''} ₹${Number(r.amount || 0).toLocaleString('en-IN')}`,
@@ -1134,8 +1463,22 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
             type: 'CREDIT',
             category: 'Gov Refund Dispatch',
             status: r.status || 'PENDING',
-            date: r.createdAt ? new Date(r.createdAt).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' }) : 'Recently',
-            dateTime: r.createdAt ? new Date(r.createdAt).toLocaleString('en-IN', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' }) : 'Recently',
+            date: r.createdAt
+              ? new Date(r.createdAt).toLocaleDateString('en-GB', {
+                  day: 'numeric',
+                  month: 'short',
+                  year: 'numeric',
+                })
+              : 'Recently',
+            dateTime: r.createdAt
+              ? new Date(r.createdAt).toLocaleString('en-IN', {
+                  day: '2-digit',
+                  month: 'short',
+                  year: 'numeric',
+                  hour: '2-digit',
+                  minute: '2-digit',
+                })
+              : 'Recently',
             rawDate: r.createdAt,
           });
         }
@@ -1143,7 +1486,9 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
     }
 
     // Sort transactions by date descending
-    transactionsList.sort((a, b) => new Date(b.rawDate).getTime() - new Date(a.rawDate).getTime());
+    transactionsList.sort(
+      (a, b) => new Date(b.rawDate).getTime() - new Date(a.rawDate).getTime(),
+    );
 
     // ─────────────────────────────────────────────────────────────
     // 3. Real Session & Login/Logout History
@@ -1153,16 +1498,26 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
     const seenSessionIds = new Set<string>();
 
     const hasActiveSocket = AdminGateway.isUserOnline(u.id);
-    const lastSeenMs = u.lastSeenAt ? Date.now() - new Date(u.lastSeenAt).getTime() : Infinity;
+    const lastSeenMs = u.lastSeenAt
+      ? Date.now() - new Date(u.lastSeenAt).getTime()
+      : Infinity;
     // Citizen is strictly online ONLY if active socket connected OR verified recent heartbeat within 60s
-    const isOnline = hasActiveSocket || (u.isOnline === true && lastSeenMs < 60000);
+    const isOnline =
+      hasActiveSocket || (u.isOnline === true && lastSeenMs < 60000);
 
     // Auto-heal stale isOnline in database if citizen went offline without clean disconnect
-    if (!isOnline && u.isOnline === true && lastSeenMs >= 60000 && /^[0-9a-fA-F]{24}$/.test(u.id)) {
-      this.prisma.user.update({
-        where: { id: u.id },
-        data: { isOnline: false },
-      }).catch(() => null);
+    if (
+      !isOnline &&
+      u.isOnline === true &&
+      lastSeenMs >= 60000 &&
+      /^[0-9a-fA-F]{24}$/.test(u.id)
+    ) {
+      this.prisma.user
+        .update({
+          where: { id: u.id },
+          data: { isOnline: false },
+        })
+        .catch(() => null);
     }
 
     // Prepend live active session if online
@@ -1186,20 +1541,33 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
     // Extract login / logout events from AuditLog
     rawLogs.forEach((l: any) => {
       const act = l.action || '';
-      const isLogin = act.includes('LOGIN') || act.includes('SESSION_START') || act.includes('AUTH');
-      const isLogout = act.includes('LOGOUT') || act.includes('SESSION_END') || act.includes('APP_CLOSED') || act.includes('CLOSED');
+      const isLogin =
+        act.includes('LOGIN') ||
+        act.includes('SESSION_START') ||
+        act.includes('AUTH');
+      const isLogout =
+        act.includes('LOGOUT') ||
+        act.includes('SESSION_END') ||
+        act.includes('APP_CLOSED') ||
+        act.includes('CLOSED');
 
       if ((isLogin || isLogout) && !seenSessionIds.has(l.id)) {
         seenSessionIds.add(l.id);
 
         let method = 'Mobile Credentials';
         if (l.details?.includes('Google')) method = 'Google Sign-In';
-        else if (l.details?.includes('Biometric') || l.details?.includes('Fingerprint')) method = 'Biometric Fingerprint';
+        else if (
+          l.details?.includes('Biometric') ||
+          l.details?.includes('Fingerprint')
+        )
+          method = 'Biometric Fingerprint';
         else if (l.details?.includes('OTP')) method = 'Mobile OTP (SMS/Email)';
-        else if (l.details?.includes('Password')) method = 'Password Authentication';
+        else if (l.details?.includes('Password'))
+          method = 'Password Authentication';
 
         let platform = 'CyberSave Android App';
-        if (l.details?.includes('Web') || l.details?.includes('Portal')) platform = 'Admin Web Portal';
+        if (l.details?.includes('Web') || l.details?.includes('Portal'))
+          platform = 'Admin Web Portal';
 
         sessionHistory.push({
           id: l.id,
@@ -1207,11 +1575,28 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
           action: l.action,
           method,
           platform,
-          details: l.details || (isLogin ? 'User signed in' : 'App closed / Session terminated'),
+          details:
+            l.details ||
+            (isLogin ? 'User signed in' : 'App closed / Session terminated'),
           ipAddress: l.ipAddress || '192.168.1.1 (Mobile App)',
           status: isLogin ? 'Session Established' : 'Session Terminated',
-          date: l.createdAt ? new Date(l.createdAt).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' }) : 'Recently',
-          dateTime: l.createdAt ? new Date(l.createdAt).toLocaleString('en-IN', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit', second: '2-digit' }) : 'Recently',
+          date: l.createdAt
+            ? new Date(l.createdAt).toLocaleDateString('en-GB', {
+                day: 'numeric',
+                month: 'short',
+                year: 'numeric',
+              })
+            : 'Recently',
+          dateTime: l.createdAt
+            ? new Date(l.createdAt).toLocaleString('en-IN', {
+                day: '2-digit',
+                month: 'short',
+                year: 'numeric',
+                hour: '2-digit',
+                minute: '2-digit',
+                second: '2-digit',
+              })
+            : 'Recently',
           rawDate: l.createdAt,
         });
       }
@@ -1224,13 +1609,27 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
           id: `sess_${u.id}_recent`,
           event: 'LOGIN',
           action: 'USER_LOGIN',
-          method: u.email?.includes('google') ? 'Google Sign-In' : (u.email?.startsWith('fp.') ? 'Biometric Fingerprint' : 'Mobile App Session'),
+          method: u.email?.includes('google')
+            ? 'Google Sign-In'
+            : u.email?.startsWith('fp.')
+              ? 'Biometric Fingerprint'
+              : 'Mobile App Session',
           platform: 'CyberSave Android App',
           details: 'Verified Android Mobile App Session',
           ipAddress: '192.168.1.45 (Android)',
           status: isOnline ? 'Active' : 'Session Closed',
-          date: new Date(u.lastSeenAt).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' }),
-          dateTime: new Date(u.lastSeenAt).toLocaleString('en-IN', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' }),
+          date: new Date(u.lastSeenAt).toLocaleDateString('en-GB', {
+            day: 'numeric',
+            month: 'short',
+            year: 'numeric',
+          }),
+          dateTime: new Date(u.lastSeenAt).toLocaleString('en-IN', {
+            day: '2-digit',
+            month: 'short',
+            year: 'numeric',
+            hour: '2-digit',
+            minute: '2-digit',
+          }),
           rawDate: u.lastSeenAt,
         });
       }
@@ -1244,8 +1643,18 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
           details: 'Account creation & first session authentication',
           ipAddress: '192.168.1.45 (Android)',
           status: 'Completed',
-          date: new Date(u.createdAt).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' }),
-          dateTime: new Date(u.createdAt).toLocaleString('en-IN', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' }),
+          date: new Date(u.createdAt).toLocaleDateString('en-GB', {
+            day: 'numeric',
+            month: 'short',
+            year: 'numeric',
+          }),
+          dateTime: new Date(u.createdAt).toLocaleString('en-IN', {
+            day: '2-digit',
+            month: 'short',
+            year: 'numeric',
+            hour: '2-digit',
+            minute: '2-digit',
+          }),
           rawDate: u.createdAt,
         });
       }
@@ -1253,20 +1662,41 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
 
     // Recent Services
     const recentServices = apps.map((a: any) => {
-      const fee = typeof a.feePaid === 'number' && !isNaN(a.feePaid) ? a.feePaid : (a.feePaid ? Number(a.feePaid) : 50.0);
+      const fee =
+        typeof a.feePaid === 'number' && !isNaN(a.feePaid)
+          ? a.feePaid
+          : a.feePaid
+            ? Number(a.feePaid)
+            : 50.0;
       const s = a.status;
-      const statusLabel = s === 'APPROVED' || s === 'COMPLETED' ? 'Completed' : s === 'IN_PROGRESS' ? 'In Progress' : s === 'REJECTED' ? 'Rejected' : s === 'VERIFYING' ? 'Verifying' : 'Pending';
+      const statusLabel =
+        s === 'APPROVED' || s === 'COMPLETED'
+          ? 'Completed'
+          : s === 'IN_PROGRESS'
+            ? 'In Progress'
+            : s === 'REJECTED'
+              ? 'Rejected'
+              : s === 'VERIFYING'
+                ? 'Verifying'
+                : 'Pending';
 
       return {
         id: a.id,
         refNumber: a.refNumber || `APP-${a.id.substring(0, 5).toUpperCase()}`,
         name: a.serviceTitle || a.service?.title || 'Government Service',
-        serviceTitle: a.serviceTitle || a.service?.title || 'Government Service',
+        serviceTitle:
+          a.serviceTitle || a.service?.title || 'Government Service',
         amount: `₹${fee.toLocaleString('en-IN')}`,
         rawAmount: fee,
         status: statusLabel,
         rawStatus: a.status,
-        date: a.submittedAt ? new Date(a.submittedAt).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' }) : 'Recently',
+        date: a.submittedAt
+          ? new Date(a.submittedAt).toLocaleDateString('en-GB', {
+              day: 'numeric',
+              month: 'short',
+              year: 'numeric',
+            })
+          : 'Recently',
         submittedAt: a.submittedAt ? a.submittedAt.toISOString() : null,
       };
     });
@@ -1278,8 +1708,22 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
       improvementCategory: fb.improvementCategory || 'App Experience',
       feedbackText: fb.feedbackText || '',
       imageUrl: fb.imageUrl || null,
-      date: fb.createdAt ? new Date(fb.createdAt).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' }) : 'Recently',
-      dateTime: fb.createdAt ? new Date(fb.createdAt).toLocaleString('en-IN', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' }) : 'Recently',
+      date: fb.createdAt
+        ? new Date(fb.createdAt).toLocaleDateString('en-GB', {
+            day: 'numeric',
+            month: 'short',
+            year: 'numeric',
+          })
+        : 'Recently',
+      dateTime: fb.createdAt
+        ? new Date(fb.createdAt).toLocaleString('en-IN', {
+            day: '2-digit',
+            month: 'short',
+            year: 'numeric',
+            hour: '2-digit',
+            minute: '2-digit',
+          })
+        : 'Recently',
       createdAt: fb.createdAt ? fb.createdAt.toISOString() : null,
     }));
 
@@ -1303,11 +1747,23 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
 
     rawLogs.forEach((l: any) => {
       let color = '#2563EB';
-      if (l.action?.includes('REJECT') || l.action?.includes('BLOCK')) color = '#EF4444';
-      else if (l.action?.includes('APPROV') || l.action?.includes('COMPLET') || l.action?.includes('PAY')) color = '#10B981';
+      if (l.action?.includes('REJECT') || l.action?.includes('BLOCK'))
+        color = '#EF4444';
+      else if (
+        l.action?.includes('APPROV') ||
+        l.action?.includes('COMPLET') ||
+        l.action?.includes('PAY')
+      )
+        color = '#10B981';
       else if (l.action?.includes('FEEDBACK')) color = '#FFB800';
-      else if (l.action?.includes('PEND') || l.action?.includes('VERIF')) color = '#F59E0B';
-      else if (l.action?.includes('LOGOUT') || l.action?.includes('APP_CLOSED') || l.action?.includes('SESSION_END')) color = '#64748B';
+      else if (l.action?.includes('PEND') || l.action?.includes('VERIF'))
+        color = '#F59E0B';
+      else if (
+        l.action?.includes('LOGOUT') ||
+        l.action?.includes('APP_CLOSED') ||
+        l.action?.includes('SESSION_END')
+      )
+        color = '#64748B';
 
       if (l.action === 'FEEDBACK_SUBMITTED' && feedbacks.length > 0) return;
 
@@ -1315,7 +1771,13 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
         id: l.id,
         title: l.details || l.action.replace(/_/g, ' '),
         action: l.action,
-        date: l.createdAt ? new Date(l.createdAt).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' }) : 'Recently',
+        date: l.createdAt
+          ? new Date(l.createdAt).toLocaleDateString('en-GB', {
+              day: 'numeric',
+              month: 'short',
+              year: 'numeric',
+            })
+          : 'Recently',
         color,
       });
     });
@@ -1326,7 +1788,13 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
           id: `act_${a.id}`,
           title: `Application for ${a.serviceTitle} submitted`,
           action: 'APPLICATION_SUBMITTED',
-          date: a.submittedAt ? new Date(a.submittedAt).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' }) : 'Recently',
+          date: a.submittedAt
+            ? new Date(a.submittedAt).toLocaleDateString('en-GB', {
+                day: 'numeric',
+                month: 'short',
+                year: 'numeric',
+              })
+            : 'Recently',
           color: '#2563EB',
         });
       });
@@ -1339,9 +1807,16 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
         const diffMs = Date.now() - new Date(lastTime).getTime();
         const diffSec = Math.floor(diffMs / 1000);
         if (diffSec < 60) lastActive = 'Just now';
-        else if (diffSec < 3600) lastActive = `${Math.floor(diffSec / 60)} mins ago`;
-        else if (diffSec < 86400) lastActive = `${Math.floor(diffSec / 3600)} hours ago`;
-        else lastActive = new Date(lastTime).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' });
+        else if (diffSec < 3600)
+          lastActive = `${Math.floor(diffSec / 60)} mins ago`;
+        else if (diffSec < 86400)
+          lastActive = `${Math.floor(diffSec / 3600)} hours ago`;
+        else
+          lastActive = new Date(lastTime).toLocaleDateString('en-GB', {
+            day: 'numeric',
+            month: 'short',
+            year: 'numeric',
+          });
       } else {
         lastActive = 'Offline';
       }
@@ -1362,8 +1837,14 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
       district,
       state,
       pinCode,
-      joinedDate: u.createdAt ? new Date(u.createdAt).toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' }) : 'Joined recently',
-      status: u.status === 'BLOCKED' ? 'Blocked' : (u.status || 'Verified'),
+      joinedDate: u.createdAt
+        ? new Date(u.createdAt).toLocaleDateString('en-GB', {
+            day: 'numeric',
+            month: 'long',
+            year: 'numeric',
+          })
+        : 'Joined recently',
+      status: u.status === 'BLOCKED' ? 'Blocked' : u.status || 'Verified',
       avatarUrl: profile.avatarUrl || null,
       isOnline,
       lastActive,
@@ -1375,7 +1856,9 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
         lastActive,
         registeredCentre,
         assignedOperator,
-        walletBalance: u.wallet ? `₹${Number(u.wallet.balance || 0).toLocaleString('en-IN')}` : '₹0',
+        walletBalance: u.wallet
+          ? `₹${Number(u.wallet.balance || 0).toLocaleString('en-IN')}`
+          : '₹0',
       },
       recentServices,
       uploadedDocuments: docList,
@@ -1450,7 +1933,13 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
 
           // Clean docs array so no empty arrays or invalid objects remain
           const cleanedDocs = (Array.isArray(docs) ? docs : [])
-            .filter((d: any) => d && typeof d === 'object' && !Array.isArray(d) && (d.fileUrl || d.url || d.uri || d.fileName || d.label))
+            .filter(
+              (d: any) =>
+                d &&
+                typeof d === 'object' &&
+                !Array.isArray(d) &&
+                (d.fileUrl || d.url || d.uri || d.fileName || d.label),
+            )
             .map((d: any, idx: number) => ({
               label: d.label || `Document Proof #${idx + 1}`,
               fileName: d.fileName || `proof_${idx + 1}.jpg`,
@@ -1462,10 +1951,16 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
             id: a.refNumber || `APP-2026-${a.id.substring(0, 4).toUpperCase()}`,
             rawId: a.id,
             refNumber: a.refNumber,
-            citizen: userProfile?.fullName || formData.fullName || a.user?.email || 'Citizen Applicant',
+            citizen:
+              userProfile?.fullName ||
+              formData.fullName ||
+              a.user?.email ||
+              'Citizen Applicant',
             citizenEmail: a.user?.email || formData.email || '',
-            citizenPhone: a.user?.phone || userProfile?.phone || formData.phone || '',
-            serviceType: a.serviceTitle || a.service?.title || 'Government Service',
+            citizenPhone:
+              a.user?.phone || userProfile?.phone || formData.phone || '',
+            serviceType:
+              a.serviceTitle || a.service?.title || 'Government Service',
             serviceCategory: a.service?.category || 'Government',
             priority: 'Medium',
             rawStatus: a.status,
@@ -1484,8 +1979,19 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
                           ? 'Rejected'
                           : 'Pending',
             assigned: a.officialOfficer || 'Auto Assigned (SDM)',
-            submitted: a.submittedAt ? a.submittedAt.toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' }) : 'Today',
-            submittedAtFull: a.submittedAt ? a.submittedAt.toLocaleString('en-IN', { dateStyle: 'medium', timeStyle: 'short' }) : new Date().toLocaleString('en-IN'),
+            submitted: a.submittedAt
+              ? a.submittedAt.toLocaleDateString('en-IN', {
+                  day: 'numeric',
+                  month: 'short',
+                  year: 'numeric',
+                })
+              : 'Today',
+            submittedAtFull: a.submittedAt
+              ? a.submittedAt.toLocaleString('en-IN', {
+                  dateStyle: 'medium',
+                  timeStyle: 'short',
+                })
+              : new Date().toLocaleString('en-IN'),
             sla: '24h',
             amount: a.feePaid || 50.0,
             paymentStatus: a.paymentStatus || 'Success',
@@ -1495,7 +2001,8 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
             formData: {
               fullName: formData.fullName || userProfile?.fullName || '',
               email: formData.email || a.user?.email || '',
-              phone: formData.phone || a.user?.phone || userProfile?.phone || '',
+              phone:
+                formData.phone || a.user?.phone || userProfile?.phone || '',
               dob: formData.dob || userProfile?.dob || '',
               gender: formData.gender || userProfile?.gender || '',
               fatherName: formData.fatherName || '',
@@ -1509,17 +2016,26 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
             },
             documents: cleanedDocs,
             applicantProfile: {
-              fullName: userProfile?.fullName || formData.fullName || 'Citizen Applicant',
-              aadhaar: (userProfile as any)?.aadhaarNumber || formData.aadhaarNumber || 'Verified ID Vault',
+              fullName:
+                userProfile?.fullName ||
+                formData.fullName ||
+                'Citizen Applicant',
+              aadhaar:
+                (userProfile as any)?.aadhaarNumber ||
+                formData.aadhaarNumber ||
+                'Verified ID Vault',
               dob: userProfile?.dob || formData.dob || 'Not Provided',
               gender: userProfile?.gender || formData.gender || 'Not Provided',
               fatherName: formData.fatherName || 'Not Provided',
               motherName: formData.motherName || 'Not Provided',
               placeOfBirth: formData.placeOfBirth || 'Not Provided',
               state: userProfile?.state || formData.state || 'Not Provided',
-              district: userProfile?.district || formData.district || 'Not Provided',
-              pinCode: userProfile?.pinCode || formData.pinCode || 'Not Provided',
-              address: userProfile?.address || formData.address || 'Not Provided',
+              district:
+                userProfile?.district || formData.district || 'Not Provided',
+              pinCode:
+                userProfile?.pinCode || formData.pinCode || 'Not Provided',
+              address:
+                userProfile?.address || formData.address || 'Not Provided',
             },
           };
         }),
@@ -1537,7 +2053,8 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
   @SubscribeMessage('update_application_status')
   async handleUpdateApplicationStatus(
     @ConnectedSocket() client: Socket,
-    @MessageBody() data: {
+    @MessageBody()
+    data: {
       id?: string;
       applicationId?: string;
       refNumber?: string;
@@ -1554,33 +2071,35 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
       if (!targetId) return;
 
       const validStatusMap: Record<string, string> = {
-        'approved': 'APPROVED',
-        'Approved': 'APPROVED',
-        'APPROVED': 'APPROVED',
-        'rejected': 'REJECTED',
-        'Rejected': 'REJECTED',
-        'REJECTED': 'REJECTED',
+        approved: 'APPROVED',
+        Approved: 'APPROVED',
+        APPROVED: 'APPROVED',
+        rejected: 'REJECTED',
+        Rejected: 'REJECTED',
+        REJECTED: 'REJECTED',
         'in progress': 'IN_PROGRESS',
         'In Progress': 'IN_PROGRESS',
-        'processing': 'IN_PROGRESS',
-        'Processing': 'IN_PROGRESS',
-        'IN_PROGRESS': 'IN_PROGRESS',
-        'pending': 'VERIFYING',
-        'Pending': 'VERIFYING',
-        'verifying': 'VERIFYING',
-        'VERIFYING': 'VERIFYING',
-        'submitted': 'SUBMITTED',
-        'Submitted': 'SUBMITTED',
+        processing: 'IN_PROGRESS',
+        Processing: 'IN_PROGRESS',
+        IN_PROGRESS: 'IN_PROGRESS',
+        pending: 'VERIFYING',
+        Pending: 'VERIFYING',
+        verifying: 'VERIFYING',
+        VERIFYING: 'VERIFYING',
+        submitted: 'SUBMITTED',
+        Submitted: 'SUBMITTED',
         'In Review': 'SUBMITTED',
-        'SUBMITTED': 'SUBMITTED',
-        'completed': 'COMPLETED',
-        'Completed': 'COMPLETED',
-        'COMPLETED': 'COMPLETED',
+        SUBMITTED: 'SUBMITTED',
+        completed: 'COMPLETED',
+        Completed: 'COMPLETED',
+        COMPLETED: 'COMPLETED',
       };
 
-      const mappedStatus = validStatusMap[data.status] || (data.status.toUpperCase() as any);
+      const mappedStatus =
+        validStatusMap[data.status] || (data.status.toUpperCase() as any);
 
-      const isMongoId = (idStr?: string) => typeof idStr === 'string' && /^[0-9a-fA-F]{24}$/.test(idStr);
+      const isMongoId = (idStr?: string) =>
+        typeof idStr === 'string' && /^[0-9a-fA-F]{24}$/.test(idStr);
       const orConditions: any[] = [{ refNumber: targetId }];
       if (isMongoId(targetId)) {
         orConditions.push({ id: targetId });
@@ -1594,8 +2113,12 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
         const updated = await this.prisma.application.update({
           where: { id: app.id },
           data: {
-            status: mappedStatus as any,
-            rejectionReason: mappedStatus === 'REJECTED' ? (data.rejectionReason || 'Application rejected during administrative verification.') : null,
+            status: mappedStatus,
+            rejectionReason:
+              mappedStatus === 'REJECTED'
+                ? data.rejectionReason ||
+                  'Application rejected during administrative verification.'
+                : null,
             updatedAt: new Date(),
           },
           include: {
@@ -1615,10 +2138,18 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
           rejectionReason: updated.rejectionReason,
         });
 
-        const actingOfficerName = data.adminName || (data.adminEmail ? data.adminEmail.split('@')[0] : (updated.officialOfficer || 'Field Operator'));
+        const actingOfficerName =
+          data.adminName ||
+          (data.adminEmail
+            ? data.adminEmail.split('@')[0]
+            : updated.officialOfficer || 'Field Operator');
         const actingOfficerEmail = data.adminEmail || '';
         const actingOfficerId = data.adminId;
-        const actingRole = data.adminRole || (actingOfficerEmail === 'admin@cybersave.com' ? 'Super Administrator' : 'Sub-Admin / Operator');
+        const actingRole =
+          data.adminRole ||
+          (actingOfficerEmail === 'admin@cybersave.com'
+            ? 'Super Administrator'
+            : 'Sub-Admin / Operator');
 
         // Record in system audit log
         let auditAction = `APPLICATION_${mappedStatus}`;
@@ -1660,7 +2191,8 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
     try {
       const id = data?.id;
       if (!id) return;
-      const isMongoId = (idStr?: string) => typeof idStr === 'string' && /^[0-9a-fA-F]{24}$/.test(idStr);
+      const isMongoId = (idStr?: string) =>
+        typeof idStr === 'string' && /^[0-9a-fA-F]{24}$/.test(idStr);
       const orConditions: any[] = [{ refNumber: id }];
       if (isMongoId(id)) {
         orConditions.push({ id });
@@ -1709,7 +2241,13 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
       }
 
       const cleanedDocs = (Array.isArray(docs) ? docs : [])
-        .filter((d: any) => d && typeof d === 'object' && !Array.isArray(d) && (d.fileUrl || d.url || d.uri || d.fileName || d.label))
+        .filter(
+          (d: any) =>
+            d &&
+            typeof d === 'object' &&
+            !Array.isArray(d) &&
+            (d.fileUrl || d.url || d.uri || d.fileName || d.label),
+        )
         .map((d: any, idx: number) => ({
           label: d.label || `Document Proof #${idx + 1}`,
           fileName: d.fileName || `proof_${idx + 1}.jpg`,
@@ -1724,14 +2262,26 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
         id: app.refNumber,
         rawId: app.id,
         refNumber: app.refNumber,
-        serviceName: app.serviceTitle || app.service?.title || 'Government Service',
+        serviceName:
+          app.serviceTitle || app.service?.title || 'Government Service',
         serviceCategory: app.service?.category || 'Government',
         sla: '24h',
-        submitted: app.submittedAt ? new Date(app.submittedAt).toLocaleString('en-IN', { day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit', hour12: true }) : 'Today',
+        submitted: app.submittedAt
+          ? new Date(app.submittedAt).toLocaleString('en-IN', {
+              day: 'numeric',
+              month: 'short',
+              year: 'numeric',
+              hour: '2-digit',
+              minute: '2-digit',
+              hour12: true,
+            })
+          : 'Today',
         submittedAt: app.submittedAt,
         updatedAt: app.updatedAt,
         assignedTo: app.officialOfficer || 'Officer Sharma (SDM)',
-        centre: formData.district ? `CSC ${formData.district}, ${formData.stateName || formData.state || ''}` : 'CSC Centre',
+        centre: formData.district
+          ? `CSC ${formData.district}, ${formData.stateName || formData.state || ''}`
+          : 'CSC Centre',
         status: app.status,
         rejectionReason: app.rejectionReason,
         feePaid: app.feePaid || 50.0,
@@ -1746,7 +2296,10 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
           name: profile?.fullName || formData?.fullName || 'Citizen Applicant',
           email: app.user?.email || formData?.email || '',
           phone: app.user?.phone || profile?.phone || formData?.phone || '',
-          aadhaar: (profile as any)?.aadhaarNumber || formData?.aadhaarNumber || 'XXXX XXXX ****',
+          aadhaar:
+            (profile as any)?.aadhaarNumber ||
+            formData?.aadhaarNumber ||
+            'XXXX XXXX ****',
           dob: profile?.dob || formData?.dob || '',
           gender: profile?.gender || formData?.gender || '',
           state: profile?.state || formData?.stateName || formData?.state || '',
@@ -1779,7 +2332,8 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
       const typeCountMap: Record<string, number> = {};
 
       allApps.forEach((a) => {
-        if (a.serviceId) countMap[a.serviceId] = (countMap[a.serviceId] || 0) + 1;
+        if (a.serviceId)
+          countMap[a.serviceId] = (countMap[a.serviceId] || 0) + 1;
         if (a.serviceTitle) {
           const key = a.serviceTitle.toLowerCase().trim();
           typeCountMap[key] = (typeCountMap[key] || 0) + 1;
@@ -1887,12 +2441,21 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
   @SubscribeMessage('create_application')
   async handleCreateApplication(
     @ConnectedSocket() client: Socket,
-    @MessageBody() data: { title: string; description: string; fee?: number; category?: string },
+    @MessageBody()
+    data: {
+      title: string;
+      description: string;
+      fee?: number;
+      category?: string;
+    },
   ) {
     try {
       const rawTitle = data.title || 'New Government Scheme';
-      const slug = rawTitle.toLowerCase().trim().replace(/[^a-z0-9]+/g, '-');
-      
+      const slug = rawTitle
+        .toLowerCase()
+        .trim()
+        .replace(/[^a-z0-9]+/g, '-');
+
       const defaultDocs = [
         { type: 'Government-Issued Identity Proof', req: 'Required' },
         { type: 'Address Proof', req: 'Required' },
@@ -1915,7 +2478,9 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
         where: { slug },
         update: {
           title: rawTitle,
-          description: data.description || 'Government certified e-governance service workflow.',
+          description:
+            data.description ||
+            'Government certified e-governance service workflow.',
           category: data.category || 'Government',
           fee: data.fee || 50.0,
           requiredDocs: defaultDocs,
@@ -1925,12 +2490,17 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
         create: {
           slug,
           title: rawTitle,
-          description: data.description || 'Government certified e-governance service workflow.',
+          description:
+            data.description ||
+            'Government certified e-governance service workflow.',
           category: data.category || 'Government',
           department: 'General Administration',
           fee: data.fee || 50.0,
           processingTime: '7-15 Days',
-          eligibility: ['Citizen of India', 'Valid ID verification credentials'],
+          eligibility: [
+            'Citizen of India',
+            'Valid ID verification credentials',
+          ],
           requiredDocs: defaultDocs,
           formDataSchema: defaultSchema,
           isActive: true,
@@ -1954,20 +2524,43 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
   ) {
     try {
       const rawTitle = data.name || data.title || 'Custom Service';
-      const slug = (data.slug || rawTitle).toLowerCase().trim().replace(/[^a-z0-9]+/g, '-');
-      const feeVal = typeof data.pricing?.fee === 'number' ? data.pricing.fee : (parseFloat(data.fee || '50.0') || 50.0);
+      const slug = (data.slug || rawTitle)
+        .toLowerCase()
+        .trim()
+        .replace(/[^a-z0-9]+/g, '-');
+      const feeVal =
+        typeof data.pricing?.fee === 'number'
+          ? data.pricing.fee
+          : parseFloat(data.fee || '50.0') || 50.0;
 
-      const resolvedIcon = data.iconUrl || data.imageUrl || data.iconName || 'file-document-outline';
+      const resolvedIcon =
+        data.iconUrl ||
+        data.imageUrl ||
+        data.iconName ||
+        'file-document-outline';
       const pricingObj = {
-        ...(typeof data.pricing === 'object' ? data.pricing : (typeof data.pricingConfig === 'object' ? data.pricingConfig : { fee: feeVal })),
-        iconUrl: data.iconUrl || data.imageUrl || (resolvedIcon.startsWith('http') ? resolvedIcon : undefined),
+        ...(typeof data.pricing === 'object'
+          ? data.pricing
+          : typeof data.pricingConfig === 'object'
+            ? data.pricingConfig
+            : { fee: feeVal }),
+        iconUrl:
+          data.iconUrl ||
+          data.imageUrl ||
+          (resolvedIcon.startsWith('http') ? resolvedIcon : undefined),
       };
 
       const updateData: any = {
         title: rawTitle,
-        description: data.description || data.shortDescription || 'Government certified digital service workflow.',
+        description:
+          data.description ||
+          data.shortDescription ||
+          'Government certified digital service workflow.',
         category: data.category || 'Government',
-        department: data.departmentRole || data.department || 'ID Processing & Verification (ID-V)',
+        department:
+          data.departmentRole ||
+          data.department ||
+          'ID Processing & Verification (ID-V)',
         fee: feeVal,
         processingTime: data.tat || data.processingTime || '5-7 working days',
         subServices: data.subServices || [],
@@ -1976,7 +2569,10 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
         pricingConfig: pricingObj,
         iconName: resolvedIcon,
         colorHex: data.colorHex || '#2563eb',
-        isActive: data.status === 'Active' || data.isActive === true || data.status === undefined,
+        isActive:
+          data.status === 'Active' ||
+          data.isActive === true ||
+          data.status === undefined,
       };
 
       const newService = await this.prisma.service.upsert({
@@ -1985,11 +2581,18 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
         create: {
           slug,
           ...updateData,
-          eligibility: data.eligibility || ['Citizen of India', 'Valid ID verification credentials'],
+          eligibility: data.eligibility || [
+            'Citizen of India',
+            'Valid ID verification credentials',
+          ],
         },
       });
 
-      console.log('[AdminGateway] Service configuration saved and published:', newService.id, newService.slug);
+      console.log(
+        '[AdminGateway] Service configuration saved and published:',
+        newService.id,
+        newService.slug,
+      );
       client.emit('save_service_config_success', newService);
       this.server.emit('services_updated', newService);
     } catch (e) {
@@ -2016,14 +2619,22 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
             phone: '+91 98765 43210',
             role: 'ADMIN',
             passwordHash,
-            permissions: ['DASHBOARD', 'APPLICATIONS', 'OPERATORS', 'SETTINGS', 'USERS', 'REPORTS'],
+            permissions: [
+              'DASHBOARD',
+              'APPLICATIONS',
+              'OPERATORS',
+              'SETTINGS',
+              'USERS',
+              'REPORTS',
+            ],
             status: 'ACTIVE',
             profile: {
               create: {
                 fullName: 'Rajesh Kumar',
                 phone: '+91 98765 43210',
                 email: 'rajesh.kumar@cybersave.gov.in',
-                address: '45, Sector 4, HSR Layout, Bengaluru, Karnataka - 560102',
+                address:
+                  '45, Sector 4, HSR Layout, Bengaluru, Karnataka - 560102',
                 district: 'Bengaluru',
                 state: 'Karnataka',
                 pinCode: '560102',
@@ -2041,20 +2652,28 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
       const active = ops.filter((o) => o.status !== 'SUSPENDED').length;
       const suspended = ops.filter((o) => o.status === 'SUSPENDED').length;
 
-      const formatOps = (list: any[]) => list.map((o, idx) => ({
-        id: o.id,
-        employeeId: `OPS-${new Date(o.createdAt).getFullYear()}-${o.id.slice(-4).toUpperCase()}`,
-        name: o.profile?.fullName || (o.email ? o.email.split('@')[0] : `Operator ${idx + 1}`),
-        role: o.email === 'admin@cybersave.com' ? 'Super Administrator' : 'Field Operator',
-        department: o.profile?.district ? `${o.profile.district} Seva Kendra` : 'Operations',
-        joinedDate: new Date(o.createdAt).toLocaleDateString('en-GB'),
-        lastActive: 'Active recently',
-        status: o.status === 'SUSPENDED' ? 'Suspended' : 'Active',
-        permissions: Array.isArray(o.permissions) ? o.permissions : [],
-        email: o.email || '',
-        phone: o.phone || o.profile?.phone || '+91 98765 43210',
-        avatarUrl: o.profile?.avatarUrl || '',
-      }));
+      const formatOps = (list: any[]) =>
+        list.map((o, idx) => ({
+          id: o.id,
+          employeeId: `OPS-${new Date(o.createdAt).getFullYear()}-${o.id.slice(-4).toUpperCase()}`,
+          name:
+            o.profile?.fullName ||
+            (o.email ? o.email.split('@')[0] : `Operator ${idx + 1}`),
+          role:
+            o.email === 'admin@cybersave.com'
+              ? 'Super Administrator'
+              : 'Field Operator',
+          department: o.profile?.district
+            ? `${o.profile.district} Seva Kendra`
+            : 'Operations',
+          joinedDate: new Date(o.createdAt).toLocaleDateString('en-GB'),
+          lastActive: 'Active recently',
+          status: o.status === 'SUSPENDED' ? 'Suspended' : 'Active',
+          permissions: Array.isArray(o.permissions) ? o.permissions : [],
+          email: o.email || '',
+          phone: o.phone || o.profile?.phone || '+91 98765 43210',
+          avatarUrl: o.profile?.avatarUrl || '',
+        }));
 
       const formattedOps = formatOps(ops);
 
@@ -2073,7 +2692,12 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
     @MessageBody() data: { id: string; permissions: string[] },
   ) {
     try {
-      const finalPermissions = Array.from(new Set([...(Array.isArray(data.permissions) ? data.permissions : []), 'SETTINGS']));
+      const finalPermissions = Array.from(
+        new Set([
+          ...(Array.isArray(data.permissions) ? data.permissions : []),
+          'SETTINGS',
+        ]),
+      );
       await this.prisma.user.update({
         where: { id: data.id },
         data: { permissions: finalPermissions },
@@ -2097,9 +2721,16 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
       const formattedOps = ops.map((o, idx) => ({
         id: o.id,
         employeeId: `OPS-${new Date(o.createdAt).getFullYear()}-${o.id.slice(-4).toUpperCase()}`,
-        name: o.profile?.fullName || (o.email ? o.email.split('@')[0] : `Operator ${idx + 1}`),
-        role: o.email === 'admin@cybersave.com' ? 'Super Administrator' : 'Field Operator',
-        department: o.profile?.district ? `${o.profile.district} Seva Kendra` : 'Operations',
+        name:
+          o.profile?.fullName ||
+          (o.email ? o.email.split('@')[0] : `Operator ${idx + 1}`),
+        role:
+          o.email === 'admin@cybersave.com'
+            ? 'Super Administrator'
+            : 'Field Operator',
+        department: o.profile?.district
+          ? `${o.profile.district} Seva Kendra`
+          : 'Operations',
         joinedDate: new Date(o.createdAt).toLocaleDateString('en-GB'),
         lastActive: 'Active recently',
         status: o.status === 'SUSPENDED' ? 'Suspended' : 'Active',
@@ -2109,7 +2740,12 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
         avatarUrl: o.profile?.avatarUrl || '',
       }));
       this.server.emit('response_operators_data', {
-        stats: { totalOps: ops.length, active: ops.filter(x => x.status !== 'SUSPENDED').length, pending: 0, suspended: ops.filter(x => x.status === 'SUSPENDED').length },
+        stats: {
+          totalOps: ops.length,
+          active: ops.filter((x) => x.status !== 'SUSPENDED').length,
+          pending: 0,
+          suspended: ops.filter((x) => x.status === 'SUSPENDED').length,
+        },
         operators: formattedOps,
       });
       AdminGateway.broadcast('operators_updated');
@@ -2135,7 +2771,14 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
       const passwordHash = await bcrypt.hash(data.password || 'admin123', salt);
 
       const normalizedEmail = (data.email || '').trim().toLowerCase();
-      const initialPermissions = Array.from(new Set([...(Array.isArray(data.permissions) && data.permissions.length > 0 ? data.permissions : ['DASHBOARD']), 'SETTINGS']));
+      const initialPermissions = Array.from(
+        new Set([
+          ...(Array.isArray(data.permissions) && data.permissions.length > 0
+            ? data.permissions
+            : ['DASHBOARD']),
+          'SETTINGS',
+        ]),
+      );
 
       const newUser = await this.prisma.user.create({
         data: {
@@ -2163,9 +2806,16 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
       const formattedOps = ops.map((o, idx) => ({
         id: o.id,
         employeeId: `OPS-${new Date(o.createdAt).getFullYear()}-${o.id.slice(-4).toUpperCase()}`,
-        name: o.profile?.fullName || (o.email ? o.email.split('@')[0] : `Operator ${idx + 1}`),
-        role: o.email === 'admin@cybersave.com' ? 'Super Administrator' : 'Field Operator',
-        department: o.profile?.district ? `${o.profile.district} Seva Kendra` : 'Operations',
+        name:
+          o.profile?.fullName ||
+          (o.email ? o.email.split('@')[0] : `Operator ${idx + 1}`),
+        role:
+          o.email === 'admin@cybersave.com'
+            ? 'Super Administrator'
+            : 'Field Operator',
+        department: o.profile?.district
+          ? `${o.profile.district} Seva Kendra`
+          : 'Operations',
         joinedDate: new Date(o.createdAt).toLocaleDateString('en-GB'),
         lastActive: 'Active recently',
         status: o.status === 'SUSPENDED' ? 'Suspended' : 'Active',
@@ -2175,7 +2825,12 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
         avatarUrl: o.profile?.avatarUrl || '',
       }));
       this.server.emit('response_operators_data', {
-        stats: { totalOps: ops.length, active: ops.filter(x => x.status !== 'SUSPENDED').length, pending: 0, suspended: ops.filter(x => x.status === 'SUSPENDED').length },
+        stats: {
+          totalOps: ops.length,
+          active: ops.filter((x) => x.status !== 'SUSPENDED').length,
+          pending: 0,
+          suspended: ops.filter((x) => x.status === 'SUSPENDED').length,
+        },
         operators: formattedOps,
       });
       AdminGateway.broadcast('operators_updated');
@@ -2190,7 +2845,11 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
       const apps = await this.prisma.application.findMany({
         orderBy: { submittedAt: 'desc' },
         take: 100,
-        include: { user: { include: { profile: true } }, service: true, refundRequests: true },
+        include: {
+          user: { include: { profile: true } },
+          service: true,
+          refundRequests: true,
+        },
       });
 
       const allApprovedRefunds = await this.prisma.refundRequest.findMany({
@@ -2200,13 +2859,31 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
       const formattedTransactions = apps.map((a) => {
         const userProfile = a.user?.profile;
         const formData = (a.formData as any) || {};
-        const customerName = userProfile?.fullName || formData.fullName || (a.user as any)?.fullName || a.user?.email || 'Citizen User';
-        const txnId = a.razorpayPaymentId || `TXN-${a.id.substring(0, 8).toUpperCase()}`;
-        const fee = typeof a.feePaid === 'number' && !isNaN(a.feePaid) ? a.feePaid : (a.feePaid ? Number(a.feePaid) : 50.0);
+        const customerName =
+          userProfile?.fullName ||
+          formData.fullName ||
+          (a.user as any)?.fullName ||
+          a.user?.email ||
+          'Citizen User';
+        const txnId =
+          a.razorpayPaymentId || `TXN-${a.id.substring(0, 8).toUpperCase()}`;
+        const fee =
+          typeof a.feePaid === 'number' && !isNaN(a.feePaid)
+            ? a.feePaid
+            : a.feePaid
+              ? Number(a.feePaid)
+              : 50.0;
 
-        const approvedRefund = a.refundRequests?.find((r: any) => r.status === 'APPROVED');
-        const isRefunded = !!approvedRefund || (a.refundStatus || '').toUpperCase() === 'APPROVED' || (a.paymentStatus || '').toLowerCase() === 'refunded';
-        const status = isRefunded ? 'REFUNDED' : (a.paymentStatus || 'SUCCESS').toUpperCase();
+        const approvedRefund = a.refundRequests?.find(
+          (r: any) => r.status === 'APPROVED',
+        );
+        const isRefunded =
+          !!approvedRefund ||
+          (a.refundStatus || '').toUpperCase() === 'APPROVED' ||
+          (a.paymentStatus || '').toLowerCase() === 'refunded';
+        const status = isRefunded
+          ? 'REFUNDED'
+          : (a.paymentStatus || 'SUCCESS').toUpperCase();
 
         return {
           id: txnId,
@@ -2218,11 +2895,18 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
           amount: fee,
           status,
           isRefunded,
-          refundRef: approvedRefund?.refNumber || (isRefunded ? `REF-${a.refNumber}` : undefined),
-          refundAmount: approvedRefund?.amount || (isRefunded ? fee : undefined),
+          refundRef:
+            approvedRefund?.refNumber ||
+            (isRefunded ? `REF-${a.refNumber}` : undefined),
+          refundAmount:
+            approvedRefund?.amount || (isRefunded ? fee : undefined),
           refundReason: approvedRefund?.reason || undefined,
-          refundProcessedAt: approvedRefund?.processedAt ? approvedRefund.processedAt.toISOString() : undefined,
-          paymentMethod: a.razorpayPaymentId ? 'Razorpay (Test UPI)' : 'Govt Portal Payment',
+          refundProcessedAt: approvedRefund?.processedAt
+            ? approvedRefund.processedAt.toISOString()
+            : undefined,
+          paymentMethod: a.razorpayPaymentId
+            ? 'Razorpay (Test UPI)'
+            : 'Govt Portal Payment',
           razorpayPaymentId: a.razorpayPaymentId || '',
           razorpayOrderId: a.razorpayOrderId || '',
         };
@@ -2232,27 +2916,54 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
       today.setHours(0, 0, 0, 0);
 
       const totalGrossAmount = apps.reduce((sum, a) => {
-        const fee = typeof a.feePaid === 'number' && !isNaN(a.feePaid) ? a.feePaid : (a.feePaid ? Number(a.feePaid) : 50.0);
+        const fee =
+          typeof a.feePaid === 'number' && !isNaN(a.feePaid)
+            ? a.feePaid
+            : a.feePaid
+              ? Number(a.feePaid)
+              : 50.0;
         return sum + fee;
       }, 0);
 
       const totalRefundedAmount = apps
-        .filter((a) => (a.refundStatus || '').toUpperCase() === 'APPROVED' || (a.paymentStatus || '').toLowerCase() === 'refunded' || a.refundRequests?.some((r: any) => r.status === 'APPROVED'))
+        .filter(
+          (a) =>
+            (a.refundStatus || '').toUpperCase() === 'APPROVED' ||
+            (a.paymentStatus || '').toLowerCase() === 'refunded' ||
+            a.refundRequests?.some((r: any) => r.status === 'APPROVED'),
+        )
         .reduce((sum, a) => {
-          const fee = typeof a.feePaid === 'number' && !isNaN(a.feePaid) ? a.feePaid : (a.feePaid ? Number(a.feePaid) : 50.0);
+          const fee =
+            typeof a.feePaid === 'number' && !isNaN(a.feePaid)
+              ? a.feePaid
+              : a.feePaid
+                ? Number(a.feePaid)
+                : 50.0;
           return sum + fee;
         }, 0);
 
-      const realizedAmount = Math.max(0, totalGrossAmount - totalRefundedAmount);
+      const realizedAmount = Math.max(
+        0,
+        totalGrossAmount - totalRefundedAmount,
+      );
 
-      const todayApps = apps.filter((a) => new Date(a.submittedAt || a.updatedAt) >= today);
+      const todayApps = apps.filter(
+        (a) => new Date(a.submittedAt || a.updatedAt) >= today,
+      );
       const todayGross = todayApps.reduce((sum, a) => {
-        const fee = typeof a.feePaid === 'number' && !isNaN(a.feePaid) ? a.feePaid : (a.feePaid ? Number(a.feePaid) : 50.0);
+        const fee =
+          typeof a.feePaid === 'number' && !isNaN(a.feePaid)
+            ? a.feePaid
+            : a.feePaid
+              ? Number(a.feePaid)
+              : 50.0;
         return sum + fee;
       }, 0);
 
       const todayRefunds = allApprovedRefunds
-        .filter((r) => new Date(r.processedAt || r.updatedAt || r.createdAt) >= today)
+        .filter(
+          (r) => new Date(r.processedAt || r.updatedAt || r.createdAt) >= today,
+        )
         .reduce((sum, r) => sum + (Number(r.amount) || 0), 0);
 
       const revenueToday = Math.max(0, todayGross - todayRefunds);
@@ -2264,7 +2975,11 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
           totalAmount: realizedAmount,
           grossAmount: totalGrossAmount,
           refundedAmount: totalRefundedAmount,
-          refundedCount: apps.filter((a) => (a.refundStatus || '').toUpperCase() === 'APPROVED' || (a.paymentStatus || '').toLowerCase() === 'refunded').length,
+          refundedCount: apps.filter(
+            (a) =>
+              (a.refundStatus || '').toUpperCase() === 'APPROVED' ||
+              (a.paymentStatus || '').toLowerCase() === 'refunded',
+          ).length,
           revenueToday,
           todayGross,
           todayRefunds,
@@ -2310,8 +3025,6 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
       console.error('[AdminGateway] request_notifications error:', e);
     }
   }
-
-
 
   @SubscribeMessage('send_global_push')
   async handleGlobalPush(
@@ -2360,41 +3073,49 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
       });
 
       if (tickets.length === 0) {
-        const user = await this.prisma.user.findFirst({ include: { profile: true } });
+        const user = await this.prisma.user.findFirst({
+          include: { profile: true },
+        });
         if (user) {
           await this.prisma.supportTicket.createMany({
             data: [
               {
                 refNumber: 'TKT-108241',
                 title: 'Aadhaar Verification Signature Mismatch Appeal',
-                description: 'Citizen submitted an appeal regarding document verification for application #CSB2026883344.',
+                description:
+                  'Citizen submitted an appeal regarding document verification for application #CSB2026883344.',
                 category: 'Document Rejection',
                 priority: 'High',
                 status: 'OPEN',
                 userId: user.id,
-                attachmentUrl: 'https://res.cloudinary.com/dzo4caeef/image/upload/v1787127810/cybersave/documents/ylzz2svaswahyccwj85c.jpg',
+                attachmentUrl:
+                  'https://res.cloudinary.com/dzo4caeef/image/upload/v1787127810/cybersave/documents/ylzz2svaswahyccwj85c.jpg',
                 assignedTo: 'Amit S. (Support Desk)',
               },
               {
                 refNumber: 'TKT-108242',
                 title: 'Payment Gateway Confirmation Delay',
-                description: 'Payment debited but receipt generation was pending. Transaction reference #rzp_live_98124.',
+                description:
+                  'Payment debited but receipt generation was pending. Transaction reference #rzp_live_98124.',
                 category: 'Payment Issue',
                 priority: 'Medium',
                 status: 'IN_PROGRESS',
                 userId: user.id,
-                attachmentUrl: 'https://res.cloudinary.com/dzo4caeef/image/upload/v1787127805/cybersave/documents/dvzqpwf1tzkjszemdojp.jpg',
+                attachmentUrl:
+                  'https://res.cloudinary.com/dzo4caeef/image/upload/v1787127805/cybersave/documents/dvzqpwf1tzkjszemdojp.jpg',
                 assignedTo: 'Pooja V. (Accounts Desk)',
               },
               {
                 refNumber: 'TKT-108243',
                 title: 'Portal Certificate Download Assistance',
-                description: 'Citizen requesting guidance on generating and downloading digital e-certificate.',
+                description:
+                  'Citizen requesting guidance on generating and downloading digital e-certificate.',
                 category: 'Technical Support',
                 priority: 'Low',
                 status: 'RESOLVED',
                 userId: user.id,
-                attachmentUrl: 'https://res.cloudinary.com/dzo4caeef/image/upload/v1787127803/cybersave/documents/rmmiojzsxzyry8dit1ka.jpg',
+                attachmentUrl:
+                  'https://res.cloudinary.com/dzo4caeef/image/upload/v1787127803/cybersave/documents/rmmiojzsxzyry8dit1ka.jpg',
                 assignedTo: 'Amit S. (Support Desk)',
               },
             ],
@@ -2419,7 +3140,11 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
       });
 
       const formatted = tickets.map((t) => {
-        const reporterName = (t.user as any)?.profile?.fullName || (t.user as any)?.fullName || t.user?.email || 'Citizen User';
+        const reporterName =
+          (t.user as any)?.profile?.fullName ||
+          (t.user as any)?.fullName ||
+          t.user?.email ||
+          'Citizen User';
         return {
           id: t.refNumber || `TKT-${t.id.substring(0, 8).toUpperCase()}`,
           dbId: t.id,
@@ -2428,8 +3153,20 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
           attachmentUrl: t.attachmentUrl || null,
           category: t.category || 'Technical Support',
           priority: t.priority || 'Medium',
-          createdOn: t.createdAt ? t.createdAt.toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' }) : 'Today',
-          lastUpdated: t.updatedAt ? t.updatedAt.toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' }) : 'Today',
+          createdOn: t.createdAt
+            ? t.createdAt.toLocaleDateString('en-IN', {
+                day: 'numeric',
+                month: 'short',
+                year: 'numeric',
+              })
+            : 'Today',
+          lastUpdated: t.updatedAt
+            ? t.updatedAt.toLocaleDateString('en-IN', {
+                day: 'numeric',
+                month: 'short',
+                year: 'numeric',
+              })
+            : 'Today',
           assignedTo: t.assignedTo || 'Amit S. (Support Desk)',
           status: t.status,
           reporter: {
@@ -2532,53 +3269,73 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
         include: { user: { include: { profile: true } } },
       });
 
-      const loginActivities = await this.prisma.auditLog.count({
-        where: {
-          OR: [
-            { action: { contains: 'LOGIN' } },
-            { action: { contains: 'AUTH' } },
-            { action: { contains: 'PASSWORD' } },
-          ],
-        },
-      }).catch(() => 0);
+      const loginActivities = await this.prisma.auditLog
+        .count({
+          where: {
+            OR: [
+              { action: { contains: 'LOGIN' } },
+              { action: { contains: 'AUTH' } },
+              { action: { contains: 'PASSWORD' } },
+            ],
+          },
+        })
+        .catch(() => 0);
 
-      const documentActions = await this.prisma.auditLog.count({
-        where: {
-          OR: [
-            { action: { contains: 'APPLICATION' } },
-            { action: { contains: 'DOCUMENT' } },
-            { action: { contains: 'APPROV' } },
-            { action: { contains: 'REJECT' } },
-            { action: { contains: 'SUBMIT' } },
-          ],
-        },
-      }).catch(() => 0);
+      const documentActions = await this.prisma.auditLog
+        .count({
+          where: {
+            OR: [
+              { action: { contains: 'APPLICATION' } },
+              { action: { contains: 'DOCUMENT' } },
+              { action: { contains: 'APPROV' } },
+              { action: { contains: 'REJECT' } },
+              { action: { contains: 'SUBMIT' } },
+            ],
+          },
+        })
+        .catch(() => 0);
 
-      const systemChanges = await this.prisma.auditLog.count({
-        where: {
-          OR: [
-            { action: { contains: 'OPERATOR' } },
-            { action: { contains: 'SERVICE' } },
-            { action: { contains: 'SETTING' } },
-            { action: { contains: 'ACCESS' } },
-            { action: { contains: 'SECURITY' } },
-          ],
-        },
-      }).catch(() => 0);
+      const systemChanges = await this.prisma.auditLog
+        .count({
+          where: {
+            OR: [
+              { action: { contains: 'OPERATOR' } },
+              { action: { contains: 'SERVICE' } },
+              { action: { contains: 'SETTING' } },
+              { action: { contains: 'ACCESS' } },
+              { action: { contains: 'SECURITY' } },
+            ],
+          },
+        })
+        .catch(() => 0);
 
       const formatted = logs.map((l) => {
-        let userName = l.user?.profile?.fullName || l.user?.email?.split('@')[0];
-        if (!userName || userName === 'Administrator' || userName === 'Super Administrator') {
-          const match = l.details?.match(/by (?:sub-admin \/ operator|sub-admin|operator|verification officer|officer) ([^.]+)/i);
+        let userName =
+          l.user?.profile?.fullName || l.user?.email?.split('@')[0];
+        if (
+          !userName ||
+          userName === 'Administrator' ||
+          userName === 'Super Administrator'
+        ) {
+          const match = l.details?.match(
+            /by (?:sub-admin \/ operator|sub-admin|operator|verification officer|officer) ([^.]+)/i,
+          );
           if (match && match[1]) {
             userName = match[1].trim();
           }
         }
-        if (!userName) userName = l.user?.email ? l.user.email.split('@')[0] : 'Sub-Admin Operator';
+        if (!userName)
+          userName = l.user?.email
+            ? l.user.email.split('@')[0]
+            : 'Sub-Admin Operator';
 
         const act = (l.action || '').toUpperCase();
         let status = 'Success';
-        if (act.includes('REJECT') || act.includes('FAIL') || act.includes('SUSPEND')) {
+        if (
+          act.includes('REJECT') ||
+          act.includes('FAIL') ||
+          act.includes('SUSPEND')
+        ) {
           status = 'Failed';
         } else if (act.includes('WARN') || act.includes('PENDING')) {
           status = 'Warning';
@@ -2587,8 +3344,13 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
         return {
           id: l.id,
           timestamp: l.createdAt.toLocaleString('en-IN', {
-            day: '2-digit', month: 'short', year: 'numeric',
-            hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: true
+            day: '2-digit',
+            month: 'short',
+            year: 'numeric',
+            hour: '2-digit',
+            minute: '2-digit',
+            second: '2-digit',
+            hour12: true,
           }),
           isoTimestamp: l.createdAt.toISOString(),
           user: userName,
@@ -2621,7 +3383,8 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
   ) {
     try {
       const ticketId = data?.id;
-      const isMongoId = (idStr?: string) => typeof idStr === 'string' && /^[0-9a-fA-F]{24}$/.test(idStr);
+      const isMongoId = (idStr?: string) =>
+        typeof idStr === 'string' && /^[0-9a-fA-F]{24}$/.test(idStr);
       let foundTicket: any = null;
       if (ticketId) {
         const orConditions: any[] = [
@@ -2645,14 +3408,24 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
         });
       }
 
-      const reporterName = (foundTicket?.user as any)?.profile?.fullName || (foundTicket?.user as any)?.fullName || foundTicket?.user?.email || 'Citizen User';
+      const reporterName =
+        foundTicket?.user?.profile?.fullName ||
+        foundTicket?.user?.fullName ||
+        foundTicket?.user?.email ||
+        'Citizen User';
       const reporterId = foundTicket?.userId || 'user1';
       const ticketTitle = foundTicket?.title || 'Support Request';
-      const ticketDesc = foundTicket?.description || foundTicket?.title || 'Citizen raised an inquiry regarding portal operations.';
+      const ticketDesc =
+        foundTicket?.description ||
+        foundTicket?.title ||
+        'Citizen raised an inquiry regarding portal operations.';
       const attachmentUrl = foundTicket?.attachmentUrl || null;
 
       let rawMessages: any[] = [];
-      if (Array.isArray(foundTicket?.messages) && foundTicket.messages.length > 0) {
+      if (
+        Array.isArray(foundTicket?.messages) &&
+        foundTicket.messages.length > 0
+      ) {
         rawMessages = foundTicket.messages;
       } else {
         rawMessages = [
@@ -2661,7 +3434,12 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
             senderId: reporterId,
             senderName: reporterName,
             role: 'USER',
-            time: foundTicket ? foundTicket.createdAt.toLocaleString('en-IN', { dateStyle: 'medium', timeStyle: 'short' }) : '10:15 AM',
+            time: foundTicket
+              ? foundTicket.createdAt.toLocaleString('en-IN', {
+                  dateStyle: 'medium',
+                  timeStyle: 'short',
+                })
+              : '10:15 AM',
             text: ticketDesc,
             attachmentUrl: attachmentUrl,
           },
@@ -2676,17 +3454,38 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
         category: foundTicket?.category || 'Technical Support',
         priority: foundTicket?.priority || 'Medium',
         status: foundTicket?.status || 'OPEN',
-        createdOn: foundTicket ? foundTicket.createdAt.toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' }) : 'Today',
-        lastUpdated: foundTicket ? foundTicket.updatedAt.toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' }) : 'Today',
-        assignedTo: { id: 'admin1', name: foundTicket?.assignedTo || 'Amit S. (Support Desk)' },
+        createdOn: foundTicket
+          ? foundTicket.createdAt.toLocaleDateString('en-IN', {
+              day: 'numeric',
+              month: 'short',
+              year: 'numeric',
+            })
+          : 'Today',
+        lastUpdated: foundTicket
+          ? foundTicket.updatedAt.toLocaleDateString('en-IN', {
+              day: 'numeric',
+              month: 'short',
+              year: 'numeric',
+            })
+          : 'Today',
+        assignedTo: {
+          id: 'admin1',
+          name: foundTicket?.assignedTo || 'Amit S. (Support Desk)',
+        },
         reporter: { id: reporterId, name: reporterName },
         messages: rawMessages,
         notes: [
           {
             title: 'Ticket Active in Governance Queue',
             author: 'Support Automation Desk',
-            time: foundTicket ? foundTicket.createdAt.toLocaleString('en-IN', { dateStyle: 'medium', timeStyle: 'short' }) : 'Just now',
-            content: 'Customer issue logged and verified via Cloudinary for administrative response.',
+            time: foundTicket
+              ? foundTicket.createdAt.toLocaleString('en-IN', {
+                  dateStyle: 'medium',
+                  timeStyle: 'short',
+                })
+              : 'Just now',
+            content:
+              'Customer issue logged and verified via Cloudinary for administrative response.',
           },
         ],
       });
@@ -2698,15 +3497,27 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
   @SubscribeMessage('send_ticket_reply')
   async handleSendTicketReply(
     @ConnectedSocket() client: Socket,
-    @MessageBody() data: { id: string; text: string; adminId?: string; adminName?: string; adminRole?: string; adminEmail?: string },
+    @MessageBody()
+    data: {
+      id: string;
+      text: string;
+      adminId?: string;
+      adminName?: string;
+      adminRole?: string;
+      adminEmail?: string;
+    },
   ) {
     try {
       const ticketId = data?.id;
       const text = data?.text;
       if (!ticketId || !text || !text.trim()) return;
 
-      const isMongoId = (idStr?: string) => typeof idStr === 'string' && /^[0-9a-fA-F]{24}$/.test(idStr);
-      const orConditions: any[] = [{ refNumber: ticketId }, { refNumber: `TKT-${ticketId}` }];
+      const isMongoId = (idStr?: string) =>
+        typeof idStr === 'string' && /^[0-9a-fA-F]{24}$/.test(idStr);
+      const orConditions: any[] = [
+        { refNumber: ticketId },
+        { refNumber: `TKT-${ticketId}` },
+      ];
       if (isMongoId(ticketId)) {
         orConditions.push({ id: ticketId });
       }
@@ -2718,11 +3529,24 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
 
       if (!ticket) return;
 
-      const actingName = data.adminName || (data.adminEmail ? data.adminEmail.split('@')[0] : 'Support Officer (SDM)');
-      const actingRole = data.adminRole || (data.adminEmail === 'admin@cybersave.com' ? 'Super Administrator' : 'Sub-Admin / Operator');
-      const nowTimeStr = new Date().toLocaleString('en-IN', { dateStyle: 'medium', timeStyle: 'short' });
+      const actingName =
+        data.adminName ||
+        (data.adminEmail
+          ? data.adminEmail.split('@')[0]
+          : 'Support Officer (SDM)');
+      const actingRole =
+        data.adminRole ||
+        (data.adminEmail === 'admin@cybersave.com'
+          ? 'Super Administrator'
+          : 'Sub-Admin / Operator');
+      const nowTimeStr = new Date().toLocaleString('en-IN', {
+        dateStyle: 'medium',
+        timeStyle: 'short',
+      });
 
-      const existingMsgs = Array.isArray(ticket.messages) ? (ticket.messages as any[]) : [];
+      const existingMsgs = Array.isArray(ticket.messages)
+        ? (ticket.messages as any[])
+        : [];
       const replyMsg = {
         id: `msg-${Date.now()}`,
         senderId: data.adminId || 'admin',
@@ -2745,15 +3569,17 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
 
       // 1. Notify that specific user only
       if (ticket.userId) {
-        await this.prisma.notification.create({
-          data: {
-            userId: ticket.userId,
-            title: `Official Response on Ticket #${ticket.refNumber}`,
-            body: text.length > 80 ? `${text.slice(0, 80)}...` : text,
-            type: 'INFO',
-            status: 'SENT',
-          },
-        }).catch(() => null);
+        await this.prisma.notification
+          .create({
+            data: {
+              userId: ticket.userId,
+              title: `Official Response on Ticket #${ticket.refNumber}`,
+              body: text.length > 80 ? `${text.slice(0, 80)}...` : text,
+              type: 'INFO',
+              status: 'SENT',
+            },
+          })
+          .catch(() => null);
 
         this.server.emit('user_grievance_reply', {
           userId: ticket.userId,
@@ -2784,12 +3610,23 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
         category: ticket.category,
         priority: ticket.priority,
         status: 'IN_PROGRESS',
-        createdOn: ticket.createdAt.toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' }),
-        lastUpdated: new Date().toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' }),
+        createdOn: ticket.createdAt.toLocaleDateString('en-IN', {
+          day: 'numeric',
+          month: 'short',
+          year: 'numeric',
+        }),
+        lastUpdated: new Date().toLocaleDateString('en-IN', {
+          day: 'numeric',
+          month: 'short',
+          year: 'numeric',
+        }),
         assignedTo: { id: data.adminId || 'admin1', name: actingName },
         reporter: {
           id: ticket.userId || 'user1',
-          name: (ticket.user as any)?.profile?.fullName || ticket.user?.email || 'Citizen User',
+          name:
+            (ticket.user as any)?.profile?.fullName ||
+            ticket.user?.email ||
+            'Citizen User',
         },
         messages: updatedMsgs,
         notes: [],
@@ -2805,13 +3642,19 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
     @MessageBody() data: { id: string },
   ) {
     try {
-      const isMongoId = (s?: string) => typeof s === 'string' && /^[0-9a-fA-F]{24}$/.test(s);
+      const isMongoId = (s?: string) =>
+        typeof s === 'string' && /^[0-9a-fA-F]{24}$/.test(s);
       let o: any = null;
 
       if (isMongoId(data.id)) {
         o = await this.prisma.user.findUnique({
           where: { id: data.id },
-          include: { profile: true, applications: true, documents: true, auditLogs: { orderBy: { createdAt: 'desc' }, take: 10 } },
+          include: {
+            profile: true,
+            applications: true,
+            documents: true,
+            auditLogs: { orderBy: { createdAt: 'desc' }, take: 10 },
+          },
         });
       }
 
@@ -2819,9 +3662,15 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
         const shortId = data.id.slice(-4).toUpperCase();
         const allOps = await this.prisma.user.findMany({
           where: { role: 'ADMIN' },
-          include: { profile: true, applications: true, documents: true, auditLogs: { orderBy: { createdAt: 'desc' }, take: 10 } },
+          include: {
+            profile: true,
+            applications: true,
+            documents: true,
+            auditLogs: { orderBy: { createdAt: 'desc' }, take: 10 },
+          },
         });
-        o = allOps.find((x) => x.id.slice(-4).toUpperCase() === shortId) || null;
+        o =
+          allOps.find((x) => x.id.slice(-4).toUpperCase() === shortId) || null;
       }
 
       if (!o) {
@@ -2829,7 +3678,12 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
           where: {
             OR: [{ id: data.id }, { email: data.id }, { role: 'ADMIN' }],
           },
-          include: { profile: true, applications: true, documents: true, auditLogs: { orderBy: { createdAt: 'desc' }, take: 10 } },
+          include: {
+            profile: true,
+            applications: true,
+            documents: true,
+            auditLogs: { orderBy: { createdAt: 'desc' }, take: 10 },
+          },
         });
       }
 
@@ -2841,85 +3695,143 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
       const profile = o.profile || {};
 
       // 1. Calculate REAL tasks completed by this operator
-      const tasksCompleted = await this.prisma.application.count({
-        where: {
-          OR: [
-            { officialOfficer: profile.fullName || o.email },
-            { userId: o.id },
-          ],
-        },
-      }).catch(() => 0);
+      const tasksCompleted = await this.prisma.application
+        .count({
+          where: {
+            OR: [
+              { officialOfficer: profile.fullName || o.email },
+              { userId: o.id },
+            ],
+          },
+        })
+        .catch(() => 0);
 
       // 2. Calculate REAL documents uploaded/processed by this operator
-      const documentsProcessed = await this.prisma.documentUpload.count({
-        where: { userId: o.id },
-      }).catch(() => 0);
+      const documentsProcessed = await this.prisma.documentUpload
+        .count({
+          where: { userId: o.id },
+        })
+        .catch(() => 0);
 
       // 3. Real audit logs for this operator only
-      const logs = await this.prisma.auditLog.findMany({
-        where: { userId: o.id },
-        orderBy: { createdAt: 'desc' },
-        take: 20,
-      }).catch(() => []);
+      const logs = await this.prisma.auditLog
+        .findMany({
+          where: { userId: o.id },
+          orderBy: { createdAt: 'desc' },
+          take: 20,
+        })
+        .catch(() => []);
 
       const activityLogs = logs.map((log: any) => ({
         id: log.id,
         dateTime: new Date(log.createdAt).toLocaleString('en-IN', {
-          day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit', hour12: true,
+          day: '2-digit',
+          month: '2-digit',
+          year: 'numeric',
+          hour: '2-digit',
+          minute: '2-digit',
+          hour12: true,
         }),
         action: log.action,
-        status: log.details === 'WARNING' ? 'WARNING' : log.details === 'ERROR' ? 'ERROR' : 'SUCCESS',
+        status:
+          log.details === 'WARNING'
+            ? 'WARNING'
+            : log.details === 'ERROR'
+              ? 'ERROR'
+              : 'SUCCESS',
         ipAddress: log.ipAddress || '127.0.0.1',
       }));
 
       // 4. Real documents uploaded by this operator
-      const rawDocs = await this.prisma.documentUpload.findMany({
-        where: { userId: o.id },
-        orderBy: { uploadedAt: 'desc' },
-      }).catch(() => []);
+      const rawDocs = await this.prisma.documentUpload
+        .findMany({
+          where: { userId: o.id },
+          orderBy: { uploadedAt: 'desc' },
+        })
+        .catch(() => []);
 
       const formattedDocs = rawDocs.map((d: any, idx: number) => ({
         id: d.id,
         fileName: d.fileName || `Document_${idx + 1}`,
         refNum: `DOC-${d.id.slice(-4).toUpperCase()}`,
-        type: (d.fileType || 'PDF').toUpperCase().includes('IMAGE') || (d.fileType || '').includes('PNG') || (d.fileType || '').includes('JPG') ? 'IMAGE' : 'PDF',
+        type:
+          (d.fileType || 'PDF').toUpperCase().includes('IMAGE') ||
+          (d.fileType || '').includes('PNG') ||
+          (d.fileType || '').includes('JPG')
+            ? 'IMAGE'
+            : 'PDF',
         status: 'Verified',
-        fileSize: d.fileSize ? `${(d.fileSize / 1024 / 1024).toFixed(1)}` : '1.0',
-        uploadedAt: new Date(d.uploadedAt || o.createdAt).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' }),
+        fileSize: d.fileSize
+          ? `${(d.fileSize / 1024 / 1024).toFixed(1)}`
+          : '1.0',
+        uploadedAt: new Date(d.uploadedAt || o.createdAt).toLocaleDateString(
+          'en-GB',
+          { day: '2-digit', month: 'short', year: 'numeric' },
+        ),
         expires: 'N/A',
         fileUrl: d.fileUrl || '',
       }));
 
       // 5. Supervisor
-      const superAdmin = await this.prisma.user.findFirst({
-        where: { role: 'ADMIN', email: 'admin@cybersave.com' },
-        include: { profile: true },
-      }).catch(() => null);
+      const superAdmin = await this.prisma.user
+        .findFirst({
+          where: { role: 'ADMIN', email: 'admin@cybersave.com' },
+          include: { profile: true },
+        })
+        .catch(() => null);
 
-      const supervisorName = superAdmin?.profile?.fullName || (superAdmin?.email ? superAdmin.email.split('@')[0] : 'Super Administrator');
+      const supervisorName =
+        superAdmin?.profile?.fullName ||
+        (superAdmin?.email
+          ? superAdmin.email.split('@')[0]
+          : 'Super Administrator');
 
       const opData = {
         id: o.id,
         employeeId: `OPS-${new Date(o.createdAt).getFullYear()}-${o.id.slice(-4).toUpperCase()}`,
-        name: profile.fullName || (o.email ? o.email.split('@')[0] : 'Operator'),
-        status: o.status === 'SUSPENDED' ? 'Suspended' : (o.status === 'PENDING' ? 'Pending' : 'Active'),
+        name:
+          profile.fullName || (o.email ? o.email.split('@')[0] : 'Operator'),
+        status:
+          o.status === 'SUSPENDED'
+            ? 'Suspended'
+            : o.status === 'PENDING'
+              ? 'Pending'
+              : 'Active',
         role: profile.dob ? 'Senior Field Operator' : 'Field Operator',
         department: profile.district ? 'Operations' : 'Administration',
         joinedDate: new Date(o.createdAt).toLocaleDateString('en-GB'),
         email: o.email || '',
         phone: o.phone || profile.phone || '',
         dob: profile.dob || '',
-        address: profile.address || (profile.district ? `${profile.district}, ${profile.state || ''} - ${profile.pinCode || ''}` : ''),
+        address:
+          profile.address ||
+          (profile.district
+            ? `${profile.district}, ${profile.state || ''} - ${profile.pinCode || ''}`
+            : ''),
         district: profile.district || '',
         state: profile.state || '',
         pinCode: profile.pinCode || '',
         twoFactorEnabled: false,
-        lastLogin: o.updatedAt ? new Date(o.updatedAt).toLocaleString('en-IN', {
-          day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit', hour12: true,
-        }) : 'Never logged in',
-        activeSessions: o.status === 'ACTIVE' ? '1 open session (Admin Portal / Chrome)' : '0 active sessions',
-        ipWhitelisting: o.status === 'ACTIVE' ? 'Enabled (Corporate Subnet)' : 'Disabled',
-        permissions: o.permissions && o.permissions.length > 0 ? o.permissions : ['DASHBOARD'],
+        lastLogin: o.updatedAt
+          ? new Date(o.updatedAt).toLocaleString('en-IN', {
+              day: '2-digit',
+              month: '2-digit',
+              year: 'numeric',
+              hour: '2-digit',
+              minute: '2-digit',
+              hour12: true,
+            })
+          : 'Never logged in',
+        activeSessions:
+          o.status === 'ACTIVE'
+            ? '1 open session (Admin Portal / Chrome)'
+            : '0 active sessions',
+        ipWhitelisting:
+          o.status === 'ACTIVE' ? 'Enabled (Corporate Subnet)' : 'Disabled',
+        permissions:
+          o.permissions && o.permissions.length > 0
+            ? o.permissions
+            : ['DASHBOARD'],
         metrics: {
           tasksCompleted,
           tasksMom: tasksCompleted > 0 ? '+ 12% MoM' : '0% MoM',
@@ -2927,7 +3839,8 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
           responseTier: tasksCompleted > 0 ? 'Top 5%' : 'Standard',
           satisfactionRating: tasksCompleted > 0 ? 4.8 : 0,
           documentsProcessed,
-          accuracyRate: documentsProcessed > 0 ? '100% Accuracy' : '0% Accuracy',
+          accuracyRate:
+            documentsProcessed > 0 ? '100% Accuracy' : '0% Accuracy',
         },
         reportingStructure: {
           supervisorName,
@@ -2956,7 +3869,10 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
         where: { id: data.id },
         data: { status: targetStatus },
       });
-      client.emit('update_operator_status_success', { id: data.id, status: targetStatus });
+      client.emit('update_operator_status_success', {
+        id: data.id,
+        status: targetStatus,
+      });
       AdminGateway.broadcast('operators_updated');
     } catch (e) {
       console.error('[AdminGateway] update_operator_status error:', e);
@@ -2970,7 +3886,10 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
   ) {
     try {
       const salt = await bcrypt.genSalt(10);
-      const passwordHash = await bcrypt.hash(data.password || 'Cybersave@2026', salt);
+      const passwordHash = await bcrypt.hash(
+        data.password || 'Cybersave@2026',
+        salt,
+      );
       await this.prisma.user.update({
         where: { id: data.id },
         data: { passwordHash },
@@ -3003,9 +3922,11 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
   @SubscribeMessage('request_admin_profile')
   async handleRequestAdminProfile(@ConnectedSocket() client: Socket) {
     try {
-      const settingsDoc = await this.prisma.systemSetting.findUnique({
-        where: { key: 'admin_operational_settings' },
-      }).catch(() => null);
+      const settingsDoc = await this.prisma.systemSetting
+        .findUnique({
+          where: { key: 'admin_operational_settings' },
+        })
+        .catch(() => null);
       const extra = (settingsDoc?.value as any)?.profileExtra || {};
 
       const adminUser = await this.prisma.user.findFirst({
@@ -3013,20 +3934,34 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
         include: { profile: true },
       });
 
-      const phone = extra.phone !== undefined && extra.phone !== null && extra.phone !== ''
-        ? extra.phone
-        : (adminUser?.phone || adminUser?.profile?.phone || '+91 98450 19823');
+      const phone =
+        extra.phone !== undefined && extra.phone !== null && extra.phone !== ''
+          ? extra.phone
+          : adminUser?.phone || adminUser?.profile?.phone || '+91 98450 19823';
 
       const profile = {
         id: adminUser?.id || 'admin-root-01',
-        name: extra.name || adminUser?.profile?.fullName || (adminUser?.email === 'admin@cybersave.com' ? 'Super Administrator' : 'Administrator'),
+        name:
+          extra.name ||
+          adminUser?.profile?.fullName ||
+          (adminUser?.email === 'admin@cybersave.com'
+            ? 'Super Administrator'
+            : 'Administrator'),
         email: extra.email || adminUser?.email || 'admin@cybersave.com',
-        role: adminUser?.role === 'ADMIN' ? 'Super Admin' : 'Sub-Admin / Operator',
+        role:
+          adminUser?.role === 'ADMIN' ? 'Super Admin' : 'Sub-Admin / Operator',
         phone,
-        avatarUrl: extra.avatarUrl !== undefined ? extra.avatarUrl : (adminUser?.profile?.avatarUrl || ''),
+        avatarUrl:
+          extra.avatarUrl !== undefined
+            ? extra.avatarUrl
+            : adminUser?.profile?.avatarUrl || '',
         kendraId: extra.kendraId || 'CSC-DEL-8841',
-        designation: extra.designation || 'Principal Verification Officer (SDM)',
-        district: extra.district || adminUser?.profile?.district || 'Central Delhi, NCT of Delhi',
+        designation:
+          extra.designation || 'Principal Verification Officer (SDM)',
+        district:
+          extra.district ||
+          adminUser?.profile?.district ||
+          'Central Delhi, NCT of Delhi',
       };
 
       client.emit('response_admin_profile', profile);
@@ -3041,8 +3976,12 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
     @MessageBody() data: any,
   ) {
     try {
-      const { name, email, phone, avatarUrl, kendraId, designation, district } = data || {};
-      const normalizedPhone = phone !== undefined && phone !== null ? String(phone).trim() : undefined;
+      const { name, email, phone, avatarUrl, kendraId, designation, district } =
+        data || {};
+      const normalizedPhone =
+        phone !== undefined && phone !== null
+          ? String(phone).trim()
+          : undefined;
 
       const allAdmins = await this.prisma.user.findMany({
         where: { OR: [{ role: 'ADMIN' }, { email: 'admin@cybersave.com' }] },
@@ -3050,66 +3989,95 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
       });
 
       for (const adm of allAdmins) {
-        await this.prisma.user.update({
-          where: { id: adm.id },
-          data: {
-            phone: normalizedPhone !== undefined ? normalizedPhone : adm.phone,
-          },
-        }).catch(() => null);
+        await this.prisma.user
+          .update({
+            where: { id: adm.id },
+            data: {
+              phone:
+                normalizedPhone !== undefined ? normalizedPhone : adm.phone,
+            },
+          })
+          .catch(() => null);
 
         if (adm.profile) {
-          await this.prisma.profile.update({
-            where: { id: adm.profile.id },
-            data: {
-              fullName: name || adm.profile.fullName,
-              phone: normalizedPhone !== undefined ? normalizedPhone : adm.profile.phone,
-              district: district || adm.profile.district,
-              avatarUrl: avatarUrl !== undefined ? avatarUrl : adm.profile.avatarUrl,
-            },
-          }).catch(() => null);
+          await this.prisma.profile
+            .update({
+              where: { id: adm.profile.id },
+              data: {
+                fullName: name || adm.profile.fullName,
+                phone:
+                  normalizedPhone !== undefined
+                    ? normalizedPhone
+                    : adm.profile.phone,
+                district: district || adm.profile.district,
+                avatarUrl:
+                  avatarUrl !== undefined ? avatarUrl : adm.profile.avatarUrl,
+              },
+            })
+            .catch(() => null);
         } else {
-          await this.prisma.profile.create({
-            data: {
-              userId: adm.id,
-              fullName: name || 'Super Administrator',
-              phone: normalizedPhone || '+91 98450 19823',
-              district: district || 'Central Delhi, NCT of Delhi',
-              avatarUrl: avatarUrl || '',
-            },
-          }).catch(() => null);
+          await this.prisma.profile
+            .create({
+              data: {
+                userId: adm.id,
+                fullName: name || 'Super Administrator',
+                phone: normalizedPhone || '+91 98450 19823',
+                district: district || 'Central Delhi, NCT of Delhi',
+                avatarUrl: avatarUrl || '',
+              },
+            })
+            .catch(() => null);
         }
       }
 
-      const existingDoc = await this.prisma.systemSetting.findUnique({
-        where: { key: 'admin_operational_settings' },
-      }).catch(() => null);
+      const existingDoc = await this.prisma.systemSetting
+        .findUnique({
+          where: { key: 'admin_operational_settings' },
+        })
+        .catch(() => null);
       const existingVal = (existingDoc?.value as any) || {};
 
       const updatedProfileExtra = {
         name: name || existingVal.profileExtra?.name || 'Super Administrator',
-        email: email || existingVal.profileExtra?.email || 'admin@cybersave.com',
-        phone: normalizedPhone !== undefined ? normalizedPhone : (existingVal.profileExtra?.phone || '+91 98450 19823'),
-        avatarUrl: avatarUrl !== undefined ? avatarUrl : (existingVal.profileExtra?.avatarUrl || ''),
-        kendraId: kendraId || existingVal.profileExtra?.kendraId || 'CSC-DEL-8841',
-        designation: designation || existingVal.profileExtra?.designation || 'Principal Verification Officer (SDM)',
-        district: district || existingVal.profileExtra?.district || 'Central Delhi, NCT of Delhi',
+        email:
+          email || existingVal.profileExtra?.email || 'admin@cybersave.com',
+        phone:
+          normalizedPhone !== undefined
+            ? normalizedPhone
+            : existingVal.profileExtra?.phone || '+91 98450 19823',
+        avatarUrl:
+          avatarUrl !== undefined
+            ? avatarUrl
+            : existingVal.profileExtra?.avatarUrl || '',
+        kendraId:
+          kendraId || existingVal.profileExtra?.kendraId || 'CSC-DEL-8841',
+        designation:
+          designation ||
+          existingVal.profileExtra?.designation ||
+          'Principal Verification Officer (SDM)',
+        district:
+          district ||
+          existingVal.profileExtra?.district ||
+          'Central Delhi, NCT of Delhi',
       };
 
-      await this.prisma.systemSetting.upsert({
-        where: { key: 'admin_operational_settings' },
-        update: {
-          value: {
-            ...existingVal,
-            profileExtra: updatedProfileExtra,
+      await this.prisma.systemSetting
+        .upsert({
+          where: { key: 'admin_operational_settings' },
+          update: {
+            value: {
+              ...existingVal,
+              profileExtra: updatedProfileExtra,
+            },
           },
-        },
-        create: {
-          key: 'admin_operational_settings',
-          value: {
-            profileExtra: updatedProfileExtra,
+          create: {
+            key: 'admin_operational_settings',
+            value: {
+              profileExtra: updatedProfileExtra,
+            },
           },
-        },
-      }).catch(() => null);
+        })
+        .catch(() => null);
 
       AdminGateway.broadcast('admin_profile_updated', updatedProfileExtra);
       client.emit('update_admin_profile_success', updatedProfileExtra);

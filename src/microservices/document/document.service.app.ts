@@ -35,7 +35,9 @@ export async function bootstrapDocumentService() {
 
   const port = parseInt(process.env.DOCUMENT_SERVICE_PORT || '3004', 10);
   await app.listen(port, '0.0.0.0');
-  console.log(`[Document & KYC Microservice] Running on http://0.0.0.0:${port}`);
+  console.log(
+    `[Document & KYC Microservice] Running on http://0.0.0.0:${port}`,
+  );
   return app;
 }
 

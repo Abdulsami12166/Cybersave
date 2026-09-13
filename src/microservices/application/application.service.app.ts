@@ -35,7 +35,9 @@ export async function bootstrapApplicationService() {
 
   const port = parseInt(process.env.APPLICATION_SERVICE_PORT || '3002', 10);
   await app.listen(port, '0.0.0.0');
-  console.log(`[Application & Scheme Microservice] Running on http://0.0.0.0:${port}`);
+  console.log(
+    `[Application & Scheme Microservice] Running on http://0.0.0.0:${port}`,
+  );
   return app;
 }
 

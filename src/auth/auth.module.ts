@@ -14,18 +14,8 @@ import { JwtAuthGuard } from '../common/guards/jwt.guard';
       signOptions: { expiresIn: '7d' },
     }),
   ],
-  providers: [
-    AuthService,
-    RedisService,
-    SmsService,
-    JwtAuthGuard,
-  ],
+  providers: [AuthService, RedisService, SmsService, JwtAuthGuard],
   controllers: [AuthController],
-  exports: [
-    AuthService,
-    RedisService,
-    SmsService,
-    JwtAuthGuard,
-  ],
+  exports: [AuthService, RedisService, SmsService, JwtAuthGuard],
 })
 export class AuthModule {}

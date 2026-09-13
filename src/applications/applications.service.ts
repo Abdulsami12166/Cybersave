@@ -64,36 +64,57 @@ export class ApplicationsService {
 
   async createApplication(dto: CreateApplicationDto) {
     const refNumber = this.generateRefNumber();
-    const isMongoId = (id?: string) => typeof id === 'string' && /^[0-9a-fA-F]{24}$/.test(id);
+    const isMongoId = (id?: string) =>
+      typeof id === 'string' && /^[0-9a-fA-F]{24}$/.test(id);
 
     let validUserId = dto.userId;
 
     const userOrConditions: any[] = [];
-    if (validUserId && isMongoId(validUserId)) userOrConditions.push({ id: validUserId });
-    if (validUserId && validUserId.includes('@')) userOrConditions.push({ email: validUserId.trim().toLowerCase() });
-    if (validUserId && /^\+?[0-9]{10,13}$/.test(validUserId)) userOrConditions.push({ phone: validUserId.trim() });
-    if (dto.formData?.email) userOrConditions.push({ email: String(dto.formData.email).trim().toLowerCase() });
-    if (dto.formData?.phone) userOrConditions.push({ phone: String(dto.formData.phone).trim() });
+    if (validUserId && isMongoId(validUserId))
+      userOrConditions.push({ id: validUserId });
+    if (validUserId && validUserId.includes('@'))
+      userOrConditions.push({ email: validUserId.trim().toLowerCase() });
+    if (validUserId && /^\+?[0-9]{10,13}$/.test(validUserId))
+      userOrConditions.push({ phone: validUserId.trim() });
+    if (dto.formData?.email)
+      userOrConditions.push({
+        email: String(dto.formData.email).trim().toLowerCase(),
+      });
+    if (dto.formData?.phone)
+      userOrConditions.push({ phone: String(dto.formData.phone).trim() });
 
-    let matchedUser = userOrConditions.length > 0
-      ? await this.prisma.user.findFirst({
-          where: { OR: userOrConditions },
-          include: { profile: true },
-        }).catch(() => null)
-      : null;
+    let matchedUser =
+      userOrConditions.length > 0
+        ? await this.prisma.user
+            .findFirst({
+              where: { OR: userOrConditions },
+              include: { profile: true },
+            })
+            .catch(() => null)
+        : null;
 
     if (!matchedUser) {
-      matchedUser = await this.prisma.user.findFirst({
-        include: { profile: true },
-      }).catch(() => null);
+      matchedUser = await this.prisma.user
+        .findFirst({
+          include: { profile: true },
+        })
+        .catch(() => null);
     }
 
     if (!matchedUser) {
-      const citizenEmail = dto.formData?.email || (validUserId && validUserId.includes('@') ? validUserId : `citizen_${Date.now()}@cybersave.app`);
+      const citizenEmail =
+        dto.formData?.email ||
+        (validUserId && validUserId.includes('@')
+          ? validUserId
+          : `citizen_${Date.now()}@cybersave.app`);
       matchedUser = await this.prisma.user.create({
         data: {
           email: citizenEmail,
-          phone: dto.formData?.phone || (validUserId && /^\+?[0-9]{10,13}$/.test(validUserId) ? validUserId : '+91 98765 43210'),
+          phone:
+            dto.formData?.phone ||
+            (validUserId && /^\+?[0-9]{10,13}$/.test(validUserId)
+              ? validUserId
+              : '+91 98765 43210'),
           role: 'USER',
           profile: {
             create: {
@@ -115,15 +136,19 @@ export class ApplicationsService {
 
     let serviceId = dto.serviceId;
     if (!serviceId && dto.serviceSlug) {
-      const srv = await this.prisma.service.findUnique({
-        where: { slug: dto.serviceSlug },
-      }).catch(() => null);
+      const srv = await this.prisma.service
+        .findUnique({
+          where: { slug: dto.serviceSlug },
+        })
+        .catch(() => null);
       if (srv) serviceId = srv.id;
     }
     if (!serviceId && dto.serviceTitle) {
-      const srv = await this.prisma.service.findFirst({
-        where: { title: dto.serviceTitle },
-      }).catch(() => null);
+      const srv = await this.prisma.service
+        .findFirst({
+          where: { title: dto.serviceTitle },
+        })
+        .catch(() => null);
       if (srv) serviceId = srv.id;
     }
     if (!serviceId) {
@@ -133,7 +158,9 @@ export class ApplicationsService {
       } else {
         const createdSrv = await this.prisma.service.create({
           data: {
-            slug: (dto.serviceTitle || 'government-service').toLowerCase().replace(/[^a-z0-9]+/g, '-'),
+            slug: (dto.serviceTitle || 'government-service')
+              .toLowerCase()
+              .replace(/[^a-z0-9]+/g, '-'),
             title: dto.serviceTitle || 'Government Service',
             description: 'Government certified service workflow.',
             category: 'Government',
@@ -150,7 +177,9 @@ export class ApplicationsService {
 
     // Sanitize documents to ensure clean structure and prevent DB bloat
     const sanitizedDocs = (Array.isArray(dto.documents) ? dto.documents : [])
-      .filter((d: any) => d && (d.fileUrl || d.url || d.uri || d.fileName || d.label))
+      .filter(
+        (d: any) => d && (d.fileUrl || d.url || d.uri || d.fileName || d.label),
+      )
       .map((d: any, idx: number) => {
         const rawUrl = d.fileUrl || d.url || d.uri || d.path || '';
         return {
@@ -165,7 +194,7 @@ export class ApplicationsService {
       data: {
         refNumber,
         userId: validUserId,
-        serviceId: serviceId!,
+        serviceId: serviceId,
         serviceTitle: dto.serviceTitle,
         status: ApplicationStatus.SUBMITTED,
         estimatedCompletion: '7-10 Days',
@@ -188,15 +217,17 @@ export class ApplicationsService {
     if (sanitizedDocs.length > 0) {
       for (const doc of sanitizedDocs) {
         if (doc.fileUrl) {
-          await this.prisma.documentUpload.create({
-            data: {
-              userId: validUserId,
-              applicationId: application.id,
-              fileName: doc.fileName || doc.label,
-              fileUrl: doc.fileUrl,
-              fileType: doc.type || 'document',
-            },
-          }).catch(() => null);
+          await this.prisma.documentUpload
+            .create({
+              data: {
+                userId: validUserId,
+                applicationId: application.id,
+                fileName: doc.fileName || doc.label,
+                fileUrl: doc.fileUrl,
+                fileType: doc.type || 'document',
+              },
+            })
+            .catch(() => null);
         }
       }
     }
@@ -244,7 +275,8 @@ export class ApplicationsService {
   }
 
   async getUserApplications(userId?: string, status?: string) {
-    const isMongoId = (id?: string) => typeof id === 'string' && /^[0-9a-fA-F]{24}$/.test(id);
+    const isMongoId = (id?: string) =>
+      typeof id === 'string' && /^[0-9a-fA-F]{24}$/.test(id);
     const whereClause: any = {};
     if (status && status !== 'All' && status !== 'ALL') {
       const upper = status.toUpperCase().replace(/\s+/g, '_');
@@ -260,8 +292,15 @@ export class ApplicationsService {
       return apps.map((app: any) => {
         if (Array.isArray(app?.documents)) {
           app.documents = app.documents.map((d: any, idx: number) => {
-            const rawUrl = typeof d === 'string' ? d : (d?.fileUrl || d?.url || d?.uri || '');
-            if (typeof d === 'string') return { label: `Supporting Proof #${idx + 1}`, fileName: `proof_${idx + 1}.jpg`, fileUrl: rawUrl, type: 'Identity Proof' };
+            const rawUrl =
+              typeof d === 'string' ? d : d?.fileUrl || d?.url || d?.uri || '';
+            if (typeof d === 'string')
+              return {
+                label: `Supporting Proof #${idx + 1}`,
+                fileName: `proof_${idx + 1}.jpg`,
+                fileUrl: rawUrl,
+                type: 'Identity Proof',
+              };
             return { ...d, fileUrl: rawUrl };
           });
         }
@@ -270,7 +309,12 @@ export class ApplicationsService {
     };
 
     // If userId is omitted or 'all' or 'admin', return all applications (for Admin Web Panel)
-    if (!userId || userId === 'all' || userId === 'admin' || userId === 'default-user-id') {
+    if (
+      !userId ||
+      userId === 'all' ||
+      userId === 'admin' ||
+      userId === 'default-user-id'
+    ) {
       const apps = await this.prisma.application.findMany({
         where: whereClause,
         orderBy: { submittedAt: 'desc' },
@@ -294,17 +338,25 @@ export class ApplicationsService {
     const digits = cleanUserId.replace(/\D/g, '').slice(-10);
     if (digits.length === 10) {
       userOrConditions.push({ phone: `+91${digits}` });
-      userOrConditions.push({ phone: `+91 ${digits.slice(0, 5)} ${digits.slice(5)}` });
+      userOrConditions.push({
+        phone: `+91 ${digits.slice(0, 5)} ${digits.slice(5)}`,
+      });
       userOrConditions.push({ phone: digits });
     }
 
-    const matchedUser = await this.prisma.user.findFirst({
-      where: { OR: userOrConditions },
-    }).catch(() => null);
+    const matchedUser = await this.prisma.user
+      .findFirst({
+        where: { OR: userOrConditions },
+      })
+      .catch(() => null);
 
     const targetIds: string[] = [];
     if (isMongoId(cleanUserId)) targetIds.push(cleanUserId);
-    if (matchedUser && isMongoId(matchedUser.id) && !targetIds.includes(matchedUser.id)) {
+    if (
+      matchedUser &&
+      isMongoId(matchedUser.id) &&
+      !targetIds.includes(matchedUser.id)
+    ) {
       targetIds.push(matchedUser.id);
     }
 
@@ -330,7 +382,8 @@ export class ApplicationsService {
   }
 
   async getApplicationById(id: string) {
-    const isMongoId = (idStr?: string) => typeof idStr === 'string' && /^[0-9a-fA-F]{24}$/.test(idStr);
+    const isMongoId = (idStr?: string) =>
+      typeof idStr === 'string' && /^[0-9a-fA-F]{24}$/.test(idStr);
     const orConditions: any[] = [{ refNumber: id }];
     if (isMongoId(id)) {
       orConditions.push({ id });
@@ -340,7 +393,7 @@ export class ApplicationsService {
       where: {
         OR: orConditions,
       },
-      include: { 
+      include: {
         service: true,
         user: { include: { profile: true } },
         documentUploads: true,
@@ -359,9 +412,15 @@ export class ApplicationsService {
     id: string,
     status: string,
     rejectionReason?: string,
-    adminInfo?: { adminId?: string; adminEmail?: string; adminName?: string; adminRole?: string },
+    adminInfo?: {
+      adminId?: string;
+      adminEmail?: string;
+      adminName?: string;
+      adminRole?: string;
+    },
   ) {
-    const isMongoId = (idStr?: string) => typeof idStr === 'string' && /^[0-9a-fA-F]{24}$/.test(idStr);
+    const isMongoId = (idStr?: string) =>
+      typeof idStr === 'string' && /^[0-9a-fA-F]{24}$/.test(idStr);
     const orConditions: any[] = [{ refNumber: id }];
     if (isMongoId(id)) {
       orConditions.push({ id });
@@ -392,13 +451,18 @@ export class ApplicationsService {
       completed: ApplicationStatus.COMPLETED,
     };
 
-    const targetStatus = validStatusMap[status] || (status as ApplicationStatus);
+    const targetStatus =
+      validStatusMap[status] || (status as ApplicationStatus);
 
     const updated = await this.prisma.application.update({
       where: { id: app.id },
       data: {
         status: targetStatus,
-        rejectionReason: targetStatus === ApplicationStatus.REJECTED ? (rejectionReason || 'Application rejected during administrative verification.') : null,
+        rejectionReason:
+          targetStatus === ApplicationStatus.REJECTED
+            ? rejectionReason ||
+              'Application rejected during administrative verification.'
+            : null,
         updatedAt: new Date(),
       },
       include: {
@@ -411,10 +475,18 @@ export class ApplicationsService {
       AdminGateway.broadcast('applications_updated', updated);
       AdminGateway.broadcast('application_status_changed', updated);
 
-      const actingName = adminInfo?.adminName || (adminInfo?.adminEmail ? adminInfo.adminEmail.split('@')[0] : (updated.officialOfficer || 'Field Operator'));
+      const actingName =
+        adminInfo?.adminName ||
+        (adminInfo?.adminEmail
+          ? adminInfo.adminEmail.split('@')[0]
+          : updated.officialOfficer || 'Field Operator');
       const actingEmail = adminInfo?.adminEmail || '';
       const actingId = adminInfo?.adminId;
-      const actingRole = adminInfo?.adminRole || (actingEmail === 'admin@cybersave.com' ? 'Super Administrator' : 'Sub-Admin / Operator');
+      const actingRole =
+        adminInfo?.adminRole ||
+        (actingEmail === 'admin@cybersave.com'
+          ? 'Super Administrator'
+          : 'Sub-Admin / Operator');
 
       let auditAct = `APPLICATION_${targetStatus}`;
       let auditDet = `Application #${updated.refNumber} (${updated.serviceTitle}) status transitioned to ${targetStatus} by ${actingRole} ${actingName}`;
@@ -440,11 +512,12 @@ export class ApplicationsService {
     try {
       const phone = updated.user?.phone || updated.user?.profile?.phone;
       if (phone) {
-        const msg = targetStatus === ApplicationStatus.APPROVED
-          ? `Cybersave: Your application for ${updated.serviceTitle} (#${updated.refNumber}) has been APPROVED.`
-          : targetStatus === ApplicationStatus.REJECTED
-            ? `Cybersave: Your application for ${updated.serviceTitle} (#${updated.refNumber}) has been REJECTED. Reason: ${rejectionReason || 'Document verification issue'}.`
-            : `Cybersave: Your application for ${updated.serviceTitle} (#${updated.refNumber}) status changed to ${targetStatus}.`;
+        const msg =
+          targetStatus === ApplicationStatus.APPROVED
+            ? `Cybersave: Your application for ${updated.serviceTitle} (#${updated.refNumber}) has been APPROVED.`
+            : targetStatus === ApplicationStatus.REJECTED
+              ? `Cybersave: Your application for ${updated.serviceTitle} (#${updated.refNumber}) has been REJECTED. Reason: ${rejectionReason || 'Document verification issue'}.`
+              : `Cybersave: Your application for ${updated.serviceTitle} (#${updated.refNumber}) status changed to ${targetStatus}.`;
         await this.twilioService.sendSms(phone, msg);
       }
     } catch (e) {
@@ -455,7 +528,8 @@ export class ApplicationsService {
   }
 
   async assignOperator(id: string, operatorName: string, operatorId?: string) {
-    const isMongoId = (idStr?: string) => typeof idStr === 'string' && /^[0-9a-fA-F]{24}$/.test(idStr);
+    const isMongoId = (idStr?: string) =>
+      typeof idStr === 'string' && /^[0-9a-fA-F]{24}$/.test(idStr);
     const orConditions: any[] = [{ refNumber: id }];
     if (isMongoId(id)) {
       orConditions.push({ id });
@@ -489,7 +563,10 @@ export class ApplicationsService {
 
     try {
       AdminGateway.broadcast('applications_updated', updated);
-      AdminGateway.broadcast('application_assigned', { applicationId: app.id, assignedTo: operatorName });
+      AdminGateway.broadcast('application_assigned', {
+        applicationId: app.id,
+        assignedTo: operatorName,
+      });
     } catch (wsErr) {
       this.logger.warn(`WS broadcast error: ${wsErr.message}`);
     }

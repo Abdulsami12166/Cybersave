@@ -1,4 +1,9 @@
-import { Injectable, Logger, UnauthorizedException, BadRequestException } from '@nestjs/common';
+import {
+  Injectable,
+  Logger,
+  UnauthorizedException,
+  BadRequestException,
+} from '@nestjs/common';
 import { PrismaService } from '../database/prisma.service';
 import * as bcrypt from 'bcrypt';
 import { JwtService } from '@nestjs/jwt';
@@ -20,21 +25,34 @@ export class AuthService {
     return Math.floor(100000 + Math.random() * 900000).toString();
   }
 
-  async register(email: string, passwordHash: string, fullName: string, phone?: string) {
+  async register(
+    email: string,
+    passwordHash: string,
+    fullName: string,
+    phone?: string,
+  ) {
     const cleanEmail = email.trim().toLowerCase();
     const cleanPhone = phone?.trim().replace(/\s+/g, '') || null;
 
     // Check email uniqueness (case-insensitive)
-    const existingEmail = await this.prisma.user.findUnique({ where: { email: cleanEmail } });
+    const existingEmail = await this.prisma.user.findUnique({
+      where: { email: cleanEmail },
+    });
     if (existingEmail) {
-      throw new BadRequestException('An account with this email already exists. Please sign in instead.');
+      throw new BadRequestException(
+        'An account with this email already exists. Please sign in instead.',
+      );
     }
 
     // Check phone uniqueness (only if provided)
     if (cleanPhone) {
-      const existingPhone = await this.prisma.user.findFirst({ where: { phone: cleanPhone } });
+      const existingPhone = await this.prisma.user.findFirst({
+        where: { phone: cleanPhone },
+      });
       if (existingPhone) {
-        throw new BadRequestException('An account with this phone number already exists.');
+        throw new BadRequestException(
+          'An account with this phone number already exists.',
+        );
       }
     }
 
@@ -69,13 +87,15 @@ export class AuthService {
   async sendOtp(phone: string) {
     if (!phone) throw new BadRequestException('Phone number is required');
     const cleanPhone = phone.trim().replace(/\s+/g, '');
-    
+
     // Generate 6 digit OTP
     const otp = Math.floor(100000 + Math.random() * 900000).toString();
 
     // Store in Redis (valid for 5 minutes)
     await this.redisService.set(`otp:${cleanPhone}`, otp, 300);
-    this.logger.log(`[AuthService] Generated OTP ${otp} for phone ${cleanPhone}`);
+    this.logger.log(
+      `[AuthService] Generated OTP ${otp} for phone ${cleanPhone}`,
+    );
 
     // Send SMS
     await this.smsService.sendSms(cleanPhone, otp);
@@ -90,14 +110,11 @@ export class AuthService {
 
   async login(emailOrPhone: string, password?: string, ipAddress?: string) {
     const cleanId = (emailOrPhone || '').trim();
-    
+
     // Check by email or phone
     const user = await this.prisma.user.findFirst({
       where: {
-        OR: [
-          { email: cleanId.toLowerCase() },
-          { phone: cleanId },
-        ],
+        OR: [{ email: cleanId.toLowerCase() }, { phone: cleanId }],
       },
       include: { profile: true },
     });
@@ -107,7 +124,9 @@ export class AuthService {
     }
 
     if (user.status === 'BLOCKED' || user.status === 'SUSPENDED') {
-      throw new UnauthorizedException('Your account has been suspended/blocked by an Administrator. Please contact support.');
+      throw new UnauthorizedException(
+        'Your account has been suspended/blocked by an Administrator. Please contact support.',
+      );
     }
 
     if (password && user.passwordHash) {
@@ -121,7 +140,12 @@ export class AuthService {
       const accessToken = this.jwtService.sign(payload);
 
       // Record real session login
-      await this.recordAuditLog(user.id, 'USER_LOGIN', 'Logged in via Email/Password (CyberSave Mobile App)', ipAddress);
+      await this.recordAuditLog(
+        user.id,
+        'USER_LOGIN',
+        'Logged in via Email/Password (CyberSave Mobile App)',
+        ipAddress,
+      );
       await this.prisma.user.update({
         where: { id: user.id },
         data: { isOnline: true, lastSeenAt: new Date() },
@@ -161,7 +185,15 @@ export class AuthService {
     };
   }
 
-  async googleLogin(data: { token?: string; email?: string; fullName?: string; photoUrl?: string }, ipAddress?: string) {
+  async googleLogin(
+    data: {
+      token?: string;
+      email?: string;
+      fullName?: string;
+      photoUrl?: string;
+    },
+    ipAddress?: string,
+  ) {
     const email = (data.email || '').trim().toLowerCase();
     if (!email) {
       throw new BadRequestException('Google email is required');
@@ -197,14 +229,21 @@ export class AuthService {
     }
 
     if (user.status === 'BLOCKED') {
-      throw new UnauthorizedException('Your account has been blocked by the Administrator.');
+      throw new UnauthorizedException(
+        'Your account has been blocked by the Administrator.',
+      );
     }
 
     const payload = { sub: user.id, email: user.email, role: user.role };
     const accessToken = this.jwtService.sign(payload);
 
     // Record real Google login audit log & online status
-    await this.recordAuditLog(user.id, 'USER_LOGIN', 'Logged in via Google Sign-In (CyberSave Mobile App)', ipAddress);
+    await this.recordAuditLog(
+      user.id,
+      'USER_LOGIN',
+      'Logged in via Google Sign-In (CyberSave Mobile App)',
+      ipAddress,
+    );
     await this.prisma.user.update({
       where: { id: user.id },
       data: { isOnline: true, lastSeenAt: new Date() },
@@ -225,7 +264,10 @@ export class AuthService {
     };
   }
 
-  async fingerprintAuth(data: { fingerprintId?: string; deviceId?: string; userId?: string }, ipAddress?: string) {
+  async fingerprintAuth(
+    data: { fingerprintId?: string; deviceId?: string; userId?: string },
+    ipAddress?: string,
+  ) {
     let cleanFingerprintId = (data.fingerprintId || '').trim();
     if (!cleanFingerprintId) {
       cleanFingerprintId = `FP-${Date.now().toString(36).toUpperCase()}-${Math.floor(1000 + Math.random() * 9000)}`;
@@ -240,15 +282,28 @@ export class AuthService {
 
       if (existingUser) {
         if (existingUser.status === 'BLOCKED') {
-          throw new UnauthorizedException('Your account has been blocked by an Administrator.');
+          throw new UnauthorizedException(
+            'Your account has been blocked by an Administrator.',
+          );
         }
 
-        const payload = { sub: existingUser.id, email: existingUser.email, role: existingUser.role };
+        const payload = {
+          sub: existingUser.id,
+          email: existingUser.email,
+          role: existingUser.role,
+        };
         const accessToken = this.jwtService.sign(payload);
-        this.logger.log(`Fingerprint re-login for existing user: ${existingUser.id}`);
+        this.logger.log(
+          `Fingerprint re-login for existing user: ${existingUser.id}`,
+        );
 
         // Record biometric login audit log & online status
-        await this.recordAuditLog(existingUser.id, 'USER_LOGIN', 'Logged in via Biometric Fingerprint (CyberSave Mobile App)', ipAddress);
+        await this.recordAuditLog(
+          existingUser.id,
+          'USER_LOGIN',
+          'Logged in via Biometric Fingerprint (CyberSave Mobile App)',
+          ipAddress,
+        );
         await this.prisma.user.update({
           where: { id: existingUser.id },
           data: { isOnline: true, lastSeenAt: new Date() },
@@ -305,18 +360,27 @@ export class AuthService {
         },
         include: { profile: true },
       });
-      this.logger.log(`Created new citizen account via direct Fingerprint auth: ${user.id} with unique name ${uniqueName}`);
+      this.logger.log(
+        `Created new citizen account via direct Fingerprint auth: ${user.id} with unique name ${uniqueName}`,
+      );
     }
 
     if (user.status === 'BLOCKED') {
-      throw new UnauthorizedException('Your account has been blocked by an Administrator.');
+      throw new UnauthorizedException(
+        'Your account has been blocked by an Administrator.',
+      );
     }
 
     const payload = { sub: user.id, email: user.email, role: user.role };
     const accessToken = this.jwtService.sign(payload);
 
     // Record real biometric login audit log & online status
-    await this.recordAuditLog(user.id, 'USER_LOGIN', 'Enrolled & Logged in via Biometric Fingerprint (CyberSave Mobile App)', ipAddress);
+    await this.recordAuditLog(
+      user.id,
+      'USER_LOGIN',
+      'Enrolled & Logged in via Biometric Fingerprint (CyberSave Mobile App)',
+      ipAddress,
+    );
     await this.prisma.user.update({
       where: { id: user.id },
       data: { isOnline: true, lastSeenAt: new Date() },
@@ -332,14 +396,17 @@ export class AuthService {
         email: user.profile?.email || null,
         phone: user.phone || null,
         role: user.role,
-        fullName: user.profile?.fullName || `Citizen_${user.id.slice(-4).toUpperCase()}`,
+        fullName:
+          user.profile?.fullName ||
+          `Citizen_${user.id.slice(-4).toUpperCase()}`,
         avatarUrl: user.profile?.avatarUrl || null,
       },
     };
   }
 
   async verifyOtp(identifier: string, otp: string, ipAddress?: string) {
-    if (!identifier || !otp) throw new BadRequestException('Identifier and OTP are required');
+    if (!identifier || !otp)
+      throw new BadRequestException('Identifier and OTP are required');
     const cleanId = identifier.trim().replace(/\s+/g, '');
     const isPhone = /^\+?[0-9]{10,15}$/.test(cleanId);
 
@@ -393,26 +460,39 @@ export class AuthService {
         },
       };
     } else {
-      const user = await this.prisma.user.findUnique({ where: { email: cleanId }, include: { profile: true } });
+      const user = await this.prisma.user.findUnique({
+        where: { email: cleanId },
+        include: { profile: true },
+      });
       if (!user) {
         throw new UnauthorizedException('Invalid credentials');
       }
 
-      if (!user.otpCode || user.otpCode !== otp || !user.otpExpiry || user.otpExpiry < new Date()) {
+      if (
+        !user.otpCode ||
+        user.otpCode !== otp ||
+        !user.otpExpiry ||
+        user.otpExpiry < new Date()
+      ) {
         throw new UnauthorizedException('Invalid or expired OTP');
       }
 
       // Clear OTP
       await this.prisma.user.update({
         where: { id: user.id },
-        data: { otpCode: null, otpExpiry: null }
+        data: { otpCode: null, otpExpiry: null },
       });
 
       const payload = { sub: user.id, email: user.email, role: user.role };
       const accessToken = this.jwtService.sign(payload);
 
       // Record mobile OTP login audit log & online status
-      await this.recordAuditLog(user.id, 'USER_LOGIN', 'Logged in via Mobile OTP (CyberSave Mobile App)', ipAddress);
+      await this.recordAuditLog(
+        user.id,
+        'USER_LOGIN',
+        'Logged in via Mobile OTP (CyberSave Mobile App)',
+        ipAddress,
+      );
       await this.prisma.user.update({
         where: { id: user.id },
         data: { isOnline: true, lastSeenAt: new Date() },
@@ -425,7 +505,7 @@ export class AuthService {
           email: user.email,
           role: user.role,
           fullName: user.profile?.fullName || 'Citizen User',
-        }
+        },
       };
     }
   }
@@ -441,7 +521,7 @@ export class AuthService {
 
     await this.prisma.user.update({
       where: { id: user.id },
-      data: { otpCode, otpExpiry }
+      data: { otpCode, otpExpiry },
     });
 
     // Simulate sending email
@@ -450,7 +530,12 @@ export class AuthService {
     return { success: true, message: 'OTP resent to email' };
   }
 
-  async recordAuditLog(userId?: string, action: string = 'USER_LOGIN', details?: string, ipAddress?: string) {
+  async recordAuditLog(
+    userId?: string,
+    action: string = 'USER_LOGIN',
+    details?: string,
+    ipAddress?: string,
+  ) {
     try {
       if (userId && /^[0-9a-fA-F]{24}$/.test(userId)) {
         await this.prisma.auditLog.create({
@@ -474,9 +559,16 @@ export class AuthService {
           where: { id: userId },
           data: { isOnline: false, lastSeenAt: new Date() },
         });
-        await this.recordAuditLog(userId, 'USER_LOGOUT', 'Logged out of CyberSave Android App', ipAddress);
+        await this.recordAuditLog(
+          userId,
+          'USER_LOGOUT',
+          'Logged out of CyberSave Android App',
+          ipAddress,
+        );
       } catch (e: any) {
-        this.logger.warn(`Failed to record logout for ${userId}: ${e?.message}`);
+        this.logger.warn(
+          `Failed to record logout for ${userId}: ${e?.message}`,
+        );
       }
     }
     return { success: true, message: 'Logged out successfully' };
@@ -520,7 +612,7 @@ export class AuthService {
   async getMe(userId: string) {
     const user = await this.prisma.user.findUnique({
       where: { id: userId },
-      include: { profile: true }
+      include: { profile: true },
     });
     if (!user) throw new BadRequestException('User not found');
     return {
@@ -530,7 +622,7 @@ export class AuthService {
         phone: user.phone,
         role: user.role,
         fullName: user.profile?.fullName,
-      }
+      },
     };
   }
 }

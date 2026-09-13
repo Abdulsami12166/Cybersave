@@ -1,4 +1,8 @@
-import { Injectable, InternalServerErrorException, BadRequestException } from '@nestjs/common';
+import {
+  Injectable,
+  InternalServerErrorException,
+  BadRequestException,
+} from '@nestjs/common';
 import Razorpay from 'razorpay';
 import * as crypto from 'crypto';
 
@@ -8,7 +12,8 @@ export class PaymentService {
   private keySecret: string;
 
   constructor() {
-    this.keySecret = process.env.RAZORPAY_KEY_SECRET || 'BYhn7iZmm4IRKtwZCxwCK3qk';
+    this.keySecret =
+      process.env.RAZORPAY_KEY_SECRET || 'BYhn7iZmm4IRKtwZCxwCK3qk';
     this.razorpay = new Razorpay({
       key_id: process.env.RAZORPAY_KEY_ID || 'rzp_test_TRYEFMkB13HLOJ',
       key_secret: this.keySecret,
@@ -25,7 +30,10 @@ export class PaymentService {
       const order = await this.razorpay.orders.create(options);
       return order;
     } catch (error) {
-      console.warn('Razorpay order creation fallback:', (error as any)?.message || error);
+      console.warn(
+        'Razorpay order creation fallback:',
+        error?.message || error,
+      );
       // ponytail: fallback to simulated order if Razorpay authentication fails so citizen flow never breaks
       return {
         id: `order_${Date.now()}`,
@@ -43,8 +51,16 @@ export class PaymentService {
     }
   }
 
-  verifyPayment(razorpayOrderId: string, razorpayPaymentId: string, razorpaySignature: string): boolean {
-    if (!razorpaySignature || razorpaySignature.startsWith('test_') || razorpayOrderId?.startsWith('order_')) {
+  verifyPayment(
+    razorpayOrderId: string,
+    razorpayPaymentId: string,
+    razorpaySignature: string,
+  ): boolean {
+    if (
+      !razorpaySignature ||
+      razorpaySignature.startsWith('test_') ||
+      razorpayOrderId?.startsWith('order_')
+    ) {
       return true;
     }
 
@@ -59,7 +75,10 @@ export class PaymentService {
     }
 
     // Bypass for test environments
-    if (this.keySecret === 'dummy_test_secret' || this.keySecret.includes('BYhn7i')) {
+    if (
+      this.keySecret === 'dummy_test_secret' ||
+      this.keySecret.includes('BYhn7i')
+    ) {
       return true;
     }
 

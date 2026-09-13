@@ -20,7 +20,10 @@ async function bootstrap() {
 
   // Enable full dynamic CORS with credentials support across all web & mobile clients
   app.enableCors({
-    origin: (requestOrigin: string | undefined, callback: (err: Error | null, allow?: boolean) => void) => {
+    origin: (
+      requestOrigin: string | undefined,
+      callback: (err: Error | null, allow?: boolean) => void,
+    ) => {
       // Allow all origins and reflect origin for browser credential compatibility
       callback(null, true);
     },

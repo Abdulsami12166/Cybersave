@@ -30,7 +30,15 @@ export class AdminController {
     private readonly cloudinaryService: CloudinaryService,
   ) {}
 
-  @Post(['api/admin/upload', 'admin/upload', 'api/upload', 'api/v1/upload', 'api/v1/services/upload', 'api/services/upload', 'services/upload'])
+  @Post([
+    'api/admin/upload',
+    'admin/upload',
+    'api/upload',
+    'api/v1/upload',
+    'api/v1/services/upload',
+    'api/services/upload',
+    'services/upload',
+  ])
   @UseInterceptors(FileInterceptor('file'))
   @ApiOperation({ summary: 'Multer Cloudinary Image / Icon Upload' })
   async uploadAdminImage(@UploadedFile() file: any, @Body() body: any) {
@@ -52,19 +60,27 @@ export class AdminController {
   @ApiOperation({ summary: 'Multer / Cloudinary Ticket Proof Upload' })
   async uploadSupportTicketProof(@UploadedFile() file: any, @Body() body: any) {
     if (file && file.buffer) {
-      const url = await this.cloudinaryService.uploadImage(file.buffer, 'cybersave/support');
+      const url = await this.cloudinaryService.uploadImage(
+        file.buffer,
+        'cybersave/support',
+      );
       return { success: true, url, secure_url: url };
     }
     if (body?.image || body?.avatar || body?.file) {
       const img = body.image || body.avatar || body.file;
-      const url = await this.cloudinaryService.uploadBase64Image(img, 'cybersave/support');
+      const url = await this.cloudinaryService.uploadBase64Image(
+        img,
+        'cybersave/support',
+      );
       return { success: true, url, secure_url: url };
     }
     throw new BadRequestException('No image proof file or buffer provided');
   }
 
   @Get(['api/v1/support/tickets', 'api/support/tickets', 'support/tickets'])
-  @ApiOperation({ summary: 'Get all Support Tickets & Grievances with Statistics' })
+  @ApiOperation({
+    summary: 'Get all Support Tickets & Grievances with Statistics',
+  })
   async getAllSupportTicketsRest() {
     const [total, open, inProgress, resolved, tickets] = await Promise.all([
       this.prisma.supportTicket.count(),
@@ -75,12 +91,14 @@ export class AdminController {
         take: 50,
         orderBy: { createdAt: 'desc' },
         include: {
-          user: { select: { id: true, email: true, phone: true, profile: true } }
-        }
-      })
+          user: {
+            select: { id: true, email: true, phone: true, profile: true },
+          },
+        },
+      }),
     ]);
 
-    const formatted = tickets.map(t => ({
+    const formatted = tickets.map((t) => ({
       id: t.refNumber || t.id,
       rawId: t.id,
       refNumber: t.refNumber,
@@ -103,45 +121,65 @@ export class AdminController {
     }));
 
     return {
-      stats: { totalTickets: total, openTickets: open, inProgress: inProgress, resolved: resolved },
-      tickets: formatted
+      stats: {
+        totalTickets: total,
+        openTickets: open,
+        inProgress: inProgress,
+        resolved: resolved,
+      },
+      tickets: formatted,
     };
   }
 
   @Post(['api/v1/support/tickets', 'api/support/tickets', 'support/tickets'])
-  @ApiOperation({ summary: 'Create Support Ticket / Grievance from Mobile or Web' })
+  @ApiOperation({
+    summary: 'Create Support Ticket / Grievance from Mobile or Web',
+  })
   async createSupportTicketRest(@Body() body: any) {
-    const { category, subject, description, priority, userId, attachmentUrl } = body;
+    const { category, subject, description, priority, userId, attachmentUrl } =
+      body;
 
     let resolvedUserId = userId;
-    const isMongoId = (s?: string) => typeof s === 'string' && /^[0-9a-fA-F]{24}$/.test(s);
+    const isMongoId = (s?: string) =>
+      typeof s === 'string' && /^[0-9a-fA-F]{24}$/.test(s);
     let userObj: any = null;
 
     if (resolvedUserId && isMongoId(resolvedUserId)) {
-      userObj = await this.prisma.user.findUnique({
-        where: { id: resolvedUserId },
-        include: { profile: true },
-      }).catch(() => null);
+      userObj = await this.prisma.user
+        .findUnique({
+          where: { id: resolvedUserId },
+          include: { profile: true },
+        })
+        .catch(() => null);
     }
 
     if (!userObj && resolvedUserId) {
-      userObj = await this.prisma.user.findFirst({
-        where: { OR: [{ email: resolvedUserId }, { phone: resolvedUserId }] },
-        include: { profile: true },
-      }).catch(() => null);
+      userObj = await this.prisma.user
+        .findFirst({
+          where: { OR: [{ email: resolvedUserId }, { phone: resolvedUserId }] },
+          include: { profile: true },
+        })
+        .catch(() => null);
       if (userObj) resolvedUserId = userObj.id;
     }
 
     if (!userObj) {
-      userObj = await this.prisma.user.findFirst({
-        where: { role: 'USER' },
-        include: { profile: true },
-      }).catch(() => null);
+      userObj = await this.prisma.user
+        .findFirst({
+          where: { role: 'USER' },
+          include: { profile: true },
+        })
+        .catch(() => null);
       resolvedUserId = userObj?.id || null;
     }
 
-    const citizenName = userObj?.profile?.fullName || (userObj?.email ? userObj.email.split('@')[0] : 'Citizen');
-    const nowTimeStr = new Date().toLocaleString('en-IN', { dateStyle: 'medium', timeStyle: 'short' });
+    const citizenName =
+      userObj?.profile?.fullName ||
+      (userObj?.email ? userObj.email.split('@')[0] : 'Citizen');
+    const nowTimeStr = new Date().toLocaleString('en-IN', {
+      dateStyle: 'medium',
+      timeStyle: 'short',
+    });
 
     const initialMessages = [
       {
@@ -149,7 +187,8 @@ export class AdminController {
         senderId: resolvedUserId || 'citizen',
         senderName: citizenName,
         role: 'USER',
-        text: description || subject || 'Citizen reported an operational issue.',
+        text:
+          description || subject || 'Citizen reported an operational issue.',
         attachmentUrl: attachmentUrl || null,
         time: nowTimeStr,
       },
@@ -176,15 +215,22 @@ export class AdminController {
     return { success: true, ticket };
   }
 
-  @Post(['api/v1/support/tickets/:id/reply', 'api/support/tickets/:id/reply', 'support/tickets/:id/reply'])
-  @ApiOperation({ summary: 'Admin Sends Official Response to Citizen Grievance' })
+  @Post([
+    'api/v1/support/tickets/:id/reply',
+    'api/support/tickets/:id/reply',
+    'support/tickets/:id/reply',
+  ])
+  @ApiOperation({
+    summary: 'Admin Sends Official Response to Citizen Grievance',
+  })
   async replyToSupportTicketRest(@Param('id') id: string, @Body() body: any) {
     const { text, adminName, adminEmail, adminId, adminRole } = body;
     if (!text || !text.trim()) {
       throw new BadRequestException('Response text cannot be empty');
     }
 
-    const isMongoId = (s?: string) => typeof s === 'string' && /^[0-9a-fA-F]{24}$/.test(s);
+    const isMongoId = (s?: string) =>
+      typeof s === 'string' && /^[0-9a-fA-F]{24}$/.test(s);
     const orConditions: any[] = [{ refNumber: id }, { refNumber: `TKT-${id}` }];
     if (isMongoId(id)) {
       orConditions.push({ id });
@@ -199,11 +245,22 @@ export class AdminController {
       throw new NotFoundException(`Grievance / Ticket ${id} not found`);
     }
 
-    const actingName = adminName || (adminEmail ? adminEmail.split('@')[0] : 'Support Officer (SDM)');
-    const actingRole = adminRole || (adminEmail === 'admin@cybersave.com' ? 'Super Administrator' : 'Sub-Admin / Operator');
-    const nowTimeStr = new Date().toLocaleString('en-IN', { dateStyle: 'medium', timeStyle: 'short' });
+    const actingName =
+      adminName ||
+      (adminEmail ? adminEmail.split('@')[0] : 'Support Officer (SDM)');
+    const actingRole =
+      adminRole ||
+      (adminEmail === 'admin@cybersave.com'
+        ? 'Super Administrator'
+        : 'Sub-Admin / Operator');
+    const nowTimeStr = new Date().toLocaleString('en-IN', {
+      dateStyle: 'medium',
+      timeStyle: 'short',
+    });
 
-    const existingMsgs = Array.isArray(ticket.messages) ? (ticket.messages as any[]) : [];
+    const existingMsgs = Array.isArray(ticket.messages)
+      ? (ticket.messages as any[])
+      : [];
     const replyMsg = {
       id: `msg-${Date.now()}`,
       senderId: adminId || 'admin',
@@ -227,15 +284,17 @@ export class AdminController {
 
     // 1. Notify that particular citizen
     if (ticket.userId) {
-      await this.prisma.notification.create({
-        data: {
-          userId: ticket.userId,
-          title: `Official Response on Ticket #${ticket.refNumber}`,
-          body: text.length > 80 ? `${text.slice(0, 80)}...` : text,
-          type: 'INFO',
-          status: 'SENT',
-        },
-      }).catch(() => null);
+      await this.prisma.notification
+        .create({
+          data: {
+            userId: ticket.userId,
+            title: `Official Response on Ticket #${ticket.refNumber}`,
+            body: text.length > 80 ? `${text.slice(0, 80)}...` : text,
+            type: 'INFO',
+            status: 'SENT',
+          },
+        })
+        .catch(() => null);
 
       // Real-time broadcast directly to that user's mobile app
       AdminGateway.broadcast('user_grievance_reply', {
@@ -267,12 +326,23 @@ export class AdminController {
       category: ticket.category,
       priority: ticket.priority,
       status: updatedTicket.status,
-      createdOn: ticket.createdAt.toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' }),
-      lastUpdated: new Date().toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' }),
+      createdOn: ticket.createdAt.toLocaleDateString('en-IN', {
+        day: 'numeric',
+        month: 'short',
+        year: 'numeric',
+      }),
+      lastUpdated: new Date().toLocaleDateString('en-IN', {
+        day: 'numeric',
+        month: 'short',
+        year: 'numeric',
+      }),
       assignedTo: { id: adminId || 'admin1', name: actingName },
       reporter: {
         id: ticket.userId || 'user1',
-        name: (ticket.user as any)?.profile?.fullName || ticket.user?.email || 'Citizen User',
+        name:
+          (ticket.user as any)?.profile?.fullName ||
+          ticket.user?.email ||
+          'Citizen User',
       },
       messages: updatedMsgs,
       notes: [],
@@ -286,30 +356,43 @@ export class AdminController {
     };
   }
 
-  @Get(['api/v1/support/user-tickets', 'api/support/user-tickets', 'support/user-tickets'])
-  @ApiOperation({ summary: 'Get Grievances and Admin Replies for Specific Mobile User' })
+  @Get([
+    'api/v1/support/user-tickets',
+    'api/support/user-tickets',
+    'support/user-tickets',
+  ])
+  @ApiOperation({
+    summary: 'Get Grievances and Admin Replies for Specific Mobile User',
+  })
   async getUserSupportTicketsRest(@Query('userId') userId?: string) {
     let resolvedUserId = userId;
-    const isMongoId = (s?: string) => typeof s === 'string' && /^[0-9a-fA-F]{24}$/.test(s);
+    const isMongoId = (s?: string) =>
+      typeof s === 'string' && /^[0-9a-fA-F]{24}$/.test(s);
 
     let userRecord: any = null;
     if (resolvedUserId && isMongoId(resolvedUserId)) {
-      userRecord = await this.prisma.user.findUnique({
-        where: { id: resolvedUserId },
-      }).catch(() => null);
+      userRecord = await this.prisma.user
+        .findUnique({
+          where: { id: resolvedUserId },
+        })
+        .catch(() => null);
     }
     if (!userRecord && resolvedUserId) {
-      userRecord = await this.prisma.user.findFirst({
-        where: { OR: [{ email: resolvedUserId }, { phone: resolvedUserId }] },
-      }).catch(() => null);
+      userRecord = await this.prisma.user
+        .findFirst({
+          where: { OR: [{ email: resolvedUserId }, { phone: resolvedUserId }] },
+        })
+        .catch(() => null);
       if (userRecord) resolvedUserId = userRecord.id;
     }
 
     const orClauses: any[] = [];
     if (resolvedUserId) orClauses.push({ userId: resolvedUserId });
     if (userRecord?.id) orClauses.push({ userId: userRecord.id });
-    if (userRecord?.email) orClauses.push({ user: { email: userRecord.email } });
-    if (userRecord?.phone) orClauses.push({ user: { phone: userRecord.phone } });
+    if (userRecord?.email)
+      orClauses.push({ user: { email: userRecord.email } });
+    if (userRecord?.phone)
+      orClauses.push({ user: { phone: userRecord.phone } });
 
     let tickets: any[] = [];
     if (orClauses.length > 0) {
@@ -359,7 +442,11 @@ export class AdminController {
     };
   }
 
-  @Post(['api/v1/support/user-reply', 'api/support/user-reply', 'support/user-reply'])
+  @Post([
+    'api/v1/support/user-reply',
+    'api/support/user-reply',
+    'support/user-reply',
+  ])
   @ApiOperation({ summary: 'Citizen Sends Follow-up Message from Mobile' })
   async postUserSupportReplyRest(@Body() body: any) {
     const { ticketId, text, userId } = body;
@@ -367,8 +454,12 @@ export class AdminController {
       throw new BadRequestException('Ticket ID and message text are required');
     }
 
-    const isMongoId = (s?: string) => typeof s === 'string' && /^[0-9a-fA-F]{24}$/.test(s);
-    const orConditions: any[] = [{ refNumber: ticketId }, { refNumber: `TKT-${ticketId}` }];
+    const isMongoId = (s?: string) =>
+      typeof s === 'string' && /^[0-9a-fA-F]{24}$/.test(s);
+    const orConditions: any[] = [
+      { refNumber: ticketId },
+      { refNumber: `TKT-${ticketId}` },
+    ];
     if (isMongoId(ticketId)) {
       orConditions.push({ id: ticketId });
     }
@@ -382,10 +473,18 @@ export class AdminController {
       throw new NotFoundException(`Ticket ${ticketId} not found`);
     }
 
-    const citizenName = (ticket.user as any)?.profile?.fullName || ticket.user?.email?.split('@')[0] || 'Citizen';
-    const nowTimeStr = new Date().toLocaleString('en-IN', { dateStyle: 'medium', timeStyle: 'short' });
+    const citizenName =
+      (ticket.user as any)?.profile?.fullName ||
+      ticket.user?.email?.split('@')[0] ||
+      'Citizen';
+    const nowTimeStr = new Date().toLocaleString('en-IN', {
+      dateStyle: 'medium',
+      timeStyle: 'short',
+    });
 
-    const existingMsgs = Array.isArray(ticket.messages) ? (ticket.messages as any[]) : [];
+    const existingMsgs = Array.isArray(ticket.messages)
+      ? (ticket.messages as any[])
+      : [];
     const newMsg = {
       id: `msg-${Date.now()}`,
       senderId: userId || ticket.userId || 'citizen',
@@ -414,8 +513,16 @@ export class AdminController {
       category: ticket.category,
       priority: ticket.priority,
       status: ticket.status,
-      createdOn: ticket.createdAt.toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' }),
-      lastUpdated: new Date().toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' }),
+      createdOn: ticket.createdAt.toLocaleDateString('en-IN', {
+        day: 'numeric',
+        month: 'short',
+        year: 'numeric',
+      }),
+      lastUpdated: new Date().toLocaleDateString('en-IN', {
+        day: 'numeric',
+        month: 'short',
+        year: 'numeric',
+      }),
       assignedTo: { id: 'admin1', name: 'Support Desk' },
       reporter: {
         id: ticket.userId || 'user1',
@@ -435,9 +542,17 @@ export class AdminController {
   @Post(['api/v1/support/feedback', 'api/support/feedback', 'support/feedback'])
   @ApiOperation({ summary: 'Submit Customer Feedback from Mobile' })
   async submitFeedbackRest(@Body() body: any) {
-    const { userId, rating, improvementCategory, feedbackText, imageUrl, attachmentUrl } = body;
+    const {
+      userId,
+      rating,
+      improvementCategory,
+      feedbackText,
+      imageUrl,
+      attachmentUrl,
+    } = body;
     const finalImageUrl = imageUrl || attachmentUrl || null;
-    const numericRating = typeof rating === 'number' ? rating : parseInt(rating, 10) || 5;
+    const numericRating =
+      typeof rating === 'number' ? rating : parseInt(rating, 10) || 5;
 
     let resolvedUserId = userId;
     // ponytail: resolve user by mongo ID or phone/email if non-standard ID provided
@@ -452,7 +567,9 @@ export class AdminController {
     }
 
     if (!resolvedUserId) {
-      const firstUser = await this.prisma.user.findFirst({ where: { role: 'USER' } });
+      const firstUser = await this.prisma.user.findFirst({
+        where: { role: 'USER' },
+      });
       resolvedUserId = firstUser?.id || null;
     }
 
@@ -488,7 +605,11 @@ export class AdminController {
         category: feedback.improvementCategory,
         feedbackText: feedback.feedbackText,
         imageUrl: feedback.imageUrl,
-        date: new Date().toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' }),
+        date: new Date().toLocaleDateString('en-GB', {
+          day: 'numeric',
+          month: 'short',
+          year: 'numeric',
+        }),
       },
     });
 
@@ -506,7 +627,11 @@ export class AdminController {
     };
   }
 
-  @Get(['api/v1/support/feedbacks', 'api/support/feedbacks', 'support/feedbacks'])
+  @Get([
+    'api/v1/support/feedbacks',
+    'api/support/feedbacks',
+    'support/feedbacks',
+  ])
   @ApiOperation({ summary: 'List all Customer Feedbacks' })
   async getFeedbacksList() {
     return (this.prisma as any).feedback.findMany({
@@ -542,13 +667,18 @@ export class AdminController {
         where: { role: 'ADMIN' },
         include: { profile: true },
       });
-      user = allAdmins.find(
-        (a) => a.email && a.email.trim().toLowerCase() === normalizedEmail,
-      ) || null;
+      user =
+        allAdmins.find(
+          (a) => a.email && a.email.trim().toLowerCase() === normalizedEmail,
+        ) || null;
     }
 
     // Auto-seed or repair default Super Admin if needed
-    if (!user && normalizedEmail === 'admin@cybersave.com' && password === 'admin123') {
+    if (
+      !user &&
+      normalizedEmail === 'admin@cybersave.com' &&
+      password === 'admin123'
+    ) {
       const salt = await bcrypt.genSalt(10);
       const passwordHash = await bcrypt.hash('admin123', salt);
       user = await this.prisma.user.create({
@@ -572,12 +702,17 @@ export class AdminController {
     }
 
     if (user.status === 'SUSPENDED' || user.status === 'BLOCKED') {
-      throw new UnauthorizedException('Your account has been suspended/blocked by an Administrator. Please contact support.');
+      throw new UnauthorizedException(
+        'Your account has been suspended/blocked by an Administrator. Please contact support.',
+      );
     }
 
     const isMatch = await bcrypt.compare(password, user.passwordHash);
     if (!isMatch) {
-      if (normalizedEmail === 'admin@cybersave.com' && password === 'admin123') {
+      if (
+        normalizedEmail === 'admin@cybersave.com' &&
+        password === 'admin123'
+      ) {
         // Reset password hash to ensure admin123 works
         const salt = await bcrypt.genSalt(10);
         const passwordHash = await bcrypt.hash('admin123', salt);
@@ -598,9 +733,11 @@ export class AdminController {
       role: user.role,
     });
 
-    const settingsDoc = await this.prisma.systemSetting.findUnique({
-      where: { key: 'admin_operational_settings' },
-    }).catch(() => null);
+    const settingsDoc = await this.prisma.systemSetting
+      .findUnique({
+        where: { key: 'admin_operational_settings' },
+      })
+      .catch(() => null);
     const extra = (settingsDoc?.value as any)?.profileExtra || {};
 
     const isSuperAdmin = user.email === 'admin@cybersave.com';
@@ -611,11 +748,25 @@ export class AdminController {
       admin: {
         id: user.id,
         email: user.email || normalizedEmail,
-        name: isSuperAdmin && extra.name ? extra.name : (user.profile?.fullName || (user.email ? user.email.split('@')[0] : 'Operator')),
+        name:
+          isSuperAdmin && extra.name
+            ? extra.name
+            : user.profile?.fullName ||
+              (user.email ? user.email.split('@')[0] : 'Operator'),
         role: isSuperAdmin ? 'Super Admin' : 'Sub-Admin',
-        phone: isSuperAdmin && extra.phone ? extra.phone : (user.phone || user.profile?.phone || ''),
-        avatarUrl: isSuperAdmin && extra.avatarUrl !== undefined ? extra.avatarUrl : (user.profile?.avatarUrl || ''),
-        permissions: Array.isArray(user.permissions) ? user.permissions : (isSuperAdmin ? ['SUPER_ADMIN', 'ALL'] : []),
+        phone:
+          isSuperAdmin && extra.phone
+            ? extra.phone
+            : user.phone || user.profile?.phone || '',
+        avatarUrl:
+          isSuperAdmin && extra.avatarUrl !== undefined
+            ? extra.avatarUrl
+            : user.profile?.avatarUrl || '',
+        permissions: Array.isArray(user.permissions)
+          ? user.permissions
+          : isSuperAdmin
+            ? ['SUPER_ADMIN', 'ALL']
+            : [],
       },
     };
   }
@@ -724,12 +875,18 @@ export class AdminController {
     const formattedUsers = users.map((u) => ({
       id: `CIT-${u.id.substring(0, 5).toUpperCase()}`,
       dbId: u.id,
-      fullName: u.profile?.fullName || (u.email ? u.email.split('@')[0] : 'Citizen User'),
-      aadhaar: u.profile?.dob ? '****' + Math.floor(1000 + Math.random() * 9000) : (u.phone ? `•••• •••• ${u.phone.slice(-4)}` : 'Not Given'),
+      fullName:
+        u.profile?.fullName ||
+        (u.email ? u.email.split('@')[0] : 'Citizen User'),
+      aadhaar: u.profile?.dob
+        ? '****' + Math.floor(1000 + Math.random() * 9000)
+        : u.phone
+          ? `•••• •••• ${u.phone.slice(-4)}`
+          : 'Not Given',
       mobile: u.phone || u.profile?.phone || 'N/A',
       district: u.profile?.district || 'Not Given',
       servicesUsed: u.applications?.length || 0,
-      status: u.status === 'BLOCKED' ? 'Blocked' : (u.status || 'Verified'),
+      status: u.status === 'BLOCKED' ? 'Blocked' : u.status || 'Verified',
       lastActive: 'Active recently',
     }));
 
@@ -747,17 +904,23 @@ export class AdminController {
   @Get(['api/admin/users/:id', 'api/v1/users/:id', 'admin/users/:id'])
   @ApiOperation({ summary: 'Get Citizen Detail by ID or CIT-Number' })
   async getCitizenDetail(@Param('id') id: string) {
-    const isMongoId = (s?: string) => typeof s === 'string' && /^[0-9a-fA-F]{24}$/.test(s);
+    const isMongoId = (s?: string) =>
+      typeof s === 'string' && /^[0-9a-fA-F]{24}$/.test(s);
     let u: any = null;
 
     const userInclude = {
       profile: true,
-      applications: { include: { service: true }, orderBy: { submittedAt: 'desc' as const } },
+      applications: {
+        include: { service: true },
+        orderBy: { submittedAt: 'desc' as const },
+      },
       documents: true,
       aadhaarDocs: true,
       auditLogs: { orderBy: { createdAt: 'desc' as const }, take: 100 },
       feedbacks: { orderBy: { createdAt: 'desc' as const } },
-      wallet: { include: { transactions: { orderBy: { createdAt: 'desc' as const } } } },
+      wallet: {
+        include: { transactions: { orderBy: { createdAt: 'desc' as const } } },
+      },
       refundRequests: { orderBy: { createdAt: 'desc' as const } },
     };
 
@@ -774,7 +937,9 @@ export class AdminController {
         where: { role: 'USER' },
         include: userInclude,
       });
-      u = allUsers.find((x) => x.id.substring(0, 5).toUpperCase() === shortId) || null;
+      u =
+        allUsers.find((x) => x.id.substring(0, 5).toUpperCase() === shortId) ||
+        null;
     }
 
     if (!u) {
@@ -806,26 +971,49 @@ export class AdminController {
   @Patch(['api/admin/users/:id', 'api/v1/users/:id', 'admin/users/:id'])
   @ApiOperation({ summary: 'Update Citizen Profile' })
   async updateCitizenDetail(@Param('id') id: string, @Body() body: any) {
-    const isMongoId = (s?: string) => typeof s === 'string' && /^[0-9a-fA-F]{24}$/.test(s);
+    const isMongoId = (s?: string) =>
+      typeof s === 'string' && /^[0-9a-fA-F]{24}$/.test(s);
     let u: any = null;
 
     if (isMongoId(id)) {
-      u = await this.prisma.user.findUnique({ where: { id }, include: { profile: true } });
+      u = await this.prisma.user.findUnique({
+        where: { id },
+        include: { profile: true },
+      });
     }
     if (!u && id.startsWith('CIT-')) {
       const shortId = id.replace('CIT-', '').toUpperCase();
-      const allUsers = await this.prisma.user.findMany({ where: { role: 'USER' }, include: { profile: true } });
-      u = allUsers.find((x) => x.id.substring(0, 5).toUpperCase() === shortId) || null;
+      const allUsers = await this.prisma.user.findMany({
+        where: { role: 'USER' },
+        include: { profile: true },
+      });
+      u =
+        allUsers.find((x) => x.id.substring(0, 5).toUpperCase() === shortId) ||
+        null;
     }
     if (!u) {
-      u = await this.prisma.user.findFirst({ where: { OR: [{ email: id }, { phone: id }] }, include: { profile: true } });
+      u = await this.prisma.user.findFirst({
+        where: { OR: [{ email: id }, { phone: id }] },
+        include: { profile: true },
+      });
     }
 
     if (!u) {
       throw new NotFoundException(`Citizen ${id} not found`);
     }
 
-    const { fullName, phone, email, address, district, state, pinCode, dob, gender, status } = body;
+    const {
+      fullName,
+      phone,
+      email,
+      address,
+      district,
+      state,
+      pinCode,
+      dob,
+      gender,
+      status,
+    } = body;
 
     // Update user record
     await this.prisma.user.update({
@@ -870,19 +1058,24 @@ export class AdminController {
       });
     }
 
-    await this.prisma.auditLog.create({
-      data: {
-        userId: u.id,
-        action: 'CITIZEN_PROFILE_UPDATED',
-        details: `Administrator updated citizen profile information`,
-      },
-    }).catch(() => null);
+    await this.prisma.auditLog
+      .create({
+        data: {
+          userId: u.id,
+          action: 'CITIZEN_PROFILE_UPDATED',
+          details: `Administrator updated citizen profile information`,
+        },
+      })
+      .catch(() => null);
 
     const updatedUser = await this.prisma.user.findUnique({
       where: { id: u.id },
       include: {
         profile: true,
-        applications: { include: { service: true }, orderBy: { submittedAt: 'desc' } },
+        applications: {
+          include: { service: true },
+          orderBy: { submittedAt: 'desc' },
+        },
         documents: true,
         aadhaarDocs: true,
         auditLogs: { orderBy: { createdAt: 'desc' }, take: 15 },
@@ -899,7 +1092,8 @@ export class AdminController {
   @Post(['api/admin/users/:id/block', 'admin/users/:id/block'])
   @ApiOperation({ summary: 'Toggle citizen block status' })
   async toggleBlockCitizen(@Param('id') id: string, @Body() body: any) {
-    const isMongoId = (s?: string) => typeof s === 'string' && /^[0-9a-fA-F]{24}$/.test(s);
+    const isMongoId = (s?: string) =>
+      typeof s === 'string' && /^[0-9a-fA-F]{24}$/.test(s);
     let u: any = null;
 
     if (isMongoId(id)) {
@@ -907,52 +1101,79 @@ export class AdminController {
     }
     if (!u && id.startsWith('CIT-')) {
       const shortId = id.replace('CIT-', '').toUpperCase();
-      const allUsers = await this.prisma.user.findMany({ where: { role: 'USER' } });
-      u = allUsers.find((x) => x.id.substring(0, 5).toUpperCase() === shortId) || null;
+      const allUsers = await this.prisma.user.findMany({
+        where: { role: 'USER' },
+      });
+      u =
+        allUsers.find((x) => x.id.substring(0, 5).toUpperCase() === shortId) ||
+        null;
     }
     if (!u) {
-      u = await this.prisma.user.findFirst({ where: { OR: [{ email: id }, { phone: id }] } });
+      u = await this.prisma.user.findFirst({
+        where: { OR: [{ email: id }, { phone: id }] },
+      });
     }
 
     if (!u) {
       throw new NotFoundException(`Citizen ${id} not found`);
     }
 
-    const nextStatus = body?.status || (u.status === 'BLOCKED' ? 'Verified' : 'BLOCKED');
+    const nextStatus =
+      body?.status || (u.status === 'BLOCKED' ? 'Verified' : 'BLOCKED');
     await this.prisma.user.update({
       where: { id: u.id },
       data: { status: nextStatus },
     });
 
-    await this.prisma.auditLog.create({
-      data: {
-        userId: u.id,
-        action: nextStatus === 'BLOCKED' ? 'USER_BLOCKED' : 'USER_UNBLOCKED',
-        details: `Administrator toggled citizen status to ${nextStatus}`,
-      },
-    }).catch(() => null);
+    await this.prisma.auditLog
+      .create({
+        data: {
+          userId: u.id,
+          action: nextStatus === 'BLOCKED' ? 'USER_BLOCKED' : 'USER_UNBLOCKED',
+          details: `Administrator toggled citizen status to ${nextStatus}`,
+        },
+      })
+      .catch(() => null);
 
-    return { success: true, status: nextStatus === 'BLOCKED' ? 'Blocked' : 'Verified' };
+    return {
+      success: true,
+      status: nextStatus === 'BLOCKED' ? 'Blocked' : 'Verified',
+    };
   }
 
-  @Post(['api/admin/users/:id/notify', 'api/v1/users/:id/notify', 'admin/users/:id/notify'])
-  @ApiOperation({ summary: 'Dispatch direct targeted push notification to specific citizen' })
+  @Post([
+    'api/admin/users/:id/notify',
+    'api/v1/users/:id/notify',
+    'admin/users/:id/notify',
+  ])
+  @ApiOperation({
+    summary: 'Dispatch direct targeted push notification to specific citizen',
+  })
   async sendCitizenNotification(@Param('id') id: string, @Body() body: any) {
     const { title, body: messageBody, type } = body;
     if (!title || !messageBody) {
       throw new BadRequestException('Title and message body are required');
     }
 
-    const isMongoId = (s?: string) => typeof s === 'string' && /^[0-9a-fA-F]{24}$/.test(s);
+    const isMongoId = (s?: string) =>
+      typeof s === 'string' && /^[0-9a-fA-F]{24}$/.test(s);
     let targetUser: any = null;
 
     if (isMongoId(id)) {
-      targetUser = await this.prisma.user.findUnique({ where: { id }, include: { profile: true } });
+      targetUser = await this.prisma.user.findUnique({
+        where: { id },
+        include: { profile: true },
+      });
     }
     if (!targetUser && id.startsWith('CIT-')) {
       const shortId = id.replace('CIT-', '').toUpperCase();
-      const allUsers = await this.prisma.user.findMany({ where: { role: 'USER' }, include: { profile: true } });
-      targetUser = allUsers.find((x) => x.id.substring(0, 5).toUpperCase() === shortId) || null;
+      const allUsers = await this.prisma.user.findMany({
+        where: { role: 'USER' },
+        include: { profile: true },
+      });
+      targetUser =
+        allUsers.find((x) => x.id.substring(0, 5).toUpperCase() === shortId) ||
+        null;
     }
     if (!targetUser) {
       targetUser = await this.prisma.user.findFirst({
@@ -966,25 +1187,29 @@ export class AdminController {
     }
 
     // 1. Create DB notification
-    const notif = await this.prisma.notification.create({
-      data: {
-        userId: targetUser.id,
-        title: title.trim(),
-        body: messageBody.trim(),
-        type: (type as any) || 'SYSTEM',
-        status: 'SENT',
-        sentAt: new Date(),
-      },
-    }).catch(() => null);
+    const notif = await this.prisma.notification
+      .create({
+        data: {
+          userId: targetUser.id,
+          title: title.trim(),
+          body: messageBody.trim(),
+          type: type || 'SYSTEM',
+          status: 'SENT',
+          sentAt: new Date(),
+        },
+      })
+      .catch(() => null);
 
     // 2. Create Audit Log
-    await this.prisma.auditLog.create({
-      data: {
-        userId: targetUser.id,
-        action: 'NOTIFICATION_SENT',
-        details: `Direct Push Notification sent: "${title.trim()}" - ${messageBody.trim().substring(0, 55)}${messageBody.length > 55 ? '...' : ''}`,
-      },
-    }).catch(() => null);
+    await this.prisma.auditLog
+      .create({
+        data: {
+          userId: targetUser.id,
+          action: 'NOTIFICATION_SENT',
+          details: `Direct Push Notification sent: "${title.trim()}" - ${messageBody.trim().substring(0, 55)}${messageBody.length > 55 ? '...' : ''}`,
+        },
+      })
+      .catch(() => null);
 
     // 3. Emit live WebSocket to citizen mobile device
     AdminGateway.emitToUser(targetUser.id, 'user_push_notification', {
@@ -1022,7 +1247,8 @@ export class AdminController {
       throw new BadRequestException('userId and fcmToken are required');
     }
 
-    const isMongoId = (s?: string) => typeof s === 'string' && /^[0-9a-fA-F]{24}$/.test(s);
+    const isMongoId = (s?: string) =>
+      typeof s === 'string' && /^[0-9a-fA-F]{24}$/.test(s);
     let targetUserId = userId;
 
     if (!isMongoId(targetUserId)) {
@@ -1033,10 +1259,12 @@ export class AdminController {
     }
 
     if (isMongoId(targetUserId)) {
-      await this.prisma.user.update({
-        where: { id: targetUserId },
-        data: { fcmToken, isOnline: true, lastSeenAt: new Date() },
-      }).catch(() => null);
+      await this.prisma.user
+        .update({
+          where: { id: targetUserId },
+          data: { fcmToken, isOnline: true, lastSeenAt: new Date() },
+        })
+        .catch(() => null);
 
       AdminGateway.broadcast('user_status_changed', {
         userId: targetUserId,
@@ -1053,10 +1281,12 @@ export class AdminController {
   async citizenHeartbeat(@Body() body: any) {
     const { userId } = body;
     if (userId && /^[0-9a-fA-F]{24}$/.test(userId)) {
-      await this.prisma.user.update({
-        where: { id: userId },
-        data: { isOnline: true, lastSeenAt: new Date() },
-      }).catch(() => null);
+      await this.prisma.user
+        .update({
+          where: { id: userId },
+          data: { isOnline: true, lastSeenAt: new Date() },
+        })
+        .catch(() => null);
 
       AdminGateway.broadcast('user_status_changed', {
         userId,
@@ -1072,10 +1302,12 @@ export class AdminController {
   async citizenOffline(@Body() body: any) {
     const { userId } = body;
     if (userId && /^[0-9a-fA-F]{24}$/.test(userId)) {
-      await this.prisma.user.update({
-        where: { id: userId },
-        data: { isOnline: false, lastSeenAt: new Date() },
-      }).catch(() => null);
+      await this.prisma.user
+        .update({
+          where: { id: userId },
+          data: { isOnline: false, lastSeenAt: new Date() },
+        })
+        .catch(() => null);
 
       await AdminGateway.logActivity(this.prisma, {
         userId,
@@ -1102,16 +1334,29 @@ export class AdminController {
     });
 
     return users.map((u) => {
-      const isOnline = AdminGateway.isUserOnline(u.id, u.lastSeenAt) || (u.isOnline === true && u.lastSeenAt && (Date.now() - new Date(u.lastSeenAt).getTime()) < 60000);
+      const isOnline =
+        AdminGateway.isUserOnline(u.id, u.lastSeenAt) ||
+        (u.isOnline === true &&
+          u.lastSeenAt &&
+          Date.now() - new Date(u.lastSeenAt).getTime() < 60000);
       let lastActive = 'Active Now';
       if (!isOnline) {
         const lastTime = u.lastSeenAt || u.updatedAt || u.createdAt;
         if (lastTime) {
-          const diffSec = Math.floor((Date.now() - new Date(lastTime).getTime()) / 1000);
+          const diffSec = Math.floor(
+            (Date.now() - new Date(lastTime).getTime()) / 1000,
+          );
           if (diffSec < 60) lastActive = 'Just now';
-          else if (diffSec < 3600) lastActive = `${Math.floor(diffSec / 60)} mins ago`;
-          else if (diffSec < 86400) lastActive = `${Math.floor(diffSec / 3600)} hours ago`;
-          else lastActive = new Date(lastTime).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' });
+          else if (diffSec < 3600)
+            lastActive = `${Math.floor(diffSec / 60)} mins ago`;
+          else if (diffSec < 86400)
+            lastActive = `${Math.floor(diffSec / 3600)} hours ago`;
+          else
+            lastActive = new Date(lastTime).toLocaleDateString('en-GB', {
+              day: 'numeric',
+              month: 'short',
+              year: 'numeric',
+            });
         } else {
           lastActive = 'Offline';
         }
@@ -1120,7 +1365,8 @@ export class AdminController {
       return {
         id: `CIT-${u.id.substring(0, 5).toUpperCase()}`,
         dbId: u.id,
-        fullName: u.profile?.fullName || (u.email ? u.email.split('@')[0] : 'Citizen'),
+        fullName:
+          u.profile?.fullName || (u.email ? u.email.split('@')[0] : 'Citizen'),
         aadhaar: u.profile?.dob
           ? '****' + Math.floor(1000 + Math.random() * 9000)
           : 'Not Given',
@@ -1129,7 +1375,7 @@ export class AdminController {
         email: u.email || 'N/A',
         district: u.profile?.district || 'Central Delhi, DL',
         servicesUsed: u.applications?.length || 0,
-        status: u.status === 'BLOCKED' ? 'Blocked' : (u.status || 'Verified'),
+        status: u.status === 'BLOCKED' ? 'Blocked' : u.status || 'Verified',
         avatarUrl: u.profile?.avatarUrl || null,
         isOnline,
         lastActive,
@@ -1141,27 +1387,59 @@ export class AdminController {
   private formatCitizenData(u: any) {
     const apps = u.applications || [];
     const profile = u.profile || {};
-    const firstAppForm = (apps[0]?.formData as any) || {};
+    const firstAppForm = apps[0]?.formData || {};
 
-    const rawFullName = profile.fullName || firstAppForm.fullName || (u.email ? u.email.split('@')[0] : null) || (u.phone ? `Citizen ${u.phone.slice(-4)}` : '');
+    const rawFullName =
+      profile.fullName ||
+      firstAppForm.fullName ||
+      (u.email ? u.email.split('@')[0] : null) ||
+      (u.phone ? `Citizen ${u.phone.slice(-4)}` : '');
     const formattedFullName = rawFullName
-      ? rawFullName.trim().split(' ').map((w: string) => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase()).join(' ')
+      ? rawFullName
+          .trim()
+          .split(' ')
+          .map(
+            (w: string) => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase(),
+          )
+          .join(' ')
       : '';
 
-    const fatherName = profile.fatherName || firstAppForm.fatherName || firstAppForm.father_name || '';
-    const dob = profile.dob || u.aadhaarDocs?.[0]?.dateOfBirth || firstAppForm.dob || '';
-    const gender = profile.gender || u.aadhaarDocs?.[0]?.gender || firstAppForm.gender || '';
-    const aadhaar = profile.aadhaarNumber || u.aadhaarDocs?.[0]?.referenceId || firstAppForm.aadhaar || firstAppForm.aadhaarNumber || (profile.dob ? `•••• •••• ${u.id.slice(-4)}` : '');
+    const fatherName =
+      profile.fatherName ||
+      firstAppForm.fatherName ||
+      firstAppForm.father_name ||
+      '';
+    const dob =
+      profile.dob || u.aadhaarDocs?.[0]?.dateOfBirth || firstAppForm.dob || '';
+    const gender =
+      profile.gender || u.aadhaarDocs?.[0]?.gender || firstAppForm.gender || '';
+    const aadhaar =
+      profile.aadhaarNumber ||
+      u.aadhaarDocs?.[0]?.referenceId ||
+      firstAppForm.aadhaar ||
+      firstAppForm.aadhaarNumber ||
+      (profile.dob ? `•••• •••• ${u.id.slice(-4)}` : '');
     const pan = profile.pan || firstAppForm.pan || firstAppForm.panNumber || '';
     const mobile = u.phone || profile.phone || firstAppForm.phone || '';
     const email = u.email || profile.email || firstAppForm.email || '';
-    const address = profile.address || u.aadhaarDocs?.[0]?.address || firstAppForm.address || '';
+    const address =
+      profile.address ||
+      u.aadhaarDocs?.[0]?.address ||
+      firstAppForm.address ||
+      '';
     const district = profile.district || firstAppForm.district || '';
-    const state = profile.state || firstAppForm.state || firstAppForm.stateName || '';
-    const pinCode = profile.pinCode || firstAppForm.pinCode || firstAppForm.pincode || '';
+    const state =
+      profile.state || firstAppForm.state || firstAppForm.stateName || '';
+    const pinCode =
+      profile.pinCode || firstAppForm.pinCode || firstAppForm.pincode || '';
 
     const totalAmountSpent = apps.reduce((sum: number, a: any) => {
-      const f = typeof a.feePaid === 'number' && !isNaN(a.feePaid) ? a.feePaid : (a.feePaid ? Number(a.feePaid) : 50.0);
+      const f =
+        typeof a.feePaid === 'number' && !isNaN(a.feePaid)
+          ? a.feePaid
+          : a.feePaid
+            ? Number(a.feePaid)
+            : 50.0;
       return sum + f;
     }, 0);
 
@@ -1179,7 +1457,13 @@ export class AdminController {
             id: d.id,
             name: d.fileName || 'Uploaded Document.pdf',
             fileUrl: d.fileUrl,
-            date: d.uploadedAt ? new Date(d.uploadedAt).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' }) : 'Recently',
+            date: d.uploadedAt
+              ? new Date(d.uploadedAt).toLocaleDateString('en-GB', {
+                  day: 'numeric',
+                  month: 'short',
+                  year: 'numeric',
+                })
+              : 'Recently',
             status: 'Verified',
           });
         }
@@ -1193,8 +1477,15 @@ export class AdminController {
           id: aDoc.id,
           name: docName,
           fileUrl: aDoc.fileStorageKey || '',
-          date: aDoc.createdAt ? new Date(aDoc.createdAt).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' }) : 'Recently',
-          status: aDoc.verificationStatus === 'VERIFIED' ? 'Verified' : 'Verified',
+          date: aDoc.createdAt
+            ? new Date(aDoc.createdAt).toLocaleDateString('en-GB', {
+                day: 'numeric',
+                month: 'short',
+                year: 'numeric',
+              })
+            : 'Recently',
+          status:
+            aDoc.verificationStatus === 'VERIFIED' ? 'Verified' : 'Verified',
         });
       });
     }
@@ -1209,7 +1500,13 @@ export class AdminController {
               id: `${a.id}_doc_${idx}`,
               name: d.fileName || d.label || `${a.serviceTitle} Document.pdf`,
               fileUrl: url,
-              date: a.submittedAt ? new Date(a.submittedAt).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' }) : 'Recently',
+              date: a.submittedAt
+                ? new Date(a.submittedAt).toLocaleDateString('en-GB', {
+                    day: 'numeric',
+                    month: 'short',
+                    year: 'numeric',
+                  })
+                : 'Recently',
               status: 'Verified',
             });
           }
@@ -1219,20 +1516,41 @@ export class AdminController {
 
     // Recent Services / Applications
     const recentServices = apps.map((a: any) => {
-      const fee = typeof a.feePaid === 'number' && !isNaN(a.feePaid) ? a.feePaid : (a.feePaid ? Number(a.feePaid) : 50.0);
+      const fee =
+        typeof a.feePaid === 'number' && !isNaN(a.feePaid)
+          ? a.feePaid
+          : a.feePaid
+            ? Number(a.feePaid)
+            : 50.0;
       const s = a.status;
-      const statusLabel = s === 'APPROVED' || s === 'COMPLETED' ? 'Completed' : s === 'IN_PROGRESS' ? 'In Progress' : s === 'REJECTED' ? 'Rejected' : s === 'VERIFYING' ? 'Verifying' : 'Pending';
+      const statusLabel =
+        s === 'APPROVED' || s === 'COMPLETED'
+          ? 'Completed'
+          : s === 'IN_PROGRESS'
+            ? 'In Progress'
+            : s === 'REJECTED'
+              ? 'Rejected'
+              : s === 'VERIFYING'
+                ? 'Verifying'
+                : 'Pending';
 
       return {
         id: a.id,
         refNumber: a.refNumber || `APP-${a.id.substring(0, 5).toUpperCase()}`,
         name: a.serviceTitle || a.service?.title || 'Government Service',
-        serviceTitle: a.serviceTitle || a.service?.title || 'Government Service',
+        serviceTitle:
+          a.serviceTitle || a.service?.title || 'Government Service',
         amount: `₹${fee.toLocaleString('en-IN')}`,
         rawAmount: fee,
         status: statusLabel,
         rawStatus: a.status,
-        date: a.submittedAt ? new Date(a.submittedAt).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' }) : 'Recently',
+        date: a.submittedAt
+          ? new Date(a.submittedAt).toLocaleDateString('en-GB', {
+              day: 'numeric',
+              month: 'short',
+              year: 'numeric',
+            })
+          : 'Recently',
         submittedAt: a.submittedAt ? a.submittedAt.toISOString() : null,
       };
     });
@@ -1243,15 +1561,28 @@ export class AdminController {
 
     rawLogs.forEach((l: any) => {
       let color = '#2563EB';
-      if (l.action?.includes('REJECT') || l.action?.includes('BLOCK')) color = '#EF4444';
-      else if (l.action?.includes('APPROV') || l.action?.includes('COMPLET') || l.action?.includes('PAY')) color = '#10B981';
-      else if (l.action?.includes('PEND') || l.action?.includes('VERIF')) color = '#F59E0B';
+      if (l.action?.includes('REJECT') || l.action?.includes('BLOCK'))
+        color = '#EF4444';
+      else if (
+        l.action?.includes('APPROV') ||
+        l.action?.includes('COMPLET') ||
+        l.action?.includes('PAY')
+      )
+        color = '#10B981';
+      else if (l.action?.includes('PEND') || l.action?.includes('VERIF'))
+        color = '#F59E0B';
 
       recentActivity.push({
         id: l.id,
         title: l.details || l.action.replace(/_/g, ' '),
         action: l.action,
-        date: l.createdAt ? new Date(l.createdAt).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' }) : 'Recently',
+        date: l.createdAt
+          ? new Date(l.createdAt).toLocaleDateString('en-GB', {
+              day: 'numeric',
+              month: 'short',
+              year: 'numeric',
+            })
+          : 'Recently',
         color,
       });
     });
@@ -1262,7 +1593,13 @@ export class AdminController {
           id: `act_${a.id}`,
           title: `Application for ${a.serviceTitle} submitted`,
           action: 'APPLICATION_SUBMITTED',
-          date: a.submittedAt ? new Date(a.submittedAt).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' }) : 'Recently',
+          date: a.submittedAt
+            ? new Date(a.submittedAt).toLocaleDateString('en-GB', {
+                day: 'numeric',
+                month: 'short',
+                year: 'numeric',
+              })
+            : 'Recently',
           color: '#2563EB',
         });
       });
@@ -1283,15 +1620,23 @@ export class AdminController {
       district,
       state,
       pinCode,
-      joinedDate: u.createdAt ? new Date(u.createdAt).toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' }) : 'Joined recently',
-      status: u.status === 'BLOCKED' ? 'Blocked' : (u.status || 'Verified'),
+      joinedDate: u.createdAt
+        ? new Date(u.createdAt).toLocaleDateString('en-GB', {
+            day: 'numeric',
+            month: 'long',
+            year: 'numeric',
+          })
+        : 'Joined recently',
+      status: u.status === 'BLOCKED' ? 'Blocked' : u.status || 'Verified',
       avatarUrl: profile.avatarUrl || null,
       quickStats: {
         totalServicesUsed: totalServices,
         totalAmountSpent: `₹${totalAmountSpent.toLocaleString('en-IN')}`,
         rawAmountSpent: totalAmountSpent,
         lastActive: '2 hours ago',
-        registeredCentre: district ? `CSC ${district}, ${state || 'DL'}` : 'CSC Hazratganj, Lucknow',
+        registeredCentre: district
+          ? `CSC ${district}, ${state || 'DL'}`
+          : 'CSC Hazratganj, Lucknow',
         assignedOperator: 'Vikram Tiwari (VLE-0234)',
       },
       recentServices,
@@ -1426,9 +1771,11 @@ export class AdminController {
   @Get(['api/admin/profile', 'admin/profile'])
   @ApiOperation({ summary: 'Get Admin Profile' })
   async getAdminProfile() {
-    const settingsDoc = await this.prisma.systemSetting.findUnique({
-      where: { key: 'admin_operational_settings' },
-    }).catch(() => null);
+    const settingsDoc = await this.prisma.systemSetting
+      .findUnique({
+        where: { key: 'admin_operational_settings' },
+      })
+      .catch(() => null);
     const extra = (settingsDoc?.value as any)?.profileExtra || {};
 
     const adminUser = await this.prisma.user.findFirst({
@@ -1436,98 +1783,153 @@ export class AdminController {
       include: { profile: true },
     });
 
-    const phone = extra.phone !== undefined && extra.phone !== null && extra.phone !== ''
-      ? extra.phone
-      : (adminUser?.phone || adminUser?.profile?.phone || '+91 98450 19823');
+    const phone =
+      extra.phone !== undefined && extra.phone !== null && extra.phone !== ''
+        ? extra.phone
+        : adminUser?.phone || adminUser?.profile?.phone || '+91 98450 19823';
 
     return {
       id: adminUser?.id || 'admin-root-01',
-      name: extra.name || adminUser?.profile?.fullName || (adminUser?.email === 'admin@cybersave.com' ? 'Super Administrator' : 'Administrator'),
+      name:
+        extra.name ||
+        adminUser?.profile?.fullName ||
+        (adminUser?.email === 'admin@cybersave.com'
+          ? 'Super Administrator'
+          : 'Administrator'),
       email: extra.email || adminUser?.email || 'admin@cybersave.com',
-      role: adminUser?.role === 'ADMIN' ? 'Super Admin' : 'Sub-Admin / Operator',
+      role:
+        adminUser?.role === 'ADMIN' ? 'Super Admin' : 'Sub-Admin / Operator',
       phone,
-      avatarUrl: extra.avatarUrl !== undefined ? extra.avatarUrl : (adminUser?.profile?.avatarUrl || ''),
+      avatarUrl:
+        extra.avatarUrl !== undefined
+          ? extra.avatarUrl
+          : adminUser?.profile?.avatarUrl || '',
       kendraId: extra.kendraId || 'CSC-DEL-8841',
       designation: extra.designation || 'Principal Verification Officer (SDM)',
-      district: extra.district || adminUser?.profile?.district || 'Central Delhi, NCT of Delhi',
+      district:
+        extra.district ||
+        adminUser?.profile?.district ||
+        'Central Delhi, NCT of Delhi',
     };
   }
 
   @Put(['api/admin/profile', 'admin/profile'])
   @ApiOperation({ summary: 'Update Admin Profile' })
   async updateAdminProfile(@Body() body: any) {
-    const { name, email, phone, avatarUrl, role, kendraId, designation, district } = body;
-    
+    const {
+      name,
+      email,
+      phone,
+      avatarUrl,
+      role,
+      kendraId,
+      designation,
+      district,
+    } = body;
+
     // 1. Update only the primary Super Admin user in MongoDB, preserving individual operators
     const superAdmin = await this.prisma.user.findFirst({
       where: { email: 'admin@cybersave.com' },
       include: { profile: true },
     });
 
-    const normalizedPhone = phone !== undefined && phone !== null ? String(phone).trim() : undefined;
+    const normalizedPhone =
+      phone !== undefined && phone !== null ? String(phone).trim() : undefined;
 
     if (superAdmin) {
-      await this.prisma.user.update({
-        where: { id: superAdmin.id },
-        data: {
-          phone: normalizedPhone !== undefined ? normalizedPhone : superAdmin.phone,
-        },
-      }).catch(() => null);
+      await this.prisma.user
+        .update({
+          where: { id: superAdmin.id },
+          data: {
+            phone:
+              normalizedPhone !== undefined
+                ? normalizedPhone
+                : superAdmin.phone,
+          },
+        })
+        .catch(() => null);
 
       if (superAdmin.profile) {
-        await this.prisma.profile.update({
-          where: { id: superAdmin.profile.id },
-          data: {
-            fullName: name || superAdmin.profile.fullName,
-            phone: normalizedPhone !== undefined ? normalizedPhone : superAdmin.profile.phone,
-            district: district || superAdmin.profile.district,
-            avatarUrl: avatarUrl !== undefined ? avatarUrl : superAdmin.profile.avatarUrl,
-          },
-        }).catch(() => null);
+        await this.prisma.profile
+          .update({
+            where: { id: superAdmin.profile.id },
+            data: {
+              fullName: name || superAdmin.profile.fullName,
+              phone:
+                normalizedPhone !== undefined
+                  ? normalizedPhone
+                  : superAdmin.profile.phone,
+              district: district || superAdmin.profile.district,
+              avatarUrl:
+                avatarUrl !== undefined
+                  ? avatarUrl
+                  : superAdmin.profile.avatarUrl,
+            },
+          })
+          .catch(() => null);
       } else {
-        await this.prisma.profile.create({
-          data: {
-            userId: superAdmin.id,
-            fullName: name || 'Super Administrator',
-            phone: normalizedPhone || '+91 98450 19823',
-            district: district || 'Central Delhi, NCT of Delhi',
-            avatarUrl: avatarUrl || '',
-          },
-        }).catch(() => null);
+        await this.prisma.profile
+          .create({
+            data: {
+              userId: superAdmin.id,
+              fullName: name || 'Super Administrator',
+              phone: normalizedPhone || '+91 98450 19823',
+              district: district || 'Central Delhi, NCT of Delhi',
+              avatarUrl: avatarUrl || '',
+            },
+          })
+          .catch(() => null);
       }
     }
 
     // 2. Persist full profile configuration in SystemSetting so it survives logouts and server restarts
-    const existingDoc = await this.prisma.systemSetting.findUnique({
-      where: { key: 'admin_operational_settings' },
-    }).catch(() => null);
+    const existingDoc = await this.prisma.systemSetting
+      .findUnique({
+        where: { key: 'admin_operational_settings' },
+      })
+      .catch(() => null);
     const existingVal = (existingDoc?.value as any) || {};
 
     const updatedProfileExtra = {
       name: name || existingVal.profileExtra?.name || 'Super Administrator',
       email: email || existingVal.profileExtra?.email || 'admin@cybersave.com',
-      phone: normalizedPhone !== undefined ? normalizedPhone : (existingVal.profileExtra?.phone || '+91 98450 19823'),
-      avatarUrl: avatarUrl !== undefined ? avatarUrl : (existingVal.profileExtra?.avatarUrl || ''),
-      kendraId: kendraId || existingVal.profileExtra?.kendraId || 'CSC-DEL-8841',
-      designation: designation || existingVal.profileExtra?.designation || 'Principal Verification Officer (SDM)',
-      district: district || existingVal.profileExtra?.district || 'Central Delhi, NCT of Delhi',
+      phone:
+        normalizedPhone !== undefined
+          ? normalizedPhone
+          : existingVal.profileExtra?.phone || '+91 98450 19823',
+      avatarUrl:
+        avatarUrl !== undefined
+          ? avatarUrl
+          : existingVal.profileExtra?.avatarUrl || '',
+      kendraId:
+        kendraId || existingVal.profileExtra?.kendraId || 'CSC-DEL-8841',
+      designation:
+        designation ||
+        existingVal.profileExtra?.designation ||
+        'Principal Verification Officer (SDM)',
+      district:
+        district ||
+        existingVal.profileExtra?.district ||
+        'Central Delhi, NCT of Delhi',
     };
 
-    await this.prisma.systemSetting.upsert({
-      where: { key: 'admin_operational_settings' },
-      update: {
-        value: {
-          ...existingVal,
-          profileExtra: updatedProfileExtra,
+    await this.prisma.systemSetting
+      .upsert({
+        where: { key: 'admin_operational_settings' },
+        update: {
+          value: {
+            ...existingVal,
+            profileExtra: updatedProfileExtra,
+          },
         },
-      },
-      create: {
-        key: 'admin_operational_settings',
-        value: {
-          profileExtra: updatedProfileExtra,
+        create: {
+          key: 'admin_operational_settings',
+          value: {
+            profileExtra: updatedProfileExtra,
+          },
         },
-      },
-    }).catch(() => null);
+      })
+      .catch(() => null);
 
     // 3. Broadcast real-time update event
     AdminGateway.broadcast('admin_profile_updated', updatedProfileExtra);
@@ -1549,9 +1951,11 @@ export class AdminController {
   @Get(['api/admin/settings', 'admin/settings'])
   @ApiOperation({ summary: 'Get Operational Console & Governance Settings' })
   async getAdminSettings() {
-    const doc = await this.prisma.systemSetting.findUnique({
-      where: { key: 'admin_operational_settings' },
-    }).catch(() => null);
+    const doc = await this.prisma.systemSetting
+      .findUnique({
+        where: { key: 'admin_operational_settings' },
+      })
+      .catch(() => null);
 
     const val = (doc?.value as any) || {};
 
@@ -1577,9 +1981,11 @@ export class AdminController {
   @Put(['api/admin/settings', 'admin/settings'])
   @ApiOperation({ summary: 'Update Operational Console & Governance Settings' })
   async updateAdminSettings(@Body() body: any) {
-    const existingDoc = await this.prisma.systemSetting.findUnique({
-      where: { key: 'admin_operational_settings' },
-    }).catch(() => null);
+    const existingDoc = await this.prisma.systemSetting
+      .findUnique({
+        where: { key: 'admin_operational_settings' },
+      })
+      .catch(() => null);
     const existingVal = (existingDoc?.value as any) || {};
 
     const updatedSettings = {
@@ -1594,7 +2000,9 @@ export class AdminController {
       create: { key: 'admin_operational_settings', value: updatedSettings },
     });
 
-    const adminUser = await this.prisma.user.findFirst({ where: { role: 'ADMIN' } });
+    const adminUser = await this.prisma.user.findFirst({
+      where: { role: 'ADMIN' },
+    });
     await AdminGateway.logActivity(this.prisma, {
       userId: adminUser?.id,
       action: 'SYSTEM_SETTINGS_UPDATED',
@@ -1608,22 +2016,33 @@ export class AdminController {
     };
   }
 
-  @Post(['api/admin/change-password', 'admin/change-password', 'api/auth/change-password'])
+  @Post([
+    'api/admin/change-password',
+    'admin/change-password',
+    'api/auth/change-password',
+  ])
   @ApiOperation({ summary: 'Admin Password Change with verification' })
   async changeAdminPassword(@Body() body: any) {
-    const { currentPassword, newPassword, confirmPassword, email, userId } = body;
+    const { currentPassword, newPassword, confirmPassword, email, userId } =
+      body;
     if (!newPassword || newPassword.length < 6) {
-      throw new BadRequestException('New password must be at least 6 characters long');
+      throw new BadRequestException(
+        'New password must be at least 6 characters long',
+      );
     }
     if (confirmPassword && newPassword !== confirmPassword) {
-      throw new BadRequestException('New password and confirmation do not match');
+      throw new BadRequestException(
+        'New password and confirmation do not match',
+      );
     }
 
     let adminUser: any = null;
     if (userId) {
       adminUser = await this.prisma.user.findUnique({ where: { id: userId } });
     } else if (email) {
-      adminUser = await this.prisma.user.findFirst({ where: { email: email.trim().toLowerCase() } });
+      adminUser = await this.prisma.user.findFirst({
+        where: { email: email.trim().toLowerCase() },
+      });
     }
     if (!adminUser) {
       adminUser = await this.prisma.user.findFirst({
@@ -1642,9 +2061,14 @@ export class AdminController {
 
     // If currentPassword is provided and admin has an existing passwordHash, verify it
     if (currentPassword && adminUser.passwordHash) {
-      const isMatch = await bcrypt.compare(currentPassword, adminUser.passwordHash);
+      const isMatch = await bcrypt.compare(
+        currentPassword,
+        adminUser.passwordHash,
+      );
       if (!isMatch && currentPassword !== 'admin123') {
-        throw new BadRequestException('Current password verification failed. Please enter your correct current password.');
+        throw new BadRequestException(
+          'Current password verification failed. Please enter your correct current password.',
+        );
       }
     }
 
@@ -1664,7 +2088,8 @@ export class AdminController {
 
     return {
       success: true,
-      message: 'Administrator password has been successfully updated and secured.',
+      message:
+        'Administrator password has been successfully updated and secured.',
     };
   }
 
@@ -1690,14 +2115,22 @@ export class AdminController {
           phone: '+91 98765 43210',
           role: 'ADMIN',
           passwordHash,
-          permissions: ['DASHBOARD', 'APPLICATIONS', 'OPERATORS', 'SETTINGS', 'USERS', 'REPORTS'],
+          permissions: [
+            'DASHBOARD',
+            'APPLICATIONS',
+            'OPERATORS',
+            'SETTINGS',
+            'USERS',
+            'REPORTS',
+          ],
           status: 'ACTIVE',
           profile: {
             create: {
               fullName: 'Rajesh Kumar',
               phone: '+91 98765 43210',
               email: 'rajesh.kumar@cybersave.gov.in',
-              address: '45, Sector 4, HSR Layout, Bengaluru, Karnataka - 560102',
+              address:
+                '45, Sector 4, HSR Layout, Bengaluru, Karnataka - 560102',
               district: 'Bengaluru',
               state: 'Karnataka',
               pinCode: '560102',
@@ -1711,9 +2144,11 @@ export class AdminController {
       ops = [createdOp];
     }
 
-    const settingsDoc = await this.prisma.systemSetting.findUnique({
-      where: { key: 'admin_operational_settings' },
-    }).catch(() => null);
+    const settingsDoc = await this.prisma.systemSetting
+      .findUnique({
+        where: { key: 'admin_operational_settings' },
+      })
+      .catch(() => null);
     const extra = (settingsDoc?.value as any)?.profileExtra || {};
 
     const totalOps = ops.length;
@@ -1727,16 +2162,35 @@ export class AdminController {
       return {
         id: o.id,
         employeeId: `OPS-${new Date(o.createdAt).getFullYear()}-${o.id.slice(-4).toUpperCase()}`,
-        name: isSuperAdmin && extra.name ? extra.name : (profile?.fullName || (o.email ? o.email.split('@')[0] : `Operator ${idx + 1}`)),
-        role: isSuperAdmin ? (extra.designation || 'Super Administrator') : (profile?.dob ? 'Senior Field Operator' : 'Field Operator'),
-        department: isSuperAdmin && extra.district ? extra.district : (profile?.district ? `${profile.district} Seva Kendra` : 'Operations'),
+        name:
+          isSuperAdmin && extra.name
+            ? extra.name
+            : profile?.fullName ||
+              (o.email ? o.email.split('@')[0] : `Operator ${idx + 1}`),
+        role: isSuperAdmin
+          ? extra.designation || 'Super Administrator'
+          : profile?.dob
+            ? 'Senior Field Operator'
+            : 'Field Operator',
+        department:
+          isSuperAdmin && extra.district
+            ? extra.district
+            : profile?.district
+              ? `${profile.district} Seva Kendra`
+              : 'Operations',
         joinedDate: new Date(o.createdAt).toLocaleDateString('en-GB'),
         lastActive: 'Active recently',
         status: o.status === 'SUSPENDED' ? 'Suspended' : 'Active',
         permissions: Array.isArray(o.permissions) ? o.permissions : [],
         email: o.email || '',
-        phone: isSuperAdmin && extra.phone ? extra.phone : (o.phone || profile?.phone || '+91 98450 19823'),
-        avatarUrl: isSuperAdmin && extra.avatarUrl !== undefined ? extra.avatarUrl : (profile?.avatarUrl || ''),
+        phone:
+          isSuperAdmin && extra.phone
+            ? extra.phone
+            : o.phone || profile?.phone || '+91 98450 19823',
+        avatarUrl:
+          isSuperAdmin && extra.avatarUrl !== undefined
+            ? extra.avatarUrl
+            : profile?.avatarUrl || '',
       };
     });
 
@@ -1754,9 +2208,13 @@ export class AdminController {
       throw new BadRequestException('Operator name and email are required');
     }
     const cleanEmail = email.trim().toLowerCase();
-    const existing = await this.prisma.user.findFirst({ where: { email: cleanEmail } });
+    const existing = await this.prisma.user.findFirst({
+      where: { email: cleanEmail },
+    });
     if (existing) {
-      throw new BadRequestException('An account with this email already exists');
+      throw new BadRequestException(
+        'An account with this email already exists',
+      );
     }
 
     const salt = await bcrypt.genSalt(10);
@@ -1769,7 +2227,14 @@ export class AdminController {
         keycloakId: `op-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
         role: 'ADMIN',
         passwordHash,
-        permissions: Array.from(new Set([...(Array.isArray(permissions) && permissions.length > 0 ? permissions : ['DASHBOARD']), 'SETTINGS'])),
+        permissions: Array.from(
+          new Set([
+            ...(Array.isArray(permissions) && permissions.length > 0
+              ? permissions
+              : ['DASHBOARD']),
+            'SETTINGS',
+          ]),
+        ),
         status: 'ACTIVE',
         profile: {
           create: {
@@ -1803,16 +2268,29 @@ export class AdminController {
     };
   }
 
-  @Get(['api/v1/operators/:id', 'api/admin/operators/:id', 'admin/operators/:id'])
-  @ApiOperation({ summary: 'Get Operator Detail with 100% Real Profile, Metrics & Activity Logs' })
+  @Get([
+    'api/v1/operators/:id',
+    'api/admin/operators/:id',
+    'admin/operators/:id',
+  ])
+  @ApiOperation({
+    summary:
+      'Get Operator Detail with 100% Real Profile, Metrics & Activity Logs',
+  })
   async getOperatorDetail(@Param('id') id: string) {
-    const isMongoId = (s?: string) => typeof s === 'string' && /^[0-9a-fA-F]{24}$/.test(s);
+    const isMongoId = (s?: string) =>
+      typeof s === 'string' && /^[0-9a-fA-F]{24}$/.test(s);
     let o: any = null;
 
     if (isMongoId(id)) {
       o = await this.prisma.user.findUnique({
         where: { id },
-        include: { profile: true, applications: true, documents: true, auditLogs: { orderBy: { createdAt: 'desc' }, take: 10 } },
+        include: {
+          profile: true,
+          applications: true,
+          documents: true,
+          auditLogs: { orderBy: { createdAt: 'desc' }, take: 10 },
+        },
       });
     }
 
@@ -1820,7 +2298,12 @@ export class AdminController {
       const shortId = id.slice(-4).toUpperCase();
       const allOps = await this.prisma.user.findMany({
         where: { role: 'ADMIN' },
-        include: { profile: true, applications: true, documents: true, auditLogs: { orderBy: { createdAt: 'desc' }, take: 10 } },
+        include: {
+          profile: true,
+          applications: true,
+          documents: true,
+          auditLogs: { orderBy: { createdAt: 'desc' }, take: 10 },
+        },
       });
       o = allOps.find((x) => x.id.slice(-4).toUpperCase() === shortId) || null;
     }
@@ -1830,7 +2313,12 @@ export class AdminController {
         where: {
           OR: [{ id }, { email: id }, { phone: id }, { role: 'ADMIN' }],
         },
-        include: { profile: true, applications: true, documents: true, auditLogs: { orderBy: { createdAt: 'desc' }, take: 10 } },
+        include: {
+          profile: true,
+          applications: true,
+          documents: true,
+          auditLogs: { orderBy: { createdAt: 'desc' }, take: 10 },
+        },
       });
     }
 
@@ -1841,24 +2329,59 @@ export class AdminController {
     return this.formatOperatorDetail(o);
   }
 
-  @Put(['api/v1/operators/:id', 'api/admin/operators/:id', 'admin/operators/:id'])
-  @Patch(['api/v1/operators/:id', 'api/admin/operators/:id', 'admin/operators/:id'])
+  @Put([
+    'api/v1/operators/:id',
+    'api/admin/operators/:id',
+    'admin/operators/:id',
+  ])
+  @Patch([
+    'api/v1/operators/:id',
+    'api/admin/operators/:id',
+    'admin/operators/:id',
+  ])
   @ApiOperation({ summary: 'Update Operator Profile Information' })
   async updateOperatorDetail(@Param('id') id: string, @Body() body: any) {
-    const isMongoId = (s?: string) => typeof s === 'string' && /^[0-9a-fA-F]{24}$/.test(s);
-    let o = isMongoId(id) ? await this.prisma.user.findUnique({ where: { id }, include: { profile: true } }) : null;
+    const isMongoId = (s?: string) =>
+      typeof s === 'string' && /^[0-9a-fA-F]{24}$/.test(s);
+    let o = isMongoId(id)
+      ? await this.prisma.user.findUnique({
+          where: { id },
+          include: { profile: true },
+        })
+      : null;
     if (!o) {
-      o = await this.prisma.user.findFirst({ where: { OR: [{ email: id }, { phone: id }] }, include: { profile: true } });
+      o = await this.prisma.user.findFirst({
+        where: { OR: [{ email: id }, { phone: id }] },
+        include: { profile: true },
+      });
     }
     if (!o) {
       throw new NotFoundException(`Operator ${id} not found`);
     }
 
-    const { fullName, email, phone, address, district, state, pinCode, dob, gender, permissions, status } = body;
+    const {
+      fullName,
+      email,
+      phone,
+      address,
+      district,
+      state,
+      pinCode,
+      dob,
+      gender,
+      permissions,
+      status,
+    } = body;
 
-    const updatedPermissions = permissions !== undefined
-      ? Array.from(new Set([...(Array.isArray(permissions) ? permissions : []), 'SETTINGS']))
-      : o.permissions;
+    const updatedPermissions =
+      permissions !== undefined
+        ? Array.from(
+            new Set([
+              ...(Array.isArray(permissions) ? permissions : []),
+              'SETTINGS',
+            ]),
+          )
+        : o.permissions;
 
     await this.prisma.user.update({
       where: { id: o.id },
@@ -1926,7 +2449,12 @@ export class AdminController {
 
     const updated = await this.prisma.user.findUnique({
       where: { id: o.id },
-      include: { profile: true, applications: true, documents: true, auditLogs: { orderBy: { createdAt: 'desc' }, take: 10 } },
+      include: {
+        profile: true,
+        applications: true,
+        documents: true,
+        auditLogs: { orderBy: { createdAt: 'desc' }, take: 10 },
+      },
     });
 
     return {
@@ -1938,10 +2466,16 @@ export class AdminController {
 
   @Post(['api/v1/operators/:id/status', 'api/admin/operators/:id/status'])
   @ApiOperation({ summary: 'Update Operator Status (ACTIVE / SUSPENDED)' })
-  async updateOperatorStatus(@Param('id') id: string, @Body() body: { status: string }) {
-    const isMongoId = (s?: string) => typeof s === 'string' && /^[0-9a-fA-F]{24}$/.test(s);
+  async updateOperatorStatus(
+    @Param('id') id: string,
+    @Body() body: { status: string },
+  ) {
+    const isMongoId = (s?: string) =>
+      typeof s === 'string' && /^[0-9a-fA-F]{24}$/.test(s);
     const targetStatus = (body.status || 'ACTIVE').toUpperCase();
-    const user = isMongoId(id) ? await this.prisma.user.findUnique({ where: { id } }) : await this.prisma.user.findFirst({ where: { email: id } });
+    const user = isMongoId(id)
+      ? await this.prisma.user.findUnique({ where: { id } })
+      : await this.prisma.user.findFirst({ where: { email: id } });
     if (!user) throw new NotFoundException(`Operator ${id} not found`);
 
     await this.prisma.user.update({
@@ -1951,13 +2485,19 @@ export class AdminController {
 
     await AdminGateway.logActivity(this.prisma, {
       userId: user.id,
-      action: targetStatus === 'SUSPENDED' ? 'OPERATOR_SUSPENDED' : 'OPERATOR_ACTIVATED',
+      action:
+        targetStatus === 'SUSPENDED'
+          ? 'OPERATOR_SUSPENDED'
+          : 'OPERATOR_ACTIVATED',
       details: `Operator account "${user.email}" marked as ${targetStatus}`,
     });
 
     // If suspended, forcefully disconnect / log out the operator
     if (targetStatus === 'SUSPENDED') {
-      AdminGateway.broadcast('force_logout', { userId: user.id, message: 'Your account has been suspended by an Administrator.' });
+      AdminGateway.broadcast('force_logout', {
+        userId: user.id,
+        message: 'Your account has been suspended by an Administrator.',
+      });
       AdminGateway.broadcast('operator_suspended', { userId: user.id });
     }
     AdminGateway.broadcast('operators_updated');
@@ -1965,11 +2505,20 @@ export class AdminController {
     return { success: true, status: targetStatus };
   }
 
-  @Post(['api/v1/operators/:id/reset-password', 'api/admin/operators/:id/reset-password'])
+  @Post([
+    'api/v1/operators/:id/reset-password',
+    'api/admin/operators/:id/reset-password',
+  ])
   @ApiOperation({ summary: 'Reset Operator Password' })
-  async resetOperatorPassword(@Param('id') id: string, @Body() body: { password?: string }) {
-    const isMongoId = (s?: string) => typeof s === 'string' && /^[0-9a-fA-F]{24}$/.test(s);
-    const user = isMongoId(id) ? await this.prisma.user.findUnique({ where: { id } }) : await this.prisma.user.findFirst({ where: { email: id } });
+  async resetOperatorPassword(
+    @Param('id') id: string,
+    @Body() body: { password?: string },
+  ) {
+    const isMongoId = (s?: string) =>
+      typeof s === 'string' && /^[0-9a-fA-F]{24}$/.test(s);
+    const user = isMongoId(id)
+      ? await this.prisma.user.findUnique({ where: { id } })
+      : await this.prisma.user.findFirst({ where: { email: id } });
     if (!user) throw new NotFoundException(`Operator ${id} not found`);
 
     const newPassword = body.password || 'Cybersave@2026';
@@ -1981,134 +2530,233 @@ export class AdminController {
       data: { passwordHash },
     });
 
-    await this.prisma.auditLog.create({
-      data: {
-        userId: user.id,
-        action: 'PASSWORD_RESET',
-        details: 'Operator credentials reset by Administrator',
-      },
-    }).catch(() => null);
+    await this.prisma.auditLog
+      .create({
+        data: {
+          userId: user.id,
+          action: 'PASSWORD_RESET',
+          details: 'Operator credentials reset by Administrator',
+        },
+      })
+      .catch(() => null);
 
     return { success: true, message: 'Password has been reset successfully' };
   }
 
-  @Post(['api/v1/operators/:id/request-document-update', 'api/admin/operators/:id/request-document-update'])
+  @Post([
+    'api/v1/operators/:id/request-document-update',
+    'api/admin/operators/:id/request-document-update',
+  ])
   @ApiOperation({ summary: 'Send Document Update Request to Operator' })
   async requestDocumentUpdate(@Param('id') id: string, @Body() body: any) {
-    const isMongoId = (s?: string) => typeof s === 'string' && /^[0-9a-fA-F]{24}$/.test(s);
-    const user = isMongoId(id) ? await this.prisma.user.findUnique({ where: { id } }) : await this.prisma.user.findFirst({ where: { email: id } });
+    const isMongoId = (s?: string) =>
+      typeof s === 'string' && /^[0-9a-fA-F]{24}$/.test(s);
+    const user = isMongoId(id)
+      ? await this.prisma.user.findUnique({ where: { id } })
+      : await this.prisma.user.findFirst({ where: { email: id } });
     if (!user) throw new NotFoundException(`Operator ${id} not found`);
 
-    await this.prisma.notification.create({
-      data: {
-        userId: user.id,
-        title: 'Document Update Required',
-        body: 'Administrator has requested an immediate update/re-upload of your identity and credential compliance documents.',
-        type: 'SECURITY',
-        status: 'PENDING',
-      },
-    }).catch(() => null);
+    await this.prisma.notification
+      .create({
+        data: {
+          userId: user.id,
+          title: 'Document Update Required',
+          body: 'Administrator has requested an immediate update/re-upload of your identity and credential compliance documents.',
+          type: 'SECURITY',
+          status: 'PENDING',
+        },
+      })
+      .catch(() => null);
 
-    await this.prisma.auditLog.create({
-      data: {
-        userId: user.id,
-        action: 'DOCUMENT_UPDATE_REQUESTED',
-        details: 'Administrator dispatched document update compliance request to operator',
-      },
-    }).catch(() => null);
+    await this.prisma.auditLog
+      .create({
+        data: {
+          userId: user.id,
+          action: 'DOCUMENT_UPDATE_REQUESTED',
+          details:
+            'Administrator dispatched document update compliance request to operator',
+        },
+      })
+      .catch(() => null);
 
-    AdminGateway.broadcast('operator_document_update_requested', { userId: user.id });
+    AdminGateway.broadcast('operator_document_update_requested', {
+      userId: user.id,
+    });
 
-    return { success: true, message: 'Document update request dispatched to operator successfully' };
+    return {
+      success: true,
+      message: 'Document update request dispatched to operator successfully',
+    };
   }
 
   private async formatOperatorDetail(o: any) {
     const profile = o.profile || {};
 
     // 1. Calculate REAL tasks completed by this operator
-    const tasksCompleted = await this.prisma.application.count({
-      where: {
-        OR: [
-          { officialOfficer: profile.fullName || o.email },
-          { userId: o.id },
-        ],
-      },
-    }).catch(() => 0);
+    const tasksCompleted = await this.prisma.application
+      .count({
+        where: {
+          OR: [
+            { officialOfficer: profile.fullName || o.email },
+            { userId: o.id },
+          ],
+        },
+      })
+      .catch(() => 0);
 
     // 2. Calculate REAL documents uploaded/processed by this operator
-    const documentsProcessed = await this.prisma.documentUpload.count({
-      where: { userId: o.id },
-    }).catch(() => 0);
+    const documentsProcessed = await this.prisma.documentUpload
+      .count({
+        where: { userId: o.id },
+      })
+      .catch(() => 0);
 
     // 3. Real audit logs for this operator only
-    const logs = await this.prisma.auditLog.findMany({
-      where: { userId: o.id },
-      orderBy: { createdAt: 'desc' },
-      take: 20,
-    }).catch(() => []);
+    const logs = await this.prisma.auditLog
+      .findMany({
+        where: { userId: o.id },
+        orderBy: { createdAt: 'desc' },
+        take: 20,
+      })
+      .catch(() => []);
 
     const activityLogs = logs.map((log: any) => ({
       id: log.id,
       dateTime: new Date(log.createdAt).toLocaleString('en-IN', {
-        day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit', hour12: true,
+        day: '2-digit',
+        month: '2-digit',
+        year: 'numeric',
+        hour: '2-digit',
+        minute: '2-digit',
+        hour12: true,
       }),
       action: log.action,
-      status: log.details === 'WARNING' ? 'WARNING' : log.details === 'ERROR' ? 'ERROR' : 'SUCCESS',
+      status:
+        log.details === 'WARNING'
+          ? 'WARNING'
+          : log.details === 'ERROR'
+            ? 'ERROR'
+            : 'SUCCESS',
       ipAddress: log.ipAddress || '127.0.0.1',
     }));
 
     // 4. Real documents uploaded by this operator
-    const rawDocs = await this.prisma.documentUpload.findMany({
-      where: { userId: o.id },
-      orderBy: { uploadedAt: 'desc' },
-    }).catch(() => []);
+    const rawDocs = await this.prisma.documentUpload
+      .findMany({
+        where: { userId: o.id },
+        orderBy: { uploadedAt: 'desc' },
+      })
+      .catch(() => []);
 
     const formattedDocs = rawDocs.map((d: any, idx: number) => ({
       id: d.id,
       fileName: d.fileName || `Document_${idx + 1}`,
       refNum: `DOC-${d.id.slice(-4).toUpperCase()}`,
-      type: (d.fileType || 'PDF').toUpperCase().includes('IMAGE') || (d.fileType || '').includes('PNG') || (d.fileType || '').includes('JPG') ? 'IMAGE' : 'PDF',
+      type:
+        (d.fileType || 'PDF').toUpperCase().includes('IMAGE') ||
+        (d.fileType || '').includes('PNG') ||
+        (d.fileType || '').includes('JPG')
+          ? 'IMAGE'
+          : 'PDF',
       status: 'Verified',
       fileSize: d.fileSize ? `${(d.fileSize / 1024 / 1024).toFixed(1)}` : '1.0',
-      uploadedAt: new Date(d.uploadedAt || o.createdAt).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' }),
+      uploadedAt: new Date(d.uploadedAt || o.createdAt).toLocaleDateString(
+        'en-GB',
+        { day: '2-digit', month: 'short', year: 'numeric' },
+      ),
       expires: 'N/A',
       fileUrl: d.fileUrl || '',
     }));
 
-    const settingsDoc = await this.prisma.systemSetting.findUnique({
-      where: { key: 'admin_operational_settings' },
-    }).catch(() => null);
+    const settingsDoc = await this.prisma.systemSetting
+      .findUnique({
+        where: { key: 'admin_operational_settings' },
+      })
+      .catch(() => null);
     const extra = (settingsDoc?.value as any)?.profileExtra || {};
 
     const isSuperAdmin = o.email === 'admin@cybersave.com';
 
     // 5. Supervisor
-    const supervisorName = extra.name || (o.email === 'admin@cybersave.com' ? 'Ministry Directorate' : 'Super Administrator');
+    const supervisorName =
+      extra.name ||
+      (o.email === 'admin@cybersave.com'
+        ? 'Ministry Directorate'
+        : 'Super Administrator');
 
     return {
       id: o.id,
       employeeId: `OPS-${new Date(o.createdAt).getFullYear()}-${o.id.slice(-4).toUpperCase()}`,
-      name: isSuperAdmin && extra.name ? extra.name : (profile.fullName || (o.email ? o.email.split('@')[0] : 'Operator')),
-      status: o.status === 'SUSPENDED' ? 'Suspended' : (o.status === 'PENDING' ? 'Pending' : 'Active'),
-      role: isSuperAdmin ? (extra.designation || 'Super Administrator') : (profile.dob ? 'Senior Field Operator' : 'Field Operator'),
-      department: isSuperAdmin && extra.district ? extra.district : (profile.district ? `${profile.district} Seva Kendra` : 'Operations'),
+      name:
+        isSuperAdmin && extra.name
+          ? extra.name
+          : profile.fullName || (o.email ? o.email.split('@')[0] : 'Operator'),
+      status:
+        o.status === 'SUSPENDED'
+          ? 'Suspended'
+          : o.status === 'PENDING'
+            ? 'Pending'
+            : 'Active',
+      role: isSuperAdmin
+        ? extra.designation || 'Super Administrator'
+        : profile.dob
+          ? 'Senior Field Operator'
+          : 'Field Operator',
+      department:
+        isSuperAdmin && extra.district
+          ? extra.district
+          : profile.district
+            ? `${profile.district} Seva Kendra`
+            : 'Operations',
       joinedDate: new Date(o.createdAt).toLocaleDateString('en-GB'),
       email: o.email || '',
-      phone: isSuperAdmin && extra.phone ? extra.phone : (o.phone || profile.phone || '+91 98450 19823'),
+      phone:
+        isSuperAdmin && extra.phone
+          ? extra.phone
+          : o.phone || profile.phone || '+91 98450 19823',
       dob: profile.dob || '',
-      address: profile.address || (isSuperAdmin && extra.district ? `${extra.district}, India` : (profile.district ? `${profile.district}, ${profile.state || ''} - ${profile.pinCode || ''}` : '')),
-      district: isSuperAdmin && extra.district ? extra.district : (profile.district || 'Central Delhi, NCT of Delhi'),
+      address:
+        profile.address ||
+        (isSuperAdmin && extra.district
+          ? `${extra.district}, India`
+          : profile.district
+            ? `${profile.district}, ${profile.state || ''} - ${profile.pinCode || ''}`
+            : ''),
+      district:
+        isSuperAdmin && extra.district
+          ? extra.district
+          : profile.district || 'Central Delhi, NCT of Delhi',
       state: profile.state || (isSuperAdmin ? 'NCT of Delhi' : ''),
       pinCode: profile.pinCode || (isSuperAdmin ? '110001' : ''),
-      kendraId: isSuperAdmin && extra.kendraId ? extra.kendraId : (profile.state || 'CSC-DEL-8841'),
-      designation: isSuperAdmin && extra.designation ? extra.designation : 'Principal Verification Officer (SDM)',
-      avatarUrl: isSuperAdmin && extra.avatarUrl !== undefined ? extra.avatarUrl : (profile.avatarUrl || ''),
+      kendraId:
+        isSuperAdmin && extra.kendraId
+          ? extra.kendraId
+          : profile.state || 'CSC-DEL-8841',
+      designation:
+        isSuperAdmin && extra.designation
+          ? extra.designation
+          : 'Principal Verification Officer (SDM)',
+      avatarUrl:
+        isSuperAdmin && extra.avatarUrl !== undefined
+          ? extra.avatarUrl
+          : profile.avatarUrl || '',
       twoFactorEnabled: false,
-      lastLogin: o.updatedAt ? new Date(o.updatedAt).toLocaleString('en-IN', {
-        day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit', hour12: true,
-      }) : 'Never logged in',
-      activeSessions: o.status === 'ACTIVE' ? '1 open session (Admin Portal / Chrome)' : '0 active sessions',
-      ipWhitelisting: o.status === 'ACTIVE' ? 'Enabled (Corporate Subnet)' : 'Disabled',
+      lastLogin: o.updatedAt
+        ? new Date(o.updatedAt).toLocaleString('en-IN', {
+            day: '2-digit',
+            month: '2-digit',
+            year: 'numeric',
+            hour: '2-digit',
+            minute: '2-digit',
+            hour12: true,
+          })
+        : 'Never logged in',
+      activeSessions:
+        o.status === 'ACTIVE'
+          ? '1 open session (Admin Portal / Chrome)'
+          : '0 active sessions',
+      ipWhitelisting:
+        o.status === 'ACTIVE' ? 'Enabled (Corporate Subnet)' : 'Disabled',
       permissions: Array.isArray(o.permissions) ? o.permissions : [],
       metrics: {
         tasksCompleted,
@@ -2139,53 +2787,72 @@ export class AdminController {
       include: { user: { include: { profile: true } } },
     });
 
-    const loginActivities = await this.prisma.auditLog.count({
-      where: {
-        OR: [
-          { action: { contains: 'LOGIN' } },
-          { action: { contains: 'AUTH' } },
-          { action: { contains: 'PASSWORD' } },
-        ],
-      },
-    }).catch(() => 0);
+    const loginActivities = await this.prisma.auditLog
+      .count({
+        where: {
+          OR: [
+            { action: { contains: 'LOGIN' } },
+            { action: { contains: 'AUTH' } },
+            { action: { contains: 'PASSWORD' } },
+          ],
+        },
+      })
+      .catch(() => 0);
 
-    const documentActions = await this.prisma.auditLog.count({
-      where: {
-        OR: [
-          { action: { contains: 'APPLICATION' } },
-          { action: { contains: 'DOCUMENT' } },
-          { action: { contains: 'APPROV' } },
-          { action: { contains: 'REJECT' } },
-          { action: { contains: 'SUBMIT' } },
-        ],
-      },
-    }).catch(() => 0);
+    const documentActions = await this.prisma.auditLog
+      .count({
+        where: {
+          OR: [
+            { action: { contains: 'APPLICATION' } },
+            { action: { contains: 'DOCUMENT' } },
+            { action: { contains: 'APPROV' } },
+            { action: { contains: 'REJECT' } },
+            { action: { contains: 'SUBMIT' } },
+          ],
+        },
+      })
+      .catch(() => 0);
 
-    const systemChanges = await this.prisma.auditLog.count({
-      where: {
-        OR: [
-          { action: { contains: 'OPERATOR' } },
-          { action: { contains: 'SERVICE' } },
-          { action: { contains: 'SETTING' } },
-          { action: { contains: 'ACCESS' } },
-          { action: { contains: 'SECURITY' } },
-        ],
-      },
-    }).catch(() => 0);
+    const systemChanges = await this.prisma.auditLog
+      .count({
+        where: {
+          OR: [
+            { action: { contains: 'OPERATOR' } },
+            { action: { contains: 'SERVICE' } },
+            { action: { contains: 'SETTING' } },
+            { action: { contains: 'ACCESS' } },
+            { action: { contains: 'SECURITY' } },
+          ],
+        },
+      })
+      .catch(() => 0);
 
     const formatted = logs.map((l) => {
       let userName = l.user?.profile?.fullName || l.user?.email?.split('@')[0];
-      if (!userName || userName === 'Administrator' || userName === 'Super Administrator') {
-        const match = l.details?.match(/by (?:sub-admin \/ operator|sub-admin|operator|verification officer|officer) ([^.]+)/i);
+      if (
+        !userName ||
+        userName === 'Administrator' ||
+        userName === 'Super Administrator'
+      ) {
+        const match = l.details?.match(
+          /by (?:sub-admin \/ operator|sub-admin|operator|verification officer|officer) ([^.]+)/i,
+        );
         if (match && match[1]) {
           userName = match[1].trim();
         }
       }
-      if (!userName) userName = l.user?.email ? l.user.email.split('@')[0] : 'Sub-Admin Operator';
+      if (!userName)
+        userName = l.user?.email
+          ? l.user.email.split('@')[0]
+          : 'Sub-Admin Operator';
 
       const act = (l.action || '').toUpperCase();
       let status = 'Success';
-      if (act.includes('REJECT') || act.includes('FAIL') || act.includes('SUSPEND')) {
+      if (
+        act.includes('REJECT') ||
+        act.includes('FAIL') ||
+        act.includes('SUSPEND')
+      ) {
         status = 'Failed';
       } else if (act.includes('WARN') || act.includes('PENDING')) {
         status = 'Warning';
@@ -2194,8 +2861,13 @@ export class AdminController {
       return {
         id: l.id,
         timestamp: l.createdAt.toLocaleString('en-IN', {
-          day: '2-digit', month: 'short', year: 'numeric',
-          hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: true
+          day: '2-digit',
+          month: 'short',
+          year: 'numeric',
+          hour: '2-digit',
+          minute: '2-digit',
+          second: '2-digit',
+          hour12: true,
         }),
         isoTimestamp: l.createdAt.toISOString(),
         user: userName,

@@ -1,4 +1,11 @@
-import { Controller, Post, Body, HttpCode, HttpStatus, BadRequestException } from '@nestjs/common';
+import {
+  Controller,
+  Post,
+  Body,
+  HttpCode,
+  HttpStatus,
+  BadRequestException,
+} from '@nestjs/common';
 import { PaymentService } from './payment.service';
 
 @Controller(['api/v1/payment', 'v1/payment'])
@@ -10,9 +17,12 @@ export class PaymentController {
     if (!body.amount) {
       throw new BadRequestException('Amount is required');
     }
-    
-    const order = await this.paymentService.createOrder(body.amount, body.receipt || `rcpt_${Date.now()}`);
-    
+
+    const order = await this.paymentService.createOrder(
+      body.amount,
+      body.receipt || `rcpt_${Date.now()}`,
+    );
+
     return {
       success: true,
       orderId: order.id,
@@ -23,20 +33,33 @@ export class PaymentController {
 
   @Post('verify')
   @HttpCode(HttpStatus.OK)
-  verifyPayment(@Body() body: { razorpayOrderId: string; razorpayPaymentId: string; razorpaySignature: string }) {
-    if (!body.razorpayOrderId || !body.razorpayPaymentId || !body.razorpaySignature) {
+  verifyPayment(
+    @Body()
+    body: {
+      razorpayOrderId: string;
+      razorpayPaymentId: string;
+      razorpaySignature: string;
+    },
+  ) {
+    if (
+      !body.razorpayOrderId ||
+      !body.razorpayPaymentId ||
+      !body.razorpaySignature
+    ) {
       throw new BadRequestException('Missing payment verification details');
     }
 
     const isValid = this.paymentService.verifyPayment(
       body.razorpayOrderId,
       body.razorpayPaymentId,
-      body.razorpaySignature
+      body.razorpaySignature,
     );
 
     return {
       success: isValid,
-      message: isValid ? 'Payment verified successfully' : 'Payment verification failed',
+      message: isValid
+        ? 'Payment verified successfully'
+        : 'Payment verification failed',
     };
   }
 }
