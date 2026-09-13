@@ -1,18 +1,29 @@
+import 'reflect-metadata';
 import { NestFactory } from '@nestjs/core';
 import { ExpressAdapter } from '@nestjs/platform-express';
 import express, { Request, Response } from 'express';
-import { AppModule } from '../src/app.module';
-import { GlobalExceptionFilter } from '../src/common/filters/http-exception.filter';
-import { LoggingInterceptor } from '../src/common/interceptors/logging.interceptor';
 import { ValidationPipe } from '@nestjs/common';
 import helmet from 'helmet';
 import compression from 'compression';
+import path from 'path';
 
 let cachedServer: any = null;
 
 async function bootstrap() {
   if (!cachedServer) {
     const expressApp = express();
+
+    let AppModule: any;
+    try {
+      AppModule = require('../dist/app.module').AppModule;
+    } catch (e1) {
+      try {
+        AppModule = require(path.join(process.cwd(), 'dist', 'app.module')).AppModule;
+      } catch (e2) {
+        AppModule = require('./dist/app.module').AppModule;
+      }
+    }
+
     const app = await NestFactory.create(
       AppModule,
       new ExpressAdapter(expressApp),
@@ -44,9 +55,6 @@ async function bootstrap() {
         },
       }),
     );
-
-    app.useGlobalFilters(new GlobalExceptionFilter());
-    app.useGlobalInterceptors(new LoggingInterceptor());
 
     await app.init();
 
