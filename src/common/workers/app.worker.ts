@@ -19,6 +19,10 @@ export class AppWorker implements OnModuleInit, OnModuleDestroy {
   ) {}
 
   onModuleInit() {
+    if (process.env.VERCEL || process.env.AWS_LAMBDA_FUNCTION_NAME || process.env.NODE_ENV === 'production' && !process.env.RUN_WORKER) {
+      this.logger.log('Serverless / cloud environment detected: BullMQ background worker disabled.');
+      return;
+    }
     const redisUrl = process.env.REDIS_URL;
     if (redisUrl) {
       try {

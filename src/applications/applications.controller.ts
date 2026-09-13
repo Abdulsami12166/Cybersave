@@ -4,7 +4,7 @@ import {
   CreateApplicationDto,
 } from './applications.service';
 
-@Controller(['api/v1/applications', 'applications'])
+@Controller(['api/v1/applications', 'applications', 'api/admin/applications', 'admin/applications'])
 export class ApplicationsController {
   constructor(private readonly applicationsService: ApplicationsService) {}
 

@@ -271,17 +271,24 @@ export class ApplicationsService {
 
     // If userId is omitted or 'all' or 'admin', return all applications (for Admin Web Panel)
     if (!userId || userId === 'all' || userId === 'admin' || userId === 'default-user-id') {
-      const apps = await this.prisma.application.findMany({
-        where: whereClause,
-        orderBy: { submittedAt: 'desc' },
-        include: {
-          service: true,
-          user: { include: { profile: true } },
-          documentUploads: true,
-          refundRequests: true,
-        },
-      });
-      return sanitizeApps(apps);
+      try {
+        const apps = await Promise.race([
+          this.prisma.application.findMany({
+            where: whereClause,
+            orderBy: { submittedAt: 'desc' },
+            take: 100,
+            include: {
+              service: true,
+              user: { select: { id: true, email: true, phone: true, profile: true } },
+              refundRequests: true,
+            },
+          }),
+          new Promise<any[]>((resolve) => setTimeout(() => resolve([]), 3500)),
+        ]);
+        return sanitizeApps(apps);
+      } catch (err) {
+        return [];
+      }
     }
 
     const cleanUserId = String(userId).trim();

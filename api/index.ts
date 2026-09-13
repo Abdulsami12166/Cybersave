@@ -100,14 +100,21 @@ export default async function handler(req: Request, res: Response) {
 
   try {
     const server = await bootstrap();
-    return server(req, res);
+    return new Promise<void>((resolve, reject) => {
+      res.on('finish', () => resolve());
+      res.on('close', () => resolve());
+      res.on('error', (err) => reject(err));
+      server(req, res);
+    });
   } catch (err: any) {
     console.error('Serverless bootstrap error:', err);
-    return res.status(500).json({
-      statusCode: 500,
-      message: 'Serverless Application Boot Error',
-      error: err?.message || String(err),
-      timestamp: new Date().toISOString(),
-    });
+    if (!res.headersSent) {
+      return res.status(500).json({
+        statusCode: 500,
+        message: 'Serverless Application Boot Error',
+        error: err?.message || String(err),
+        timestamp: new Date().toISOString(),
+      });
+    }
   }
 }
