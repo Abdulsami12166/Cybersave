@@ -1,6 +1,12 @@
 {
   "version": 2,
   "buildCommand": "prisma generate && nest build",
+  "functions": {
+    "api/index.js": {
+      "includeFiles": "dist/**",
+      "maxDuration": 60
+    }
+  },
   "rewrites": [
     {
       "source": "/(.*)",
