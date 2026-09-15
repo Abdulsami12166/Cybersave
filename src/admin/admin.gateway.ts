@@ -209,6 +209,27 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
         isOnline: false,
         lastSeenAt: new Date().toISOString(),
       });
+
+      AdminGateway.broadcast('session_history_updated', {
+        userId: resolvedId,
+        isOnline: false,
+        session: {
+          id: `sess_close_${Date.now()}`,
+          event: 'LOGOUT',
+          action: 'APP_CLOSED',
+          method: 'Android Mobile Client',
+          platform: 'CyberSave Android App',
+          details: 'Citizen app closed / session backgrounded',
+          ipAddress: '192.168.1.1',
+          status: 'Session Terminated',
+          date: 'Just now',
+          dateTime: new Date().toLocaleString('en-IN', {
+            day: '2-digit', month: 'short', year: 'numeric',
+            hour: '2-digit', minute: '2-digit', second: '2-digit',
+          }),
+          rawDate: new Date().toISOString(),
+        },
+      });
     } catch (e) {
       console.error('[AdminGateway] citizen_app_closed error:', e);
     }
@@ -252,6 +273,25 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
         userId: resolvedId,
         isOnline: true,
         lastSeenAt: new Date().toISOString(),
+      });
+
+      AdminGateway.broadcast('session_history_updated', {
+        userId: resolvedId,
+        isOnline: true,
+        session: {
+          id: 'sess_active_now',
+          event: 'ACTIVE',
+          action: 'USER_SESSION_ACTIVE',
+          method: 'Android Mobile Client',
+          platform: 'CyberSave Android App',
+          details: 'Active realtime session connected',
+          ipAddress: client.handshake?.address || '192.168.1.1 (Connected)',
+          status: 'Active Now',
+          date: 'Active Now',
+          dateTime: 'Currently Active',
+          rawDate: new Date().toISOString(),
+          duration: 'Live Session',
+        },
       });
     } catch (e) {
       console.error('[AdminGateway] user_connected error:', e);
@@ -510,7 +550,7 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
       client.emit('response_users_data', {
         stats: {
           totalCitizens,
-          activeCitizens,
+          activeCitizens: formattedUsers.filter((u) => u.isOnline).length,
           newThisMonth,
           pendingVerification: 0,
         },

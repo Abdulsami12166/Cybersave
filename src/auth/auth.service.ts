@@ -4,6 +4,7 @@ import * as bcrypt from 'bcrypt';
 import { JwtService } from '@nestjs/jwt';
 import { RedisService } from '../common/services/redis.service';
 import { SmsService } from '../common/services/sms.service';
+import { AdminGateway } from '../admin/admin.gateway';
 
 @Injectable()
 export class AuthService {
@@ -461,6 +462,37 @@ export class AuthService {
             ipAddress: ipAddress || '192.168.1.1 (Mobile App)',
           },
         });
+
+        const isOnline = action.includes('LOGIN') || action.includes('START') || action.includes('CONNECT');
+        AdminGateway.broadcast('user_status_changed', {
+          userId,
+          isOnline,
+          lastSeenAt: new Date().toISOString(),
+          ipAddress: ipAddress || '192.168.1.1 (Mobile App)',
+          action,
+          details,
+        });
+
+        AdminGateway.broadcast('session_history_updated', {
+          userId,
+          isOnline,
+          session: {
+            id: `sess_${Date.now()}`,
+            event: isOnline ? 'LOGIN' : 'LOGOUT',
+            action,
+            method: details?.includes('Google') ? 'Google Sign-In' : (details?.includes('Biometric') ? 'Biometric Fingerprint' : (details?.includes('OTP') ? 'Mobile OTP' : 'Mobile Credentials')),
+            platform: 'CyberSave Android App',
+            details: details || (isOnline ? 'User signed in' : 'Session closed'),
+            ipAddress: ipAddress || '192.168.1.1 (Mobile App)',
+            status: isOnline ? 'Session Established' : 'Session Terminated',
+            date: 'Just now',
+            dateTime: new Date().toLocaleString('en-IN', {
+              day: '2-digit', month: 'short', year: 'numeric',
+              hour: '2-digit', minute: '2-digit', second: '2-digit',
+            }),
+            rawDate: new Date().toISOString(),
+          },
+        });
       }
     } catch (e: any) {
       this.logger.warn(`Failed to record audit log: ${e?.message}`);
@@ -475,6 +507,11 @@ export class AuthService {
           data: { isOnline: false, lastSeenAt: new Date() },
         });
         await this.recordAuditLog(userId, 'USER_LOGOUT', 'Logged out of CyberSave Android App', ipAddress);
+        AdminGateway.broadcast('user_status_changed', {
+          userId,
+          isOnline: false,
+          lastSeenAt: new Date().toISOString(),
+        });
       } catch (e: any) {
         this.logger.warn(`Failed to record logout for ${userId}: ${e?.message}`);
       }
