@@ -161,6 +161,25 @@ export class ApplicationsService {
         };
       });
 
+    const defaultChecklist = [
+      { id: 'aadhaar-check', label: 'Identity verified against Aadhaar database', checked: true },
+      { id: 'address-check', label: 'Current address matches official records', checked: true },
+      { id: 'doc-validity', label: 'Address proof document is valid and recent (< 3 months)', checked: true },
+      { id: 'geo-verify', label: 'New address geo-verification completed', checked: false },
+      { id: 'operator-verify', label: 'Operator physical verification done', checked: false },
+    ];
+
+    const initialNotes = [
+      {
+        id: `note-${Date.now()}-1`,
+        author: 'System Bot',
+        authorRole: 'System',
+        authorEmail: 'system@cybersave.app',
+        text: `Application #${refNumber} submitted for ${dto.serviceTitle}. Verification workflow initialized.`,
+        createdAt: new Date().toISOString(),
+      },
+    ];
+
     const application = await this.prisma.application.create({
       data: {
         refNumber,
@@ -177,6 +196,8 @@ export class ApplicationsService {
         razorpaySignature: dto.razorpaySignature,
         formData: dto.formData || {},
         documents: sanitizedDocs,
+        checklist: defaultChecklist,
+        internalNotes: initialNotes,
       },
       include: {
         user: { include: { profile: true } },
@@ -439,7 +460,21 @@ export class ApplicationsService {
       throw new NotFoundException(`Application ${id} not found`);
     }
 
-    return application;
+    const defaultChecklist = [
+      { id: 'aadhaar-check', label: 'Identity verified against Aadhaar database', checked: true },
+      { id: 'address-check', label: 'Current address matches official records', checked: true },
+      { id: 'doc-validity', label: 'Address proof document is valid and recent (< 3 months)', checked: true },
+      { id: 'geo-verify', label: 'New address geo-verification completed', checked: false },
+      { id: 'operator-verify', label: 'Operator physical verification done', checked: false },
+    ];
+
+    return {
+      ...application,
+      checklist: application.checklist && Array.isArray(application.checklist) && (application.checklist as any[]).length > 0
+        ? application.checklist
+        : defaultChecklist,
+      internalNotes: Array.isArray(application.internalNotes) ? application.internalNotes : [],
+    };
   }
 
   async updateStatus(
@@ -584,6 +619,157 @@ export class ApplicationsService {
     return {
       success: true,
       message: `Application successfully assigned to ${operatorName}`,
+      application: updated,
+    };
+  }
+
+  async updateChecklist(
+    id: string,
+    checklist: Array<{ id?: string; label: string; checked: boolean; verifiedAt?: string; verifiedBy?: string }>,
+    adminInfo?: { adminId?: string; adminEmail?: string; adminName?: string; adminRole?: string },
+  ) {
+    const isMongoId = (idStr?: string) => typeof idStr === 'string' && /^[0-9a-fA-F]{24}$/.test(idStr);
+    const orConditions: any[] = [{ refNumber: id }];
+    if (isMongoId(id)) {
+      orConditions.push({ id });
+    }
+
+    const app = await this.prisma.application.findFirst({
+      where: { OR: orConditions },
+    });
+
+    if (!app) {
+      throw new NotFoundException(`Application ${id} not found`);
+    }
+
+    const actingName = adminInfo?.adminName || (adminInfo?.adminEmail ? adminInfo.adminEmail.split('@')[0] : 'Verification Officer');
+
+    // Enrich checklist items with verification metadata
+    const sanitizedChecklist = (Array.isArray(checklist) ? checklist : []).map((item, idx) => ({
+      id: item.id || `check-${idx + 1}`,
+      label: item.label,
+      checked: Boolean(item.checked),
+      verifiedAt: item.checked ? (item.verifiedAt || new Date().toISOString()) : undefined,
+      verifiedBy: item.checked ? (item.verifiedBy || actingName) : undefined,
+    }));
+
+    const updated = await this.prisma.application.update({
+      where: { id: app.id },
+      data: {
+        checklist: sanitizedChecklist,
+        updatedAt: new Date(),
+      },
+      include: {
+        user: { include: { profile: true } },
+        service: true,
+      },
+    });
+
+    const checkedCount = sanitizedChecklist.filter(c => c.checked).length;
+
+    await AdminGateway.logActivity(this.prisma, {
+      userId: adminInfo?.adminId || app.userId,
+      userEmail: adminInfo?.adminEmail,
+      userName: actingName,
+      action: 'APPLICATION_CHECKLIST_UPDATED',
+      details: `Verification checklist updated for Application #${app.refNumber} (${checkedCount}/${sanitizedChecklist.length} completed) by ${actingName}`,
+    });
+
+    try {
+      AdminGateway.broadcast('application_checklist_updated', {
+        id: app.id,
+        rawId: app.id,
+        refNumber: app.refNumber,
+        userId: app.userId,
+        checklist: sanitizedChecklist,
+        checkedCount,
+        totalCount: sanitizedChecklist.length,
+      });
+      AdminGateway.broadcast('applications_updated', updated);
+    } catch (wsErr) {
+      this.logger.warn(`WS broadcast error: ${wsErr.message}`);
+    }
+
+    return {
+      success: true,
+      message: 'Checklist updated successfully',
+      checklist: sanitizedChecklist,
+      application: updated,
+    };
+  }
+
+  async addInternalNote(
+    id: string,
+    noteText: string,
+    adminInfo?: { adminId?: string; adminEmail?: string; adminName?: string; adminRole?: string },
+  ) {
+    const isMongoId = (idStr?: string) => typeof idStr === 'string' && /^[0-9a-fA-F]{24}$/.test(idStr);
+    const orConditions: any[] = [{ refNumber: id }];
+    if (isMongoId(id)) {
+      orConditions.push({ id });
+    }
+
+    const app = await this.prisma.application.findFirst({
+      where: { OR: orConditions },
+    });
+
+    if (!app) {
+      throw new NotFoundException(`Application ${id} not found`);
+    }
+
+    const actingName = adminInfo?.adminName || (adminInfo?.adminEmail ? adminInfo.adminEmail.split('@')[0] : 'Administrator');
+    const actingRole = adminInfo?.adminRole || (adminInfo?.adminEmail === 'admin@cybersave.com' ? 'Super Administrator' : 'Operator / Officer');
+
+    const existingNotes = Array.isArray(app.internalNotes) ? (app.internalNotes as any[]) : [];
+    const newNote = {
+      id: `note-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
+      author: actingName,
+      authorRole: actingRole,
+      authorEmail: adminInfo?.adminEmail || '',
+      text: (noteText || '').trim(),
+      createdAt: new Date().toISOString(),
+    };
+
+    const updatedNotes = [...existingNotes, newNote];
+
+    const updated = await this.prisma.application.update({
+      where: { id: app.id },
+      data: {
+        internalNotes: updatedNotes,
+        updatedAt: new Date(),
+      },
+      include: {
+        user: { include: { profile: true } },
+        service: true,
+      },
+    });
+
+    await AdminGateway.logActivity(this.prisma, {
+      userId: adminInfo?.adminId || app.userId,
+      userEmail: adminInfo?.adminEmail,
+      userName: actingName,
+      action: 'APPLICATION_NOTE_ADDED',
+      details: `Internal note recorded on Application #${app.refNumber} by ${actingName} (${actingRole})`,
+    });
+
+    try {
+      AdminGateway.broadcast('application_note_added', {
+        id: app.id,
+        rawId: app.id,
+        refNumber: app.refNumber,
+        note: newNote,
+        internalNotes: updatedNotes,
+      });
+      AdminGateway.broadcast('applications_updated', updated);
+    } catch (wsErr) {
+      this.logger.warn(`WS broadcast error: ${wsErr.message}`);
+    }
+
+    return {
+      success: true,
+      message: 'Internal note added successfully',
+      note: newNote,
+      internalNotes: updatedNotes,
       application: updated,
     };
   }

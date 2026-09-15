@@ -534,11 +534,10 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
       const userInclude = {
         profile: true,
         applications: { include: { service: true }, orderBy: { submittedAt: 'desc' as const } },
-        documents: true,
         aadhaarDocs: true,
-        auditLogs: { orderBy: { createdAt: 'desc' as const }, take: 100 },
+        auditLogs: { orderBy: { createdAt: 'desc' as const }, take: 30 },
         feedbacks: { orderBy: { createdAt: 'desc' as const } },
-        wallet: { include: { transactions: { orderBy: { createdAt: 'desc' as const } } } },
+        wallet: { include: { transactions: { orderBy: { createdAt: 'desc' as const }, take: 50 } } },
         refundRequests: { orderBy: { createdAt: 'desc' as const } },
       };
 
@@ -549,13 +548,32 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
         });
       }
 
-      if (!u && realId.startsWith('CIT-')) {
-        const shortId = realId.replace('CIT-', '').toUpperCase();
-        const allUsers = await this.prisma.user.findMany({
+      if (!u) {
+        const cleanId = realId.startsWith('CIT-') ? realId.replace('CIT-', '').toUpperCase() : realId.toUpperCase();
+        const candidates = await this.prisma.user.findMany({
           where: { role: 'USER' },
-          include: userInclude,
+          select: { id: true, email: true, phone: true },
         });
-        u = allUsers.find((x) => x.id.substring(0, 5).toUpperCase() === shortId) || null;
+
+        const match = candidates.find((x) => {
+          const xId = x.id.toUpperCase();
+          return (
+            x.id === realId ||
+            xId === cleanId ||
+            xId.endsWith(cleanId) ||
+            xId.startsWith(cleanId) ||
+            xId.includes(cleanId) ||
+            (x.email && x.email.toLowerCase() === realId.toLowerCase()) ||
+            (x.phone && x.phone === realId)
+          );
+        });
+
+        if (match) {
+          u = await this.prisma.user.findUnique({
+            where: { id: match.id },
+            include: userInclude,
+          });
+        }
       }
 
       if (!u) {
@@ -670,11 +688,10 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
         include: {
           profile: true,
           applications: { include: { service: true }, orderBy: { submittedAt: 'desc' as const } },
-          documents: true,
           aadhaarDocs: true,
-          auditLogs: { orderBy: { createdAt: 'desc' as const }, take: 100 },
+          auditLogs: { orderBy: { createdAt: 'desc' as const }, take: 30 },
           feedbacks: { orderBy: { createdAt: 'desc' as const } },
-          wallet: { include: { transactions: { orderBy: { createdAt: 'desc' as const } } } },
+          wallet: { include: { transactions: { orderBy: { createdAt: 'desc' as const }, take: 50 } } },
           refundRequests: { orderBy: { createdAt: 'desc' as const } },
         },
       });
@@ -737,11 +754,10 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
         include: {
           profile: true,
           applications: { include: { service: true }, orderBy: { submittedAt: 'desc' as const } },
-          documents: true,
           aadhaarDocs: true,
-          auditLogs: { orderBy: { createdAt: 'desc' as const }, take: 100 },
+          auditLogs: { orderBy: { createdAt: 'desc' as const }, take: 30 },
           feedbacks: { orderBy: { createdAt: 'desc' as const } },
-          wallet: { include: { transactions: { orderBy: { createdAt: 'desc' as const } } } },
+          wallet: { include: { transactions: { orderBy: { createdAt: 'desc' as const }, take: 50 } } },
           refundRequests: { orderBy: { createdAt: 'desc' as const } },
         },
       });
@@ -894,39 +910,38 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
       ? rawFullName.trim().split(' ').map((w: string) => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase()).join(' ')
       : '';
 
-    const fatherName = profile.fatherName || firstAppForm.fatherName || firstAppForm.father_name || '';
-    const dob = profile.dob || u.aadhaarDocs?.[0]?.dateOfBirth || firstAppForm.dob || '';
-    const gender = profile.gender || u.aadhaarDocs?.[0]?.gender || firstAppForm.gender || '';
-    const aadhaar = profile.aadhaarNumber || u.aadhaarDocs?.[0]?.referenceId || firstAppForm.aadhaar || firstAppForm.aadhaarNumber || (profile.dob ? `•••• •••• ${u.id.slice(-4)}` : '');
-    const pan = profile.pan || firstAppForm.pan || firstAppForm.panNumber || '';
-    const mobile = u.phone || profile.phone || firstAppForm.phone || '';
-    const email = u.email || profile.email || firstAppForm.email || '';
-    const address = profile.address || u.aadhaarDocs?.[0]?.address || firstAppForm.address || '';
+    let fatherName = profile.fatherName || firstAppForm.fatherName || firstAppForm.father_name || '';
+    let dob = profile.dob || u.aadhaarDocs?.[0]?.dateOfBirth || firstAppForm.dob || '';
+    let gender = profile.gender || u.aadhaarDocs?.[0]?.gender || firstAppForm.gender || '';
+    let aadhaar = profile.aadhaarNumber || u.aadhaarDocs?.[0]?.referenceId || firstAppForm.aadhaar || firstAppForm.aadhaarNumber || '';
+    let pan = profile.pan || firstAppForm.pan || firstAppForm.panNumber || '';
+    let mobile = u.phone || profile.phone || firstAppForm.phone || '';
+    let email = u.email || profile.email || firstAppForm.email || '';
+    let address = profile.address || u.aadhaarDocs?.[0]?.address || firstAppForm.address || '';
     
     // Geographical resolution for Centre & Operator
     let district = profile.district || '';
     let state = profile.state || '';
     let pinCode = profile.pinCode || '';
 
-    if (!district || district === '-') {
-      for (const a of apps) {
-        const form = (a.formData as any) || {};
-        if (form.district || form.districtName) {
-          district = form.district || form.districtName;
-          state = form.state || form.stateName || state;
-          pinCode = form.pinCode || form.pincode || pinCode;
-          break;
-        }
-      }
+    // Search through all applications for any missing profile data (e.g. form fields in mobile submissions)
+    for (const a of apps) {
+      const form = (a.formData as any) || {};
+      if (!fatherName) fatherName = form.fatherName || form.father_name || form.parentName || '';
+      if (!dob) dob = form.dob || form.field_1_date_of_birth || form.dateOfBirth || form.date_of_birth || '';
+      if (!gender) gender = form.gender || '';
+      if (!aadhaar) aadhaar = form.aadhaar || form.aadhaarNumber || form.aadhaar_number || '';
+      if (!pan) pan = form.pan || form.panNumber || form.pan_number || '';
+      if (!mobile) mobile = form.phone || form.mobile || '';
+      if (!email) email = form.email || '';
+      if (!address) address = form.address || form.field_2_new_address || form.newAddress || '';
+      if (!district || district === '-') district = form.district || form.districtName || '';
+      if (!state || state === '-') state = form.state || form.stateName || '';
+      if (!pinCode) pinCode = form.pinCode || form.pincode || form.field_3_pin_code || '';
     }
-    if (!pinCode) {
-      for (const a of apps) {
-        const form = (a.formData as any) || {};
-        if (form.pinCode || form.pincode || form.field_3_pin_code) {
-          pinCode = form.pinCode || form.pincode || form.field_3_pin_code;
-          break;
-        }
-      }
+
+    if (!aadhaar && (dob || mobile)) {
+      aadhaar = `•••• •••• ${u.id.slice(-4)}`;
     }
 
     // Clean up demo/garbage values
@@ -1348,7 +1363,7 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
     }
 
     return {
-      id: `CIT-${u.id.substring(0, 5).toUpperCase()}`,
+      id: `CIT-${u.id.slice(-5).toUpperCase()}`,
       dbId: u.id,
       fullName: formattedFullName,
       fatherName,
@@ -1676,20 +1691,13 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
             (d.fileUrl || d.url || d.uri),
         );
 
-      if (!hasValidDocs && app.userId) {
-        const userDocs = await this.prisma.documentUpload.findMany({
-          where: { userId: app.userId },
-          orderBy: { uploadedAt: 'desc' },
-          take: 4,
-        });
-        if (userDocs.length > 0) {
-          docs = userDocs.map((ud, idx) => ({
-            label: `Document Proof #${idx + 1}`,
-            fileName: ud.fileName || `proof_${idx + 1}.jpg`,
-            fileUrl: ud.fileUrl,
-            type: 'Identity Proof',
-          }));
-        }
+      if (!hasValidDocs && Array.isArray(app.documentUploads) && app.documentUploads.length > 0) {
+        docs = app.documentUploads.map((ud: any, idx: number) => ({
+          label: ud.fileName || `Document Proof #${idx + 1}`,
+          fileName: ud.fileName || `proof_${idx + 1}.jpg`,
+          fileUrl: ud.fileUrl,
+          type: ud.fileType || 'Identity Proof',
+        }));
       }
 
       const cleanedDocs = (Array.isArray(docs) ? docs : [])
@@ -1708,6 +1716,7 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
         id: app.refNumber,
         rawId: app.id,
         refNumber: app.refNumber,
+        service: app.service,
         serviceName: app.serviceTitle || app.service?.title || 'Government Service',
         serviceCategory: app.service?.category || 'Government',
         sla: '24h',
@@ -2228,21 +2237,164 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
 
       const revenueToday = Math.max(0, todayGross - todayRefunds);
 
+      const dailyMap: Record<string, { date: string; label: string; count: number; gross: number; refunds: number; net: number }> = {};
+      formattedTransactions.forEach((t) => {
+        const dOnly = t.date.slice(0, 10);
+        if (!dailyMap[dOnly]) {
+          const dObj = new Date(t.date);
+          dailyMap[dOnly] = {
+            date: dOnly,
+            label: dObj.toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' }),
+            count: 0,
+            gross: 0,
+            refunds: 0,
+            net: 0,
+          };
+        }
+        dailyMap[dOnly].count++;
+        dailyMap[dOnly].gross += t.amount || 0;
+        if (t.isRefunded) dailyMap[dOnly].refunds += t.amount || 0;
+        dailyMap[dOnly].net = dailyMap[dOnly].gross - dailyMap[dOnly].refunds;
+      });
+
       client.emit('response_transactions_data', {
         transactions: formattedTransactions,
         stats: {
           totalCount: apps.length,
           totalAmount: realizedAmount,
+          grossInflow: totalGrossAmount,
           grossAmount: totalGrossAmount,
           refundedAmount: totalRefundedAmount,
-          refundedCount: apps.filter((a) => (a.refundStatus || '').toUpperCase() === 'APPROVED' || (a.paymentStatus || '').toLowerCase() === 'refunded').length,
+          refundedCount: apps.filter((a) => (a.refundStatus || '').toUpperCase() === 'APPROVED' || (a.paymentStatus || '').toLowerCase() === 'refunded' || a.refundRequests?.some((r: any) => r.status === 'APPROVED')).length,
           revenueToday,
           todayGross,
           todayRefunds,
+          dailyBreakdown: dailyMap,
         },
       });
     } catch (e) {
       console.error('[AdminGateway] request_transactions_data error:', e);
+    }
+  }
+
+  @SubscribeMessage('update_application_checklist')
+  async handleUpdateApplicationChecklist(
+    @ConnectedSocket() client: Socket,
+    @MessageBody() data: {
+      id?: string;
+      applicationId?: string;
+      refNumber?: string;
+      checklist: any[];
+      adminId?: string;
+      adminEmail?: string;
+      adminName?: string;
+      adminRole?: string;
+    },
+  ) {
+    try {
+      const targetId = data.id || data.applicationId || data.refNumber;
+      if (!targetId || !Array.isArray(data.checklist)) return;
+
+      const orConditions: any[] = [{ refNumber: targetId }];
+      if (/^[0-9a-fA-F]{24}$/.test(targetId)) {
+        orConditions.push({ id: targetId });
+      }
+
+      const app = await this.prisma.application.findFirst({ where: { OR: orConditions } });
+      if (!app) return;
+
+      const actingName = data.adminName || (data.adminEmail ? data.adminEmail.split('@')[0] : 'Verification Officer');
+
+      const sanitized = data.checklist.map((item, idx) => ({
+        id: item.id || `check-${idx + 1}`,
+        label: item.label,
+        checked: Boolean(item.checked),
+        verifiedAt: item.checked ? (item.verifiedAt || new Date().toISOString()) : undefined,
+        verifiedBy: item.checked ? (item.verifiedBy || actingName) : undefined,
+      }));
+
+      const updated = await this.prisma.application.update({
+        where: { id: app.id },
+        data: { checklist: sanitized, updatedAt: new Date() },
+        include: { user: { include: { profile: true } }, service: true },
+      });
+
+      const checkedCount = sanitized.filter(c => c.checked).length;
+
+      AdminGateway.broadcast('application_checklist_updated', {
+        id: app.id,
+        rawId: app.id,
+        refNumber: app.refNumber,
+        userId: app.userId,
+        checklist: sanitized,
+        checkedCount,
+        totalCount: sanitized.length,
+      });
+      AdminGateway.broadcast('applications_updated', updated);
+    } catch (e) {
+      console.error('[AdminGateway] update_application_checklist error:', e);
+    }
+  }
+
+  @SubscribeMessage('add_application_note')
+  async handleAddApplicationNote(
+    @ConnectedSocket() client: Socket,
+    @MessageBody() data: {
+      id?: string;
+      applicationId?: string;
+      refNumber?: string;
+      note?: string;
+      text?: string;
+      adminId?: string;
+      adminEmail?: string;
+      adminName?: string;
+      adminRole?: string;
+    },
+  ) {
+    try {
+      const targetId = data.id || data.applicationId || data.refNumber;
+      const noteText = (data.note || data.text || '').trim();
+      if (!targetId || !noteText) return;
+
+      const orConditions: any[] = [{ refNumber: targetId }];
+      if (/^[0-9a-fA-F]{24}$/.test(targetId)) {
+        orConditions.push({ id: targetId });
+      }
+
+      const app = await this.prisma.application.findFirst({ where: { OR: orConditions } });
+      if (!app) return;
+
+      const actingName = data.adminName || (data.adminEmail ? data.adminEmail.split('@')[0] : 'Administrator');
+      const actingRole = data.adminRole || (data.adminEmail === 'admin@cybersave.com' ? 'Super Administrator' : 'Operator / Officer');
+
+      const existingNotes = Array.isArray(app.internalNotes) ? (app.internalNotes as any[]) : [];
+      const newNote = {
+        id: `note-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
+        author: actingName,
+        authorRole: actingRole,
+        authorEmail: data.adminEmail || '',
+        text: noteText,
+        createdAt: new Date().toISOString(),
+      };
+
+      const updatedNotes = [...existingNotes, newNote];
+
+      const updated = await this.prisma.application.update({
+        where: { id: app.id },
+        data: { internalNotes: updatedNotes, updatedAt: new Date() },
+        include: { user: { include: { profile: true } }, service: true },
+      });
+
+      AdminGateway.broadcast('application_note_added', {
+        id: app.id,
+        rawId: app.id,
+        refNumber: app.refNumber,
+        note: newNote,
+        internalNotes: updatedNotes,
+      });
+      AdminGateway.broadcast('applications_updated', updated);
+    } catch (e) {
+      console.error('[AdminGateway] add_application_note error:', e);
     }
   }
 
@@ -2308,10 +2460,16 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
         })
         .catch(() => null);
 
-      this.server.emit('receive_global_push', {
+      const notifPayload = {
         title: data.title,
         body: data.body,
-      });
+        message: data.body,
+      };
+
+      AdminGateway.broadcast('receive_global_push', notifPayload);
+      AdminGateway.broadcast('user_push_notification', notifPayload);
+      AdminGateway.broadcast('new_notification', notifPayload);
+      AdminGateway.broadcast('global_push', notifPayload);
 
       const totalUsers = await this.prisma.user.count();
       client.emit('send_global_push_success', { count: totalUsers });
@@ -2782,7 +2940,7 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
       if (isMongoId(data.id)) {
         o = await this.prisma.user.findUnique({
           where: { id: data.id },
-          include: { profile: true, applications: true, documents: true, auditLogs: { orderBy: { createdAt: 'desc' }, take: 10 } },
+          include: { profile: true, applications: true, auditLogs: { orderBy: { createdAt: 'desc' }, take: 10 } },
         });
       }
 
@@ -2790,7 +2948,7 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
         const shortId = data.id.slice(-4).toUpperCase();
         const allOps = await this.prisma.user.findMany({
           where: { role: 'ADMIN' },
-          include: { profile: true, applications: true, documents: true, auditLogs: { orderBy: { createdAt: 'desc' }, take: 10 } },
+          include: { profile: true, applications: true, auditLogs: { orderBy: { createdAt: 'desc' }, take: 10 } },
         });
         o = allOps.find((x) => x.id.slice(-4).toUpperCase() === shortId) || null;
       }
@@ -2800,7 +2958,7 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
           where: {
             OR: [{ id: data.id }, { email: data.id }, { role: 'ADMIN' }],
           },
-          include: { profile: true, applications: true, documents: true, auditLogs: { orderBy: { createdAt: 'desc' }, take: 10 } },
+          include: { profile: true, applications: true, auditLogs: { orderBy: { createdAt: 'desc' }, take: 10 } },
         });
       }
 

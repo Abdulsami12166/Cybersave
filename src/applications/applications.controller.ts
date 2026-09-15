@@ -82,4 +82,46 @@ export class ApplicationsController {
   ) {
     return this.applicationsService.assignOperator(id, body.operatorName, body.operatorId);
   }
+
+  @Patch(':id/checklist')
+  async updateChecklistPatch(
+    @Param('id') id: string,
+    @Body() body: { checklist: any[]; adminId?: string; adminEmail?: string; adminName?: string; adminRole?: string },
+  ) {
+    return this.applicationsService.updateChecklist(id, body.checklist, body);
+  }
+
+  @Put(':id/checklist')
+  async updateChecklistPut(
+    @Param('id') id: string,
+    @Body() body: { checklist: any[]; adminId?: string; adminEmail?: string; adminName?: string; adminRole?: string },
+  ) {
+    return this.applicationsService.updateChecklist(id, body.checklist, body);
+  }
+
+  @Post(':id/checklist')
+  async updateChecklistPost(
+    @Param('id') id: string,
+    @Body() body: { checklist: any[]; adminId?: string; adminEmail?: string; adminName?: string; adminRole?: string },
+  ) {
+    return this.applicationsService.updateChecklist(id, body.checklist, body);
+  }
+
+  @Post(':id/notes')
+  async addInternalNotePost(
+    @Param('id') id: string,
+    @Body() body: { text: string; noteText?: string; note?: string; adminId?: string; adminEmail?: string; adminName?: string; adminRole?: string },
+  ) {
+    const text = body.text || body.noteText || body.note || '';
+    return this.applicationsService.addInternalNote(id, text, body);
+  }
+
+  @Patch(':id/notes')
+  async addInternalNotePatch(
+    @Param('id') id: string,
+    @Body() body: { text: string; noteText?: string; note?: string; adminId?: string; adminEmail?: string; adminName?: string; adminRole?: string },
+  ) {
+    const text = body.text || body.noteText || body.note || '';
+    return this.applicationsService.addInternalNote(id, text, body);
+  }
 }
