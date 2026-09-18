@@ -178,8 +178,9 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
       let resolvedId = userId;
       if (resolvedId.startsWith('CIT-')) {
         const short = resolvedId.replace('CIT-', '').toUpperCase();
-        const u = await this.prisma.user.findFirst({ where: { role: 'USER' } });
-        if (u) resolvedId = u.id;
+        const allUsers: any[] = await this.prisma.user.findMany({ select: { id: true } });
+        const match = allUsers.find((u: any) => u.id.toUpperCase().endsWith(short) || u.id.toUpperCase().includes(short));
+        if (match) resolvedId = match.id;
       }
 
       AdminGateway.socketToUser.delete(client.id);
@@ -191,23 +192,50 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
         }
       }
 
+      const now = new Date();
       if (/^[0-9a-fA-F]{24}$/.test(resolvedId)) {
         await this.prisma.user.update({
           where: { id: resolvedId },
-          data: { isOnline: false, lastSeenAt: new Date() },
+          data: { isOnline: false, lastSeenAt: now },
         }).catch(() => null);
+
+        const u = await this.prisma.user.findUnique({ where: { id: resolvedId }, include: { profile: true } }).catch(() => null);
+        const userName = u?.profile?.fullName || u?.email?.split('@')[0] || 'Citizen User';
 
         await AdminGateway.logActivity(this.prisma, {
           userId: resolvedId,
+          userEmail: u?.email || '',
+          userName,
           action: 'APP_CLOSED',
-          details: 'Citizen app closed / session backgrounded',
+          details: 'Citizen app closed / session backgrounded on CyberSave Android Client',
         });
       }
 
       AdminGateway.broadcast('user_status_changed', {
         userId: resolvedId,
         isOnline: false,
-        lastSeenAt: new Date().toISOString(),
+        lastSeenAt: now.toISOString(),
+      });
+
+      AdminGateway.broadcast('session_history_updated', {
+        userId: resolvedId,
+        isOnline: false,
+        session: {
+          id: `sess_close_${Date.now()}`,
+          event: 'LOGOUT',
+          action: 'APP_CLOSED',
+          method: 'Android Mobile Client',
+          platform: 'CyberSave Android App',
+          details: 'Citizen app closed / session backgrounded',
+          ipAddress: '192.168.1.1',
+          status: 'Session Terminated',
+          date: 'Just now',
+          dateTime: now.toLocaleString('en-IN', {
+            day: '2-digit', month: 'short', year: 'numeric',
+            hour: '2-digit', minute: '2-digit', second: '2-digit',
+          }),
+          rawDate: now.toISOString(),
+        },
       });
     } catch (e) {
       console.error('[AdminGateway] citizen_app_closed error:', e);
@@ -227,9 +255,12 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
       let resolvedId = userId;
       if (resolvedId.startsWith('CIT-')) {
         const short = resolvedId.replace('CIT-', '').toUpperCase();
-        const u = await this.prisma.user.findFirst({ where: { role: 'USER' } });
-        if (u) resolvedId = u.id;
+        const allUsers: any[] = await this.prisma.user.findMany({ select: { id: true } });
+        const match = allUsers.find((u: any) => u.id.toUpperCase().endsWith(short) || u.id.toUpperCase().includes(short));
+        if (match) resolvedId = match.id;
       }
+
+      const prevOnline = AdminGateway.isUserOnline(resolvedId);
 
       client.join(`user_${resolvedId}`);
       AdminGateway.socketToUser.set(client.id, resolvedId);
@@ -238,7 +269,8 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
       }
       AdminGateway.userSockets.get(resolvedId)!.add(client.id);
 
-      const updateData: any = { isOnline: true, lastSeenAt: new Date() };
+      const now = new Date();
+      const updateData: any = { isOnline: true, lastSeenAt: now };
       if (fcmToken) updateData.fcmToken = fcmToken;
 
       if (/^[0-9a-fA-F]{24}$/.test(resolvedId)) {
@@ -246,12 +278,44 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
           where: { id: resolvedId },
           data: updateData,
         }).catch(() => null);
+
+        if (!prevOnline) {
+          const u = await this.prisma.user.findUnique({ where: { id: resolvedId }, include: { profile: true } }).catch(() => null);
+          const userName = u?.profile?.fullName || u?.email?.split('@')[0] || 'Citizen User';
+
+          await AdminGateway.logActivity(this.prisma, {
+            userId: resolvedId,
+            userEmail: u?.email || '',
+            userName,
+            action: 'APP_OPENED',
+            details: 'Citizen mobile app connected / session started on CyberSave Android Client',
+          });
+        }
       }
 
       AdminGateway.broadcast('user_status_changed', {
         userId: resolvedId,
         isOnline: true,
-        lastSeenAt: new Date().toISOString(),
+        lastSeenAt: now.toISOString(),
+      });
+
+      AdminGateway.broadcast('session_history_updated', {
+        userId: resolvedId,
+        isOnline: true,
+        session: {
+          id: 'sess_active_now',
+          event: 'ACTIVE',
+          action: 'USER_SESSION_ACTIVE',
+          method: 'Android Mobile Client',
+          platform: 'CyberSave Android App',
+          details: 'Active realtime session connected',
+          ipAddress: client.handshake?.address || '192.168.1.1 (Connected)',
+          status: 'Active Now',
+          date: 'Active Now',
+          dateTime: 'Currently Active',
+          rawDate: now.toISOString(),
+          duration: 'Live Session',
+        },
       });
     } catch (e) {
       console.error('[AdminGateway] user_connected error:', e);
@@ -510,7 +574,7 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
       client.emit('response_users_data', {
         stats: {
           totalCitizens,
-          activeCitizens,
+          activeCitizens: formattedUsers.filter((u) => u.isOnline).length,
           newThisMonth,
           pendingVerification: 0,
         },
@@ -534,11 +598,10 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
       const userInclude = {
         profile: true,
         applications: { include: { service: true }, orderBy: { submittedAt: 'desc' as const } },
-        documents: true,
         aadhaarDocs: true,
-        auditLogs: { orderBy: { createdAt: 'desc' as const }, take: 100 },
+        auditLogs: { orderBy: { createdAt: 'desc' as const }, take: 30 },
         feedbacks: { orderBy: { createdAt: 'desc' as const } },
-        wallet: { include: { transactions: { orderBy: { createdAt: 'desc' as const } } } },
+        wallet: { include: { transactions: { orderBy: { createdAt: 'desc' as const }, take: 50 } } },
         refundRequests: { orderBy: { createdAt: 'desc' as const } },
       };
 
@@ -549,13 +612,32 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
         });
       }
 
-      if (!u && realId.startsWith('CIT-')) {
-        const shortId = realId.replace('CIT-', '').toUpperCase();
-        const allUsers = await this.prisma.user.findMany({
+      if (!u) {
+        const cleanId = realId.startsWith('CIT-') ? realId.replace('CIT-', '').toUpperCase() : realId.toUpperCase();
+        const candidates = await this.prisma.user.findMany({
           where: { role: 'USER' },
-          include: userInclude,
+          select: { id: true, email: true, phone: true },
         });
-        u = allUsers.find((x) => x.id.substring(0, 5).toUpperCase() === shortId) || null;
+
+        const match = candidates.find((x) => {
+          const xId = x.id.toUpperCase();
+          return (
+            x.id === realId ||
+            xId === cleanId ||
+            xId.endsWith(cleanId) ||
+            xId.startsWith(cleanId) ||
+            xId.includes(cleanId) ||
+            (x.email && x.email.toLowerCase() === realId.toLowerCase()) ||
+            (x.phone && x.phone === realId)
+          );
+        });
+
+        if (match) {
+          u = await this.prisma.user.findUnique({
+            where: { id: match.id },
+            include: userInclude,
+          });
+        }
       }
 
       if (!u) {
@@ -670,11 +752,10 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
         include: {
           profile: true,
           applications: { include: { service: true }, orderBy: { submittedAt: 'desc' as const } },
-          documents: true,
           aadhaarDocs: true,
-          auditLogs: { orderBy: { createdAt: 'desc' as const }, take: 100 },
+          auditLogs: { orderBy: { createdAt: 'desc' as const }, take: 30 },
           feedbacks: { orderBy: { createdAt: 'desc' as const } },
-          wallet: { include: { transactions: { orderBy: { createdAt: 'desc' as const } } } },
+          wallet: { include: { transactions: { orderBy: { createdAt: 'desc' as const }, take: 50 } } },
           refundRequests: { orderBy: { createdAt: 'desc' as const } },
         },
       });
@@ -737,11 +818,10 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
         include: {
           profile: true,
           applications: { include: { service: true }, orderBy: { submittedAt: 'desc' as const } },
-          documents: true,
           aadhaarDocs: true,
-          auditLogs: { orderBy: { createdAt: 'desc' as const }, take: 100 },
+          auditLogs: { orderBy: { createdAt: 'desc' as const }, take: 30 },
           feedbacks: { orderBy: { createdAt: 'desc' as const } },
-          wallet: { include: { transactions: { orderBy: { createdAt: 'desc' as const } } } },
+          wallet: { include: { transactions: { orderBy: { createdAt: 'desc' as const }, take: 50 } } },
           refundRequests: { orderBy: { createdAt: 'desc' as const } },
         },
       });
@@ -894,39 +974,38 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
       ? rawFullName.trim().split(' ').map((w: string) => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase()).join(' ')
       : '';
 
-    const fatherName = profile.fatherName || firstAppForm.fatherName || firstAppForm.father_name || '';
-    const dob = profile.dob || u.aadhaarDocs?.[0]?.dateOfBirth || firstAppForm.dob || '';
-    const gender = profile.gender || u.aadhaarDocs?.[0]?.gender || firstAppForm.gender || '';
-    const aadhaar = profile.aadhaarNumber || u.aadhaarDocs?.[0]?.referenceId || firstAppForm.aadhaar || firstAppForm.aadhaarNumber || (profile.dob ? `•••• •••• ${u.id.slice(-4)}` : '');
-    const pan = profile.pan || firstAppForm.pan || firstAppForm.panNumber || '';
-    const mobile = u.phone || profile.phone || firstAppForm.phone || '';
-    const email = u.email || profile.email || firstAppForm.email || '';
-    const address = profile.address || u.aadhaarDocs?.[0]?.address || firstAppForm.address || '';
+    let fatherName = profile.fatherName || firstAppForm.fatherName || firstAppForm.father_name || '';
+    let dob = profile.dob || u.aadhaarDocs?.[0]?.dateOfBirth || firstAppForm.dob || '';
+    let gender = profile.gender || u.aadhaarDocs?.[0]?.gender || firstAppForm.gender || '';
+    let aadhaar = profile.aadhaarNumber || u.aadhaarDocs?.[0]?.referenceId || firstAppForm.aadhaar || firstAppForm.aadhaarNumber || '';
+    let pan = profile.pan || firstAppForm.pan || firstAppForm.panNumber || '';
+    let mobile = u.phone || profile.phone || firstAppForm.phone || '';
+    let email = u.email || profile.email || firstAppForm.email || '';
+    let address = profile.address || u.aadhaarDocs?.[0]?.address || firstAppForm.address || '';
     
     // Geographical resolution for Centre & Operator
     let district = profile.district || '';
     let state = profile.state || '';
     let pinCode = profile.pinCode || '';
 
-    if (!district || district === '-') {
-      for (const a of apps) {
-        const form = (a.formData as any) || {};
-        if (form.district || form.districtName) {
-          district = form.district || form.districtName;
-          state = form.state || form.stateName || state;
-          pinCode = form.pinCode || form.pincode || pinCode;
-          break;
-        }
-      }
+    // Search through all applications for any missing profile data (e.g. form fields in mobile submissions)
+    for (const a of apps) {
+      const form = (a.formData as any) || {};
+      if (!fatherName) fatherName = form.fatherName || form.father_name || form.parentName || '';
+      if (!dob) dob = form.dob || form.field_1_date_of_birth || form.dateOfBirth || form.date_of_birth || '';
+      if (!gender) gender = form.gender || '';
+      if (!aadhaar) aadhaar = form.aadhaar || form.aadhaarNumber || form.aadhaar_number || '';
+      if (!pan) pan = form.pan || form.panNumber || form.pan_number || '';
+      if (!mobile) mobile = form.phone || form.mobile || '';
+      if (!email) email = form.email || '';
+      if (!address) address = form.address || form.field_2_new_address || form.newAddress || '';
+      if (!district || district === '-') district = form.district || form.districtName || '';
+      if (!state || state === '-') state = form.state || form.stateName || '';
+      if (!pinCode) pinCode = form.pinCode || form.pincode || form.field_3_pin_code || '';
     }
-    if (!pinCode) {
-      for (const a of apps) {
-        const form = (a.formData as any) || {};
-        if (form.pinCode || form.pincode || form.field_3_pin_code) {
-          pinCode = form.pinCode || form.pincode || form.field_3_pin_code;
-          break;
-        }
-      }
+
+    if (!aadhaar && (dob || mobile)) {
+      aadhaar = `•••• •••• ${u.id.slice(-4)}`;
     }
 
     // Clean up demo/garbage values
@@ -1183,20 +1262,39 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
       });
     }
 
-    // Extract login / logout events from AuditLog
     rawLogs.forEach((l: any) => {
-      const act = l.action || '';
-      const isLogin = act.includes('LOGIN') || act.includes('SESSION_START') || act.includes('AUTH');
-      const isLogout = act.includes('LOGOUT') || act.includes('SESSION_END') || act.includes('APP_CLOSED') || act.includes('CLOSED');
+      const act = (l.action || '').toUpperCase();
+      const isAuthEvent =
+        act.includes('LOGIN') ||
+        act.includes('LOGOUT') ||
+        act.includes('SESSION') ||
+        act.includes('AUTH') ||
+        act.includes('APP_OPENED') ||
+        act.includes('APP_CLOSED') ||
+        act.includes('CONNECT') ||
+        act.includes('REGISTER');
 
-      if ((isLogin || isLogout) && !seenSessionIds.has(l.id)) {
+      if (isAuthEvent && !seenSessionIds.has(l.id)) {
         seenSessionIds.add(l.id);
+
+        const isLogin =
+          act.includes('LOGIN') ||
+          act.includes('START') ||
+          act.includes('AUTH') ||
+          act.includes('OPEN') ||
+          act.includes('CONNECT') ||
+          act.includes('REGISTER');
 
         let method = 'Mobile Credentials';
         if (l.details?.includes('Google')) method = 'Google Sign-In';
         else if (l.details?.includes('Biometric') || l.details?.includes('Fingerprint')) method = 'Biometric Fingerprint';
         else if (l.details?.includes('OTP')) method = 'Mobile OTP (SMS/Email)';
         else if (l.details?.includes('Password')) method = 'Password Authentication';
+        else if (act.includes('APP_OPENED') || act.includes('APP_CLOSED')) method = 'Android Mobile Client';
+
+        let status = isLogin ? 'Session Established' : 'Session Terminated';
+        if (act.includes('APP_OPENED')) status = 'App Session Active';
+        if (act.includes('APP_CLOSED')) status = 'Session Closed';
 
         let platform = 'CyberSave Android App';
         if (l.details?.includes('Web') || l.details?.includes('Portal')) platform = 'Admin Web Portal';
@@ -1348,7 +1446,7 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
     }
 
     return {
-      id: `CIT-${u.id.substring(0, 5).toUpperCase()}`,
+      id: `CIT-${u.id.slice(-5).toUpperCase()}`,
       dbId: u.id,
       fullName: formattedFullName,
       fatherName,
@@ -1408,122 +1506,106 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
       const apps = await this.prisma.application.findMany({
         take: 100,
         orderBy: { submittedAt: 'desc' },
-        include: {
-          user: { include: { profile: true } },
-          service: true,
-        },
       });
 
-      const formattedApps = await Promise.all(
-        apps.map(async (a) => {
-          const userProfile = a.user?.profile;
-          const formData = (a.formData as any) || {};
-          let docs = (a.documents as any) || [];
+      const userIds: string[] = Array.from(new Set(apps.map((a) => a.userId).filter(Boolean))) as string[];
+      const [users, profiles] = await Promise.all([
+        userIds.length > 0
+          ? this.prisma.user.findMany({
+              where: { id: { in: userIds } },
+              select: { id: true, email: true, phone: true },
+            }).catch(() => [])
+          : [],
+        userIds.length > 0
+          ? this.prisma.profile.findMany({
+              where: { userId: { in: userIds } },
+              select: { userId: true, fullName: true, phone: true, state: true, district: true, pinCode: true, address: true, dob: true, gender: true },
+            }).catch(() => [])
+          : [],
+      ]);
+      const userMap = new Map((users as any[]).map((u) => [u.id, u]));
+      const profileMap = new Map((profiles as any[]).map((p) => [p.userId, p]));
 
-          // If docs is empty, has empty arrays, or lacks valid fileUrl, look up DocumentUpload for this user
-          const hasValidDocs =
-            Array.isArray(docs) &&
-            docs.length > 0 &&
-            docs.some(
-              (d: any) =>
-                d &&
-                typeof d === 'object' &&
-                !Array.isArray(d) &&
-                (d.fileUrl || d.url || d.uri),
-            );
+      const formattedApps = apps.map((a) => {
+        const u: any = userMap.get(a.userId);
+        const p: any = profileMap.get(a.userId);
+        const formData = (a.formData as any) || {};
+        const docs = (a.documents as any) || [];
 
-          if (!hasValidDocs && a.userId) {
-            const userDocs = await this.prisma.documentUpload.findMany({
-              where: { userId: a.userId },
-              orderBy: { uploadedAt: 'desc' },
-              take: 4,
-            });
-            if (userDocs.length > 0) {
-              docs = userDocs.map((ud, idx) => ({
-                label: `Document Proof #${idx + 1}`,
-                fileName: ud.fileName || `proof_${idx + 1}.jpg`,
-                fileUrl: ud.fileUrl,
-                type: 'Identity Proof',
-              }));
-            }
-          }
+        const cleanedDocs = (Array.isArray(docs) ? docs : [])
+          .filter((d: any) => d && typeof d === 'object' && !Array.isArray(d) && (d.fileUrl || d.url || d.uri || d.fileName || d.label))
+          .map((d: any, idx: number) => ({
+            label: d.label || `Document Proof #${idx + 1}`,
+            fileName: d.fileName || `proof_${idx + 1}.jpg`,
+            fileUrl: d.fileUrl || d.url || d.uri || '',
+            type: d.type || 'Identity Proof',
+          }));
 
-          // Clean docs array so no empty arrays or invalid objects remain
-          const cleanedDocs = (Array.isArray(docs) ? docs : [])
-            .filter((d: any) => d && typeof d === 'object' && !Array.isArray(d) && (d.fileUrl || d.url || d.uri || d.fileName || d.label))
-            .map((d: any, idx: number) => ({
-              label: d.label || `Document Proof #${idx + 1}`,
-              fileName: d.fileName || `proof_${idx + 1}.jpg`,
-              fileUrl: d.fileUrl || d.url || d.uri || '',
-              type: d.type || 'Identity Proof',
-            }));
-
-          return {
-            id: a.refNumber || `APP-2026-${a.id.substring(0, 4).toUpperCase()}`,
-            rawId: a.id,
-            refNumber: a.refNumber,
-            citizen: userProfile?.fullName || formData.fullName || a.user?.email || 'Citizen Applicant',
-            citizenEmail: a.user?.email || formData.email || '',
-            citizenPhone: a.user?.phone || userProfile?.phone || formData.phone || '',
-            serviceType: a.serviceTitle || a.service?.title || 'Government Service',
-            serviceCategory: a.service?.category || 'Government',
-            priority: 'Medium',
-            rawStatus: a.status,
-            status:
-              a.status === 'SUBMITTED'
-                ? 'In Review'
-                : a.status === 'VERIFYING'
-                  ? 'Pending'
-                  : a.status === 'IN_PROGRESS'
-                    ? 'Processing'
-                    : a.status === 'APPROVED'
-                      ? 'Approved'
-                      : a.status === 'COMPLETED'
-                        ? 'Completed'
-                        : a.status === 'REJECTED'
-                          ? 'Rejected'
-                          : 'Pending',
-            assigned: a.officialOfficer || 'Auto Assigned (SDM)',
-            submitted: a.submittedAt ? a.submittedAt.toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' }) : 'Today',
-            submittedAtFull: a.submittedAt ? a.submittedAt.toLocaleString('en-IN', { dateStyle: 'medium', timeStyle: 'short' }) : new Date().toLocaleString('en-IN'),
-            sla: '24h',
-            amount: a.feePaid || 50.0,
-            paymentStatus: a.paymentStatus || 'Success',
-            razorpayPaymentId: a.razorpayPaymentId || '',
-            razorpayOrderId: a.razorpayOrderId || '',
-            rejectionReason: a.rejectionReason || '',
-            formData: {
-              fullName: formData.fullName || userProfile?.fullName || '',
-              email: formData.email || a.user?.email || '',
-              phone: formData.phone || a.user?.phone || userProfile?.phone || '',
-              dob: formData.dob || userProfile?.dob || '',
-              gender: formData.gender || userProfile?.gender || '',
-              fatherName: formData.fatherName || '',
-              motherName: formData.motherName || '',
-              placeOfBirth: formData.placeOfBirth || '',
-              state: formData.state || userProfile?.state || '',
-              district: formData.district || userProfile?.district || '',
-              pinCode: formData.pinCode || userProfile?.pinCode || '',
-              address: formData.address || userProfile?.address || '',
-              ...formData,
-            },
-            documents: cleanedDocs,
-            applicantProfile: {
-              fullName: userProfile?.fullName || formData.fullName || 'Citizen Applicant',
-              aadhaar: (userProfile as any)?.aadhaarNumber || formData.aadhaarNumber || 'Verified ID Vault',
-              dob: userProfile?.dob || formData.dob || 'Not Provided',
-              gender: userProfile?.gender || formData.gender || 'Not Provided',
-              fatherName: formData.fatherName || 'Not Provided',
-              motherName: formData.motherName || 'Not Provided',
-              placeOfBirth: formData.placeOfBirth || 'Not Provided',
-              state: userProfile?.state || formData.state || 'Not Provided',
-              district: userProfile?.district || formData.district || 'Not Provided',
-              pinCode: userProfile?.pinCode || formData.pinCode || 'Not Provided',
-              address: userProfile?.address || formData.address || 'Not Provided',
-            },
-          };
-        }),
-      );
+        return {
+          id: a.refNumber || `APP-2026-${a.id.substring(0, 4).toUpperCase()}`,
+          rawId: a.id,
+          refNumber: a.refNumber,
+          citizen: p?.fullName || formData.fullName || (u?.email ? u.email.split('@')[0] : 'Citizen Applicant'),
+          citizenEmail: u?.email || formData.email || '',
+          citizenPhone: u?.phone || p?.phone || formData.phone || '',
+          serviceType: a.serviceTitle || 'Government Service',
+          serviceCategory: 'Government',
+          priority: 'Medium',
+          rawStatus: a.status,
+          status:
+            a.status === 'SUBMITTED'
+              ? 'In Review'
+              : a.status === 'VERIFYING'
+                ? 'Pending'
+                : a.status === 'IN_PROGRESS'
+                  ? 'Processing'
+                  : a.status === 'APPROVED'
+                    ? 'Approved'
+                    : a.status === 'COMPLETED'
+                      ? 'Completed'
+                      : a.status === 'REJECTED'
+                        ? 'Rejected'
+                        : 'Pending',
+          assigned: a.officialOfficer || 'Auto Assigned (SDM)',
+          submitted: a.submittedAt ? a.submittedAt.toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' }) : 'Today',
+          submittedAtFull: a.submittedAt ? a.submittedAt.toLocaleString('en-IN', { dateStyle: 'medium', timeStyle: 'short' }) : new Date().toLocaleString('en-IN'),
+          sla: '24h',
+          amount: a.feePaid || 50.0,
+          paymentStatus: a.paymentStatus || 'Success',
+          razorpayPaymentId: a.razorpayPaymentId || '',
+          razorpayOrderId: a.razorpayOrderId || '',
+          rejectionReason: a.rejectionReason || '',
+          formData: {
+            fullName: formData.fullName || p?.fullName || '',
+            email: formData.email || u?.email || '',
+            phone: formData.phone || u?.phone || p?.phone || '',
+            dob: formData.dob || p?.dob || '',
+            gender: formData.gender || p?.gender || '',
+            fatherName: formData.fatherName || '',
+            motherName: formData.motherName || '',
+            placeOfBirth: formData.placeOfBirth || '',
+            state: formData.state || p?.state || '',
+            district: formData.district || p?.district || '',
+            pinCode: formData.pinCode || p?.pinCode || '',
+            address: formData.address || p?.address || '',
+            ...formData,
+          },
+          documents: cleanedDocs,
+          applicantProfile: {
+            fullName: p?.fullName || formData.fullName || 'Citizen Applicant',
+            aadhaar: formData.aadhaarNumber || 'Verified ID Vault',
+            dob: p?.dob || formData.dob || 'Not Provided',
+            gender: p?.gender || formData.gender || 'Not Provided',
+            fatherName: formData.fatherName || 'Not Provided',
+            motherName: formData.motherName || 'Not Provided',
+            placeOfBirth: formData.placeOfBirth || 'Not Provided',
+            state: p?.state || formData.state || 'Not Provided',
+            district: p?.district || formData.district || 'Not Provided',
+            pinCode: p?.pinCode || formData.pinCode || 'Not Provided',
+            address: p?.address || formData.address || 'Not Provided',
+          },
+        };
+      });
 
       client.emit('response_applications_data', {
         stats: { totalApps, todayApps, pending, processing, completed },
@@ -1692,20 +1774,13 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
             (d.fileUrl || d.url || d.uri),
         );
 
-      if (!hasValidDocs && app.userId) {
-        const userDocs = await this.prisma.documentUpload.findMany({
-          where: { userId: app.userId },
-          orderBy: { uploadedAt: 'desc' },
-          take: 4,
-        });
-        if (userDocs.length > 0) {
-          docs = userDocs.map((ud, idx) => ({
-            label: `Document Proof #${idx + 1}`,
-            fileName: ud.fileName || `proof_${idx + 1}.jpg`,
-            fileUrl: ud.fileUrl,
-            type: 'Identity Proof',
-          }));
-        }
+      if (!hasValidDocs && Array.isArray(app.documentUploads) && app.documentUploads.length > 0) {
+        docs = app.documentUploads.map((ud: any, idx: number) => ({
+          label: ud.fileName || `Document Proof #${idx + 1}`,
+          fileName: ud.fileName || `proof_${idx + 1}.jpg`,
+          fileUrl: ud.fileUrl,
+          type: ud.fileType || 'Identity Proof',
+        }));
       }
 
       const cleanedDocs = (Array.isArray(docs) ? docs : [])
@@ -1724,6 +1799,7 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
         id: app.refNumber,
         rawId: app.id,
         refNumber: app.refNumber,
+        service: app.service,
         serviceName: app.serviceTitle || app.service?.title || 'Government Service',
         serviceCategory: app.service?.category || 'Government',
         sla: '24h',
@@ -2001,62 +2077,49 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
   @SubscribeMessage('request_operators_data')
   async handleOperatorsData(@ConnectedSocket() client: Socket) {
     try {
-      let ops = await this.prisma.user.findMany({
+      const ops = await this.prisma.user.findMany({
         where: { role: 'ADMIN' },
-        include: { profile: true },
+        select: { id: true, email: true, phone: true, role: true, permissions: true, status: true, createdAt: true },
         orderBy: { createdAt: 'desc' },
       });
 
-      if (ops.length === 0) {
-        const salt = await bcrypt.genSalt(10);
-        const passwordHash = await bcrypt.hash('operator123', salt);
-        const createdOp = await this.prisma.user.create({
-          data: {
-            email: 'rajesh.kumar@cybersave.gov.in',
-            phone: '+91 98765 43210',
-            role: 'ADMIN',
-            passwordHash,
-            permissions: ['DASHBOARD', 'APPLICATIONS', 'OPERATORS', 'SETTINGS', 'USERS', 'REPORTS'],
-            status: 'ACTIVE',
-            profile: {
-              create: {
-                fullName: 'Rajesh Kumar',
-                phone: '+91 98765 43210',
-                email: 'rajesh.kumar@cybersave.gov.in',
-                address: '45, Sector 4, HSR Layout, Bengaluru, Karnataka - 560102',
-                district: 'Bengaluru',
-                state: 'Karnataka',
-                pinCode: '560102',
-                dob: '15/08/1988',
-                gender: 'Male',
-              },
-            },
-          },
-          include: { profile: true },
-        });
-        ops = [createdOp];
-      }
+      const opIds = ops.map((o) => o.id);
+      const profiles = opIds.length > 0
+        ? await this.prisma.profile.findMany({
+            where: { userId: { in: opIds } },
+            select: { userId: true, fullName: true, phone: true, district: true, state: true, dob: true },
+          }).catch(() => [])
+        : [];
+      const profileMap = new Map((profiles as any[]).map((p: any) => [p.userId, p]));
 
       const totalOps = ops.length;
       const active = ops.filter((o) => o.status !== 'SUSPENDED').length;
       const suspended = ops.filter((o) => o.status === 'SUSPENDED').length;
 
-      const formatOps = (list: any[]) => list.map((o, idx) => ({
-        id: o.id,
-        employeeId: `OPS-${new Date(o.createdAt).getFullYear()}-${o.id.slice(-4).toUpperCase()}`,
-        name: o.profile?.fullName || (o.email ? o.email.split('@')[0] : `Operator ${idx + 1}`),
-        role: o.email === 'admin@cybersave.com' ? 'Super Administrator' : 'Field Operator',
-        department: o.profile?.district ? `${o.profile.district} Seva Kendra` : 'Operations',
-        joinedDate: new Date(o.createdAt).toLocaleDateString('en-GB'),
-        lastActive: 'Active recently',
-        status: o.status === 'SUSPENDED' ? 'Suspended' : 'Active',
-        permissions: Array.isArray(o.permissions) ? o.permissions : [],
-        email: o.email || '',
-        phone: o.phone || o.profile?.phone || '+91 98765 43210',
-        avatarUrl: o.profile?.avatarUrl || '',
-      }));
-
-      const formattedOps = formatOps(ops);
+      const formattedOps = ops.map((o, idx) => {
+        const prof: any = profileMap.get(o.id);
+        const name = prof?.fullName || (o.email ? o.email.split('@')[0] : `Operator ${idx + 1}`);
+        const role = o.email === 'admin@cybersave.com' ? 'Super Administrator' : (prof?.dob ? 'Senior Field Operator' : 'Field Operator');
+        const department = prof?.district ? `${prof.district} Seva Kendra` : 'Operations';
+        return {
+          id: o.id,
+          employeeId: `OPS-${new Date(o.createdAt).getFullYear()}-${o.id.slice(-4).toUpperCase()}`,
+          name,
+          fullName: name,
+          role,
+          designation: role,
+          department,
+          center: department,
+          joinedDate: new Date(o.createdAt).toLocaleDateString('en-GB'),
+          lastActive: 'Active recently',
+          status: o.status === 'SUSPENDED' ? 'Suspended' : 'Active',
+          permissions: Array.isArray(o.permissions) ? o.permissions : ['DASHBOARD', 'APPLICATIONS'],
+          email: o.email || '',
+          phone: o.phone || prof?.phone || '+91 98765 43210',
+          avatarUrl: '',
+          applicationsProcessed: 3,
+        };
+      });
 
       client.emit('response_operators_data', {
         stats: { totalOps, active, pending: 0, suspended },
@@ -2257,21 +2320,164 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
 
       const revenueToday = Math.max(0, todayGross - todayRefunds);
 
+      const dailyMap: Record<string, { date: string; label: string; count: number; gross: number; refunds: number; net: number }> = {};
+      formattedTransactions.forEach((t) => {
+        const dOnly = t.date.slice(0, 10);
+        if (!dailyMap[dOnly]) {
+          const dObj = new Date(t.date);
+          dailyMap[dOnly] = {
+            date: dOnly,
+            label: dObj.toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' }),
+            count: 0,
+            gross: 0,
+            refunds: 0,
+            net: 0,
+          };
+        }
+        dailyMap[dOnly].count++;
+        dailyMap[dOnly].gross += t.amount || 0;
+        if (t.isRefunded) dailyMap[dOnly].refunds += t.amount || 0;
+        dailyMap[dOnly].net = dailyMap[dOnly].gross - dailyMap[dOnly].refunds;
+      });
+
       client.emit('response_transactions_data', {
         transactions: formattedTransactions,
         stats: {
           totalCount: apps.length,
           totalAmount: realizedAmount,
+          grossInflow: totalGrossAmount,
           grossAmount: totalGrossAmount,
           refundedAmount: totalRefundedAmount,
-          refundedCount: apps.filter((a) => (a.refundStatus || '').toUpperCase() === 'APPROVED' || (a.paymentStatus || '').toLowerCase() === 'refunded').length,
+          refundedCount: apps.filter((a) => (a.refundStatus || '').toUpperCase() === 'APPROVED' || (a.paymentStatus || '').toLowerCase() === 'refunded' || a.refundRequests?.some((r: any) => r.status === 'APPROVED')).length,
           revenueToday,
           todayGross,
           todayRefunds,
+          dailyBreakdown: dailyMap,
         },
       });
     } catch (e) {
       console.error('[AdminGateway] request_transactions_data error:', e);
+    }
+  }
+
+  @SubscribeMessage('update_application_checklist')
+  async handleUpdateApplicationChecklist(
+    @ConnectedSocket() client: Socket,
+    @MessageBody() data: {
+      id?: string;
+      applicationId?: string;
+      refNumber?: string;
+      checklist: any[];
+      adminId?: string;
+      adminEmail?: string;
+      adminName?: string;
+      adminRole?: string;
+    },
+  ) {
+    try {
+      const targetId = data.id || data.applicationId || data.refNumber;
+      if (!targetId || !Array.isArray(data.checklist)) return;
+
+      const orConditions: any[] = [{ refNumber: targetId }];
+      if (/^[0-9a-fA-F]{24}$/.test(targetId)) {
+        orConditions.push({ id: targetId });
+      }
+
+      const app = await this.prisma.application.findFirst({ where: { OR: orConditions } });
+      if (!app) return;
+
+      const actingName = data.adminName || (data.adminEmail ? data.adminEmail.split('@')[0] : 'Verification Officer');
+
+      const sanitized = data.checklist.map((item, idx) => ({
+        id: item.id || `check-${idx + 1}`,
+        label: item.label,
+        checked: Boolean(item.checked),
+        verifiedAt: item.checked ? (item.verifiedAt || new Date().toISOString()) : undefined,
+        verifiedBy: item.checked ? (item.verifiedBy || actingName) : undefined,
+      }));
+
+      const updated = await this.prisma.application.update({
+        where: { id: app.id },
+        data: { checklist: sanitized, updatedAt: new Date() },
+        include: { user: { include: { profile: true } }, service: true },
+      });
+
+      const checkedCount = sanitized.filter(c => c.checked).length;
+
+      AdminGateway.broadcast('application_checklist_updated', {
+        id: app.id,
+        rawId: app.id,
+        refNumber: app.refNumber,
+        userId: app.userId,
+        checklist: sanitized,
+        checkedCount,
+        totalCount: sanitized.length,
+      });
+      AdminGateway.broadcast('applications_updated', updated);
+    } catch (e) {
+      console.error('[AdminGateway] update_application_checklist error:', e);
+    }
+  }
+
+  @SubscribeMessage('add_application_note')
+  async handleAddApplicationNote(
+    @ConnectedSocket() client: Socket,
+    @MessageBody() data: {
+      id?: string;
+      applicationId?: string;
+      refNumber?: string;
+      note?: string;
+      text?: string;
+      adminId?: string;
+      adminEmail?: string;
+      adminName?: string;
+      adminRole?: string;
+    },
+  ) {
+    try {
+      const targetId = data.id || data.applicationId || data.refNumber;
+      const noteText = (data.note || data.text || '').trim();
+      if (!targetId || !noteText) return;
+
+      const orConditions: any[] = [{ refNumber: targetId }];
+      if (/^[0-9a-fA-F]{24}$/.test(targetId)) {
+        orConditions.push({ id: targetId });
+      }
+
+      const app = await this.prisma.application.findFirst({ where: { OR: orConditions } });
+      if (!app) return;
+
+      const actingName = data.adminName || (data.adminEmail ? data.adminEmail.split('@')[0] : 'Administrator');
+      const actingRole = data.adminRole || (data.adminEmail === 'admin@cybersave.com' ? 'Super Administrator' : 'Operator / Officer');
+
+      const existingNotes = Array.isArray(app.internalNotes) ? (app.internalNotes as any[]) : [];
+      const newNote = {
+        id: `note-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
+        author: actingName,
+        authorRole: actingRole,
+        authorEmail: data.adminEmail || '',
+        text: noteText,
+        createdAt: new Date().toISOString(),
+      };
+
+      const updatedNotes = [...existingNotes, newNote];
+
+      const updated = await this.prisma.application.update({
+        where: { id: app.id },
+        data: { internalNotes: updatedNotes, updatedAt: new Date() },
+        include: { user: { include: { profile: true } }, service: true },
+      });
+
+      AdminGateway.broadcast('application_note_added', {
+        id: app.id,
+        rawId: app.id,
+        refNumber: app.refNumber,
+        note: newNote,
+        internalNotes: updatedNotes,
+      });
+      AdminGateway.broadcast('applications_updated', updated);
+    } catch (e) {
+      console.error('[AdminGateway] add_application_note error:', e);
     }
   }
 
@@ -2337,10 +2543,16 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
         })
         .catch(() => null);
 
-      this.server.emit('receive_global_push', {
+      const notifPayload = {
         title: data.title,
         body: data.body,
-      });
+        message: data.body,
+      };
+
+      AdminGateway.broadcast('receive_global_push', notifPayload);
+      AdminGateway.broadcast('user_push_notification', notifPayload);
+      AdminGateway.broadcast('new_notification', notifPayload);
+      AdminGateway.broadcast('global_push', notifPayload);
 
       const totalUsers = await this.prisma.user.count();
       client.emit('send_global_push_success', { count: totalUsers });
@@ -2811,7 +3023,7 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
       if (isMongoId(data.id)) {
         o = await this.prisma.user.findUnique({
           where: { id: data.id },
-          include: { profile: true, applications: true, documents: true, auditLogs: { orderBy: { createdAt: 'desc' }, take: 10 } },
+          include: { profile: true, applications: true, auditLogs: { orderBy: { createdAt: 'desc' }, take: 10 } },
         });
       }
 
@@ -2819,7 +3031,7 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
         const shortId = data.id.slice(-4).toUpperCase();
         const allOps = await this.prisma.user.findMany({
           where: { role: 'ADMIN' },
-          include: { profile: true, applications: true, documents: true, auditLogs: { orderBy: { createdAt: 'desc' }, take: 10 } },
+          include: { profile: true, applications: true, auditLogs: { orderBy: { createdAt: 'desc' }, take: 10 } },
         });
         o = allOps.find((x) => x.id.slice(-4).toUpperCase() === shortId) || null;
       }
@@ -2829,7 +3041,7 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
           where: {
             OR: [{ id: data.id }, { email: data.id }, { role: 'ADMIN' }],
           },
-          include: { profile: true, applications: true, documents: true, auditLogs: { orderBy: { createdAt: 'desc' }, take: 10 } },
+          include: { profile: true, applications: true, auditLogs: { orderBy: { createdAt: 'desc' }, take: 10 } },
         });
       }
 

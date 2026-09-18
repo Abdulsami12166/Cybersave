@@ -178,8 +178,9 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
       let resolvedId = userId;
       if (resolvedId.startsWith('CIT-')) {
         const short = resolvedId.replace('CIT-', '').toUpperCase();
-        const u = await this.prisma.user.findFirst({ where: { role: 'USER' } });
-        if (u) resolvedId = u.id;
+        const allUsers: any[] = await this.prisma.user.findMany({ select: { id: true } });
+        const match = allUsers.find((u: any) => u.id.toUpperCase().endsWith(short) || u.id.toUpperCase().includes(short));
+        if (match) resolvedId = match.id;
       }
 
       AdminGateway.socketToUser.delete(client.id);
@@ -191,23 +192,29 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
         }
       }
 
+      const now = new Date();
       if (/^[0-9a-fA-F]{24}$/.test(resolvedId)) {
         await this.prisma.user.update({
           where: { id: resolvedId },
-          data: { isOnline: false, lastSeenAt: new Date() },
+          data: { isOnline: false, lastSeenAt: now },
         }).catch(() => null);
+
+        const u = await this.prisma.user.findUnique({ where: { id: resolvedId }, include: { profile: true } }).catch(() => null);
+        const userName = u?.profile?.fullName || u?.email?.split('@')[0] || 'Citizen User';
 
         await AdminGateway.logActivity(this.prisma, {
           userId: resolvedId,
+          userEmail: u?.email || '',
+          userName,
           action: 'APP_CLOSED',
-          details: 'Citizen app closed / session backgrounded',
+          details: 'Citizen app closed / session backgrounded on CyberSave Android Client',
         });
       }
 
       AdminGateway.broadcast('user_status_changed', {
         userId: resolvedId,
         isOnline: false,
-        lastSeenAt: new Date().toISOString(),
+        lastSeenAt: now.toISOString(),
       });
 
       AdminGateway.broadcast('session_history_updated', {
@@ -223,11 +230,11 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
           ipAddress: '192.168.1.1',
           status: 'Session Terminated',
           date: 'Just now',
-          dateTime: new Date().toLocaleString('en-IN', {
+          dateTime: now.toLocaleString('en-IN', {
             day: '2-digit', month: 'short', year: 'numeric',
             hour: '2-digit', minute: '2-digit', second: '2-digit',
           }),
-          rawDate: new Date().toISOString(),
+          rawDate: now.toISOString(),
         },
       });
     } catch (e) {
@@ -248,9 +255,12 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
       let resolvedId = userId;
       if (resolvedId.startsWith('CIT-')) {
         const short = resolvedId.replace('CIT-', '').toUpperCase();
-        const u = await this.prisma.user.findFirst({ where: { role: 'USER' } });
-        if (u) resolvedId = u.id;
+        const allUsers: any[] = await this.prisma.user.findMany({ select: { id: true } });
+        const match = allUsers.find((u: any) => u.id.toUpperCase().endsWith(short) || u.id.toUpperCase().includes(short));
+        if (match) resolvedId = match.id;
       }
+
+      const prevOnline = AdminGateway.isUserOnline(resolvedId);
 
       client.join(`user_${resolvedId}`);
       AdminGateway.socketToUser.set(client.id, resolvedId);
@@ -259,7 +269,8 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
       }
       AdminGateway.userSockets.get(resolvedId)!.add(client.id);
 
-      const updateData: any = { isOnline: true, lastSeenAt: new Date() };
+      const now = new Date();
+      const updateData: any = { isOnline: true, lastSeenAt: now };
       if (fcmToken) updateData.fcmToken = fcmToken;
 
       if (/^[0-9a-fA-F]{24}$/.test(resolvedId)) {
@@ -267,12 +278,25 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
           where: { id: resolvedId },
           data: updateData,
         }).catch(() => null);
+
+        if (!prevOnline) {
+          const u = await this.prisma.user.findUnique({ where: { id: resolvedId }, include: { profile: true } }).catch(() => null);
+          const userName = u?.profile?.fullName || u?.email?.split('@')[0] || 'Citizen User';
+
+          await AdminGateway.logActivity(this.prisma, {
+            userId: resolvedId,
+            userEmail: u?.email || '',
+            userName,
+            action: 'APP_OPENED',
+            details: 'Citizen mobile app connected / session started on CyberSave Android Client',
+          });
+        }
       }
 
       AdminGateway.broadcast('user_status_changed', {
         userId: resolvedId,
         isOnline: true,
-        lastSeenAt: new Date().toISOString(),
+        lastSeenAt: now.toISOString(),
       });
 
       AdminGateway.broadcast('session_history_updated', {
@@ -289,7 +313,7 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
           status: 'Active Now',
           date: 'Active Now',
           dateTime: 'Currently Active',
-          rawDate: new Date().toISOString(),
+          rawDate: now.toISOString(),
           duration: 'Live Session',
         },
       });
@@ -1238,20 +1262,39 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
       });
     }
 
-    // Extract login / logout events from AuditLog
     rawLogs.forEach((l: any) => {
-      const act = l.action || '';
-      const isLogin = act.includes('LOGIN') || act.includes('SESSION_START') || act.includes('AUTH');
-      const isLogout = act.includes('LOGOUT') || act.includes('SESSION_END') || act.includes('APP_CLOSED') || act.includes('CLOSED');
+      const act = (l.action || '').toUpperCase();
+      const isAuthEvent =
+        act.includes('LOGIN') ||
+        act.includes('LOGOUT') ||
+        act.includes('SESSION') ||
+        act.includes('AUTH') ||
+        act.includes('APP_OPENED') ||
+        act.includes('APP_CLOSED') ||
+        act.includes('CONNECT') ||
+        act.includes('REGISTER');
 
-      if ((isLogin || isLogout) && !seenSessionIds.has(l.id)) {
+      if (isAuthEvent && !seenSessionIds.has(l.id)) {
         seenSessionIds.add(l.id);
+
+        const isLogin =
+          act.includes('LOGIN') ||
+          act.includes('START') ||
+          act.includes('AUTH') ||
+          act.includes('OPEN') ||
+          act.includes('CONNECT') ||
+          act.includes('REGISTER');
 
         let method = 'Mobile Credentials';
         if (l.details?.includes('Google')) method = 'Google Sign-In';
         else if (l.details?.includes('Biometric') || l.details?.includes('Fingerprint')) method = 'Biometric Fingerprint';
         else if (l.details?.includes('OTP')) method = 'Mobile OTP (SMS/Email)';
         else if (l.details?.includes('Password')) method = 'Password Authentication';
+        else if (act.includes('APP_OPENED') || act.includes('APP_CLOSED')) method = 'Android Mobile Client';
+
+        let status = isLogin ? 'Session Established' : 'Session Terminated';
+        if (act.includes('APP_OPENED')) status = 'App Session Active';
+        if (act.includes('APP_CLOSED')) status = 'Session Closed';
 
         let platform = 'CyberSave Android App';
         if (l.details?.includes('Web') || l.details?.includes('Portal')) platform = 'Admin Web Portal';

@@ -56,10 +56,20 @@ export class AuthController {
     return this.authService.resendOtp(body.identifier || body.email || body.emailOrPhone || body.phone);
   }
 
-  @Post('logout')
+  @Post(['logout', 'api/v1/auth/logout', 'auth/logout'])
   @ApiOperation({ summary: 'Logout citizen user and record session end' })
   async logout(@Body() body: any, @Req() req: any, @GetUser() user: any) {
-    const userId = user?.sub || user?.id || body?.userId;
+    let userId = user?.sub || user?.id || body?.userId || body?.id || req?.query?.userId;
+    if (!userId && req?.headers?.authorization) {
+      try {
+        const token = req.headers.authorization.replace('Bearer ', '').trim();
+        const parts = token.split('.');
+        if (parts.length === 3) {
+          const payload = JSON.parse(Buffer.from(parts[1], 'base64').toString('utf8'));
+          userId = payload?.sub || payload?.id;
+        }
+      } catch (_) {}
+    }
     return this.authService.logout(userId, this.extractIp(req, body));
   }
 

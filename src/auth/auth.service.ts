@@ -454,16 +454,36 @@ export class AuthService {
   async recordAuditLog(userId?: string, action: string = 'USER_LOGIN', details?: string, ipAddress?: string) {
     try {
       if (userId && /^[0-9a-fA-F]{24}$/.test(userId)) {
-        await this.prisma.auditLog.create({
+        const log = await this.prisma.auditLog.create({
           data: {
             userId,
             action,
             details: details || 'CyberSave Android App Session',
             ipAddress: ipAddress || '192.168.1.1 (Mobile App)',
           },
+          include: { user: { include: { profile: true } } },
         });
 
         const isOnline = action.includes('LOGIN') || action.includes('START') || action.includes('CONNECT');
+        const userName = log.user?.profile?.fullName || log.user?.email?.split('@')[0] || 'Citizen User';
+        const userEmail = log.user?.email || '';
+
+        AdminGateway.broadcast('audit_logs_updated');
+        AdminGateway.broadcast('audit_log_added', {
+          id: log.id,
+          timestamp: log.createdAt.toLocaleString('en-IN', {
+            day: '2-digit', month: 'short', year: 'numeric',
+            hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: true,
+          }),
+          isoTimestamp: log.createdAt.toISOString(),
+          user: userName,
+          userEmail,
+          action: log.action,
+          resource: log.details || '-',
+          ipAddress: log.ipAddress || '192.168.1.1',
+          status: (log.action.includes('REJECT') || log.action.includes('FAIL') || log.action.includes('SUSPEND')) ? 'Failed' : 'Success',
+        });
+
         AdminGateway.broadcast('user_status_changed', {
           userId,
           isOnline,
@@ -500,20 +520,29 @@ export class AuthService {
   }
 
   async logout(userId?: string, ipAddress?: string) {
-    if (userId && /^[0-9a-fA-F]{24}$/.test(userId)) {
+    let resolvedId = userId;
+    if (resolvedId && resolvedId.startsWith('CIT-')) {
+      const short = resolvedId.replace('CIT-', '').toUpperCase();
+      const allUsers: any[] = await this.prisma.user.findMany({ select: { id: true } }).catch(() => []);
+      const match = allUsers.find((u: any) => u.id.toUpperCase().endsWith(short) || u.id.toUpperCase().includes(short));
+      if (match) resolvedId = match.id;
+    }
+
+    if (resolvedId && /^[0-9a-fA-F]{24}$/.test(resolvedId)) {
       try {
         await this.prisma.user.update({
-          where: { id: userId },
+          where: { id: resolvedId },
           data: { isOnline: false, lastSeenAt: new Date() },
         });
-        await this.recordAuditLog(userId, 'USER_LOGOUT', 'Logged out of CyberSave Android App', ipAddress);
+        await this.recordAuditLog(resolvedId, 'USER_LOGOUT', 'Logged out of CyberSave Android App', ipAddress);
         AdminGateway.broadcast('user_status_changed', {
-          userId,
+          userId: resolvedId,
           isOnline: false,
           lastSeenAt: new Date().toISOString(),
+          action: 'USER_LOGOUT',
         });
       } catch (e: any) {
-        this.logger.warn(`Failed to record logout for ${userId}: ${e?.message}`);
+        this.logger.warn(`Failed to record logout for ${resolvedId}: ${e?.message}`);
       }
     }
     return { success: true, message: 'Logged out successfully' };

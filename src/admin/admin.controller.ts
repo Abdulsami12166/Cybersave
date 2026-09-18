@@ -7,6 +7,7 @@ import {
   Param,
   Body,
   Query,
+  Req,
   UnauthorizedException,
   BadRequestException,
   NotFoundException,
@@ -1239,48 +1240,157 @@ export class AdminController {
     return { success: true, message: 'FCM Token registered successfully' };
   }
 
+  private async resolveCitizenUser(identifier?: string): Promise<any> {
+    if (!identifier || typeof identifier !== 'string') return null;
+    const clean = identifier.trim();
+    if (/^[0-9a-fA-F]{24}$/.test(clean)) {
+      const u = await this.prisma.user.findUnique({ where: { id: clean }, include: { profile: true } }).catch(() => null);
+      if (u) return u;
+    }
+    if (clean.toUpperCase().startsWith('CIT-')) {
+      const short = clean.replace(/^CIT-/i, '').toUpperCase();
+      const all: any[] = await this.prisma.user.findMany({ select: { id: true, email: true, phone: true } }).catch(() => []);
+      const found = all.find((x: any) => x.id.toUpperCase().endsWith(short) || x.id.toUpperCase().includes(short));
+      if (found) {
+        return this.prisma.user.findUnique({ where: { id: found.id }, include: { profile: true } }).catch(() => null);
+      }
+    }
+    return this.prisma.user.findFirst({
+      where: {
+        OR: [
+          { email: clean.toLowerCase() },
+          { phone: clean },
+          { id: clean },
+        ],
+      },
+      include: { profile: true },
+    }).catch(() => null);
+  }
+
   @Post(['api/v1/users/heartbeat', 'api/users/heartbeat', 'users/heartbeat'])
   @ApiOperation({ summary: 'Record citizen app activity heartbeat' })
-  async citizenHeartbeat(@Body() body: any) {
-    const { userId } = body;
-    if (userId && /^[0-9a-fA-F]{24}$/.test(userId)) {
-      await this.prisma.user.update({
-        where: { id: userId },
-        data: { isOnline: true, lastSeenAt: new Date() },
-      }).catch(() => null);
+  async citizenHeartbeat(@Body() body: any, @Req() req: any) {
+    const rawId = body?.userId || body?.id || body?.email || req?.query?.userId;
+    const user = await this.resolveCitizenUser(rawId);
+    if (!user) {
+      return { success: false, message: 'User not found for heartbeat' };
+    }
 
-      AdminGateway.broadcast('user_status_changed', {
-        userId,
+    const wasOffline = !user.isOnline || !user.lastSeenAt || (Date.now() - new Date(user.lastSeenAt).getTime() > 60000);
+    const now = new Date();
+    const rawIp = body?.ipAddress || req?.headers?.['x-forwarded-for'] || req?.socket?.remoteAddress || req?.ip || '192.168.1.1 (Mobile App)';
+    const ipAddress = typeof rawIp === 'string' ? rawIp.split(',')[0].trim() : '192.168.1.1 (Mobile App)';
+
+    await this.prisma.user.update({
+      where: { id: user.id },
+      data: { isOnline: true, lastSeenAt: now },
+    }).catch(() => null);
+
+    const citizenName = user.profile?.fullName || user.email?.split('@')[0] || 'Citizen User';
+    const citizenEmail = user.email || '';
+
+    // If citizen was offline or reconnecting, record APP_OPENED audit log & session establishment
+    if (wasOffline) {
+      await AdminGateway.logActivity(this.prisma, {
+        userId: user.id,
+        userEmail: citizenEmail,
+        userName: citizenName,
+        action: 'APP_OPENED',
+        details: 'Citizen mobile app opened / active session started on CyberSave Android Client',
+        ipAddress,
+      });
+
+      AdminGateway.broadcast('session_history_updated', {
+        userId: user.id,
         isOnline: true,
-        lastSeenAt: new Date().toISOString(),
+        session: {
+          id: `sess_open_${Date.now()}`,
+          event: 'LOGIN',
+          action: 'APP_OPENED',
+          method: 'Android Mobile Client',
+          platform: 'CyberSave Android App',
+          details: 'Citizen app opened / active session started',
+          ipAddress,
+          status: 'Session Established',
+          date: 'Just now',
+          dateTime: now.toLocaleString('en-IN', {
+            day: '2-digit', month: 'short', year: 'numeric',
+            hour: '2-digit', minute: '2-digit', second: '2-digit',
+          }),
+          rawDate: now.toISOString(),
+        },
       });
     }
-    return { success: true, active: true };
+
+    AdminGateway.broadcast('user_status_changed', {
+      userId: user.id,
+      isOnline: true,
+      lastSeenAt: now.toISOString(),
+      action: wasOffline ? 'APP_OPENED' : 'HEARTBEAT',
+    });
+
+    return { success: true, active: true, isOnline: true, userId: user.id };
   }
 
   @Post(['api/v1/users/offline', 'api/users/offline', 'users/offline'])
   @ApiOperation({ summary: 'Record citizen app closed / offline' })
-  async citizenOffline(@Body() body: any) {
-    const { userId } = body;
-    if (userId && /^[0-9a-fA-F]{24}$/.test(userId)) {
-      await this.prisma.user.update({
-        where: { id: userId },
-        data: { isOnline: false, lastSeenAt: new Date() },
-      }).catch(() => null);
-
-      await AdminGateway.logActivity(this.prisma, {
-        userId,
-        action: 'APP_CLOSED',
-        details: 'Citizen app closed / session terminated',
-      });
-
-      AdminGateway.broadcast('user_status_changed', {
-        userId,
-        isOnline: false,
-        lastSeenAt: new Date().toISOString(),
-      });
+  async citizenOffline(@Body() body: any, @Req() req: any) {
+    const rawId = body?.userId || body?.id || body?.email || req?.query?.userId;
+    const user = await this.resolveCitizenUser(rawId);
+    if (!user) {
+      return { success: true, isOnline: false };
     }
-    return { success: true, isOnline: false };
+
+    const now = new Date();
+    const rawIp = body?.ipAddress || req?.headers?.['x-forwarded-for'] || req?.socket?.remoteAddress || req?.ip || '192.168.1.1 (Mobile App)';
+    const ipAddress = typeof rawIp === 'string' ? rawIp.split(',')[0].trim() : '192.168.1.1 (Mobile App)';
+
+    await this.prisma.user.update({
+      where: { id: user.id },
+      data: { isOnline: false, lastSeenAt: now },
+    }).catch(() => null);
+
+    const citizenName = user.profile?.fullName || user.email?.split('@')[0] || 'Citizen User';
+    const citizenEmail = user.email || '';
+
+    await AdminGateway.logActivity(this.prisma, {
+      userId: user.id,
+      userEmail: citizenEmail,
+      userName: citizenName,
+      action: 'APP_CLOSED',
+      details: 'Citizen app closed / session terminated on CyberSave Android Client',
+      ipAddress,
+    });
+
+    AdminGateway.broadcast('user_status_changed', {
+      userId: user.id,
+      isOnline: false,
+      lastSeenAt: now.toISOString(),
+      action: 'APP_CLOSED',
+    });
+
+    AdminGateway.broadcast('session_history_updated', {
+      userId: user.id,
+      isOnline: false,
+      session: {
+        id: `sess_close_${Date.now()}`,
+        event: 'LOGOUT',
+        action: 'APP_CLOSED',
+        method: 'Android Mobile Client',
+        platform: 'CyberSave Android App',
+        details: 'Citizen app closed / session terminated',
+        ipAddress,
+        status: 'Session Terminated',
+        date: 'Just now',
+        dateTime: now.toLocaleString('en-IN', {
+          day: '2-digit', month: 'short', year: 'numeric',
+          hour: '2-digit', minute: '2-digit', second: '2-digit',
+        }),
+        rawDate: now.toISOString(),
+      },
+    });
+
+    return { success: true, isOnline: false, userId: user.id };
   }
 
   @Get(['api/v1/users', 'api/admin/users', 'admin/users'])
@@ -1462,9 +1572,25 @@ export class AdminController {
     const hasActiveSocket = AdminGateway.isUserOnline(u.id);
     const lastSeenMs = u.lastSeenAt ? Date.now() - new Date(u.lastSeenAt).getTime() : Infinity;
     const isOnline = hasActiveSocket || (u.isOnline === true && lastSeenMs < 60000);
-    const lastActive = isOnline ? 'Active Now' : (u.lastSeenAt ? 'Just now' : 'Offline');
+
+    let lastActive = 'Active Now';
+    if (!isOnline) {
+      const lastTime = u.lastSeenAt || u.updatedAt || u.createdAt;
+      if (lastTime) {
+        const diffMs = Date.now() - new Date(lastTime).getTime();
+        const diffSec = Math.floor(diffMs / 1000);
+        if (diffSec < 60) lastActive = 'Just now';
+        else if (diffSec < 3600) lastActive = `${Math.floor(diffSec / 60)} mins ago`;
+        else if (diffSec < 86400) lastActive = `${Math.floor(diffSec / 3600)} hours ago`;
+        else lastActive = new Date(lastTime).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' });
+      } else {
+        lastActive = 'Offline';
+      }
+    }
 
     const sessionHistory: any[] = [];
+    const seenSessionIds = new Set<string>();
+
     if (isOnline) {
       sessionHistory.push({
         id: 'sess_active_now',
@@ -1483,20 +1609,49 @@ export class AdminController {
     }
 
     (u.auditLogs || []).forEach((l: any) => {
-      const act = l.action || '';
-      if (act.includes('LOGIN') || act.includes('LOGOUT') || act.includes('SESSION') || act.includes('AUTH') || act.includes('APP_CLOSED')) {
-        const isLogin = act.includes('LOGIN') || act.includes('START') || act.includes('AUTH');
+      const act = (l.action || '').toUpperCase();
+      const isAuthEvent =
+        act.includes('LOGIN') ||
+        act.includes('LOGOUT') ||
+        act.includes('SESSION') ||
+        act.includes('AUTH') ||
+        act.includes('APP_OPENED') ||
+        act.includes('APP_CLOSED') ||
+        act.includes('CONNECT') ||
+        act.includes('REGISTER');
+
+      if (isAuthEvent && !seenSessionIds.has(l.id)) {
+        seenSessionIds.add(l.id);
+        const isLogin =
+          act.includes('LOGIN') ||
+          act.includes('START') ||
+          act.includes('AUTH') ||
+          act.includes('OPEN') ||
+          act.includes('CONNECT') ||
+          act.includes('REGISTER');
+
+        let method = 'Mobile Credentials';
+        if (l.details?.includes('Google')) method = 'Google Sign-In';
+        else if (l.details?.includes('Biometric') || l.details?.includes('Fingerprint')) method = 'Biometric Fingerprint';
+        else if (l.details?.includes('OTP')) method = 'Mobile OTP (SMS/Email)';
+        else if (l.details?.includes('Password')) method = 'Password Authentication';
+        else if (act.includes('APP_OPENED') || act.includes('APP_CLOSED')) method = 'Android Mobile Client';
+
+        let status = isLogin ? 'Session Established' : 'Session Terminated';
+        if (act.includes('APP_OPENED')) status = 'App Session Active';
+        if (act.includes('APP_CLOSED')) status = 'Session Closed';
+
         sessionHistory.push({
           id: l.id,
           event: isLogin ? 'LOGIN' : 'LOGOUT',
           action: l.action,
-          method: l.details?.includes('Google') ? 'Google Sign-In' : (l.details?.includes('Biometric') ? 'Biometric Fingerprint' : (l.details?.includes('OTP') ? 'Mobile OTP' : 'Mobile Credentials')),
+          method,
           platform: 'CyberSave Android App',
-          details: l.details || (isLogin ? 'User signed in' : 'Session closed'),
+          details: l.details || (isLogin ? 'Citizen authenticated / active session' : 'Session closed / app terminated'),
           ipAddress: l.ipAddress || '192.168.1.1 (Mobile App)',
-          status: isLogin ? 'Session Established' : 'Session Terminated',
+          status,
           date: l.createdAt ? new Date(l.createdAt).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' }) : 'Recently',
-          dateTime: l.createdAt ? new Date(l.createdAt).toLocaleString('en-IN', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' }) : 'Recently',
+          dateTime: l.createdAt ? new Date(l.createdAt).toLocaleString('en-IN', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit', second: '2-digit' }) : 'Recently',
           rawDate: l.createdAt,
         });
       }
@@ -2690,7 +2845,7 @@ export class AdminController {
           }) : new Date().toLocaleString('en-IN'),
           isoTimestamp: l.createdAt ? new Date(l.createdAt).toISOString() : new Date().toISOString(),
           user: userName,
-          userEmail: l.user?.email || '',
+          userEmail: u?.email || l.user?.email || '',
           action: l.action,
           resource: l.details || '-',
           ipAddress: l.ipAddress || '192.168.1.1',
