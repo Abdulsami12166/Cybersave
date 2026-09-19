@@ -9,7 +9,7 @@ import {
 } from '@nestjs/websockets';
 import { Server, Socket } from 'socket.io';
 import { PrismaService } from '../database/prisma.service';
-import { messaging } from './firebase';
+import { messaging, sendFCMBroadcast, sendFCMToTokens } from './firebase';
 import * as bcrypt from 'bcrypt';
 
 @WebSocketGateway({
@@ -2525,23 +2525,44 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
     @MessageBody() data: { title: string; body: string },
   ) {
     try {
-      if (messaging) {
-        await messaging.send({
-          topic: 'all',
-          notification: { title: data.title, body: data.body },
+      const title = (data?.title || '').trim();
+      const body = (data?.body || '').trim();
+      if (!title || !body) return;
+
+      // 1. Send FCM Broadcast to topic 'all' with high-priority Android channel configuration
+      await sendFCMBroadcast(title, body).catch((e) => console.warn('[AdminGateway] FCM broadcast note:', e));
+
+      // 2. Also send FCM Multicast directly to all registered user device tokens
+      try {
+        const usersWithTokens = await this.prisma.user.findMany({
+          where: { fcmToken: { not: null } },
+          select: { fcmToken: true },
         });
+        const tokens = usersWithTokens.map((u) => u.fcmToken).filter(Boolean) as string[];
+        if (tokens.length > 0) {
+          await sendFCMToTokens(tokens, title, body).catch((e) => console.warn('[AdminGateway] FCM multicast note:', e));
+        }
+      } catch (e) {
+        console.warn('[AdminGateway] Multicast token lookup note:', e);
       }
-      await this.prisma.notification
-        .create({
-          data: {
-            userId: '000000000000000000000000',
-            title: data.title,
-            body: data.body,
-            type: 'INFO',
-            status: 'SENT',
-          },
-        })
-        .catch(() => null);
+
+      const systemUser =
+        (await this.prisma.user.findFirst({ where: { role: 'ADMIN' }, select: { id: true } })) ||
+        (await this.prisma.user.findFirst({ select: { id: true } }));
+
+      if (systemUser) {
+        await this.prisma.notification
+          .create({
+            data: {
+              userId: systemUser.id,
+              title,
+              body,
+              type: 'INFO',
+              status: 'SENT',
+            },
+          })
+          .catch(() => null);
+      }
 
       const notifPayload = {
         title: data.title,

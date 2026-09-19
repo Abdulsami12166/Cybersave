@@ -20,7 +20,7 @@ import { PrismaService } from '../database/prisma.service';
 import { JwtService } from '@nestjs/jwt';
 import { CloudinaryService } from '../common/services/cloudinary.service';
 import { AdminGateway } from './admin.gateway';
-import { messaging } from './firebase';
+import { messaging, sendFCMBroadcast, sendFCMToTokens } from './firebase';
 import * as bcrypt from 'bcrypt';
 
 @ApiTags('Admin Portal')
@@ -1070,30 +1070,49 @@ export class AdminController {
       throw new BadRequestException('Title and message body are required');
     }
 
-    try {
-      if (messaging) {
-        await messaging.send({
-          topic: 'all',
-          notification: { title, body: message },
-        }).catch(() => null);
-      }
-    } catch (_) {}
+    // 1. Send FCM Broadcast to topic 'all' with high-priority Android channel configuration
+    await sendFCMBroadcast(title, message).catch((e) => console.warn('[AdminController] FCM broadcast note:', e));
 
-    const notif = await this.prisma.notification.create({
-      data: {
-        userId: '000000000000000000000000',
-        title,
-        body: message,
-        type: 'INFO',
-        status: 'SENT',
-      },
-    }).catch(() => null);
+    // 2. Also send FCM Multicast directly to all registered user device tokens
+    try {
+      const usersWithTokens = await this.prisma.user.findMany({
+        where: { fcmToken: { not: null } },
+        select: { fcmToken: true },
+      });
+      const tokens = usersWithTokens.map((u) => u.fcmToken).filter(Boolean) as string[];
+      if (tokens.length > 0) {
+        await sendFCMToTokens(tokens, title, message).catch((e) => console.warn('[AdminController] FCM multicast note:', e));
+      }
+    } catch (e) {
+      console.warn('[AdminController] Multicast token lookup note:', e);
+    }
+
+    const systemUser =
+      (await this.prisma.user.findFirst({ where: { role: 'ADMIN' }, select: { id: true } })) ||
+      (await this.prisma.user.findFirst({ select: { id: true } }));
+
+    const notif = systemUser
+      ? await this.prisma.notification
+          .create({
+            data: {
+              userId: systemUser.id,
+              title,
+              body: message,
+              type: 'INFO',
+              status: 'SENT',
+            },
+          })
+          .catch((e) => {
+            console.warn('[AdminController] Notification create note:', e?.message || e);
+            return null;
+          })
+      : null;
 
     // Broadcast across all socket events so mobile listeners catch it
-    AdminGateway.broadcast('receive_global_push', { title, body: message, id: notif?.id });
-    AdminGateway.broadcast('user_push_notification', { title, body: message, id: notif?.id });
+    AdminGateway.broadcast('receive_global_push', { title, body: message, message, id: notif?.id });
+    AdminGateway.broadcast('user_push_notification', { title, body: message, message, id: notif?.id });
     AdminGateway.broadcast('new_notification', { title, body: message, message, id: notif?.id });
-    AdminGateway.broadcast('global_push', { title, body: message, id: notif?.id });
+    AdminGateway.broadcast('global_push', { title, body: message, message, id: notif?.id });
 
     await this.prisma.auditLog.create({
       data: {
@@ -1198,6 +1217,12 @@ export class AdminController {
     // 4. Update admin dashboards
     AdminGateway.broadcast('user_activity_updated', { userId: targetUser.id });
     AdminGateway.broadcast('audit_log_added');
+
+    // 5. Send FCM push to mobile device if token registered
+    if (targetUser.fcmToken) {
+      await sendFCMToTokens([targetUser.fcmToken], title.trim(), messageBody.trim(), { type: type || 'SYSTEM' })
+        .catch((e) => console.warn('[AdminController] Direct FCM push note:', e));
+    }
 
     return {
       success: true,
@@ -2079,9 +2104,8 @@ export class AdminController {
     try {
       const [notifs, totalCount, unreadCount] = await Promise.all([
         this.prisma.notification.findMany({
-          take: 30,
+          take: 40,
           orderBy: { createdAt: 'desc' },
-          include: { user: { select: { email: true, profile: true } } },
         }).catch(() => []),
         this.prisma.notification.count().catch(() => 0),
         this.prisma.notification.count({ where: { status: 'PENDING' } }).catch(() => 0),
