@@ -2,6 +2,7 @@ import { Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../database/prisma.service';
 import { CloudinaryService } from '../common/services/cloudinary.service';
 import { UpdateProfileDto } from './dto/update-profile.dto';
+import { AdminGateway } from '../admin/admin.gateway';
 
 @Injectable()
 export class ProfileService {
@@ -41,9 +42,23 @@ export class ProfileService {
       data: {
         userId,
         action: 'UPDATE_PROFILE',
-        details: 'User updated profile information',
+        details: 'User updated profile information / address',
       },
     });
+
+    // Real-time broadcast to Admin Panel & Mobile
+    try {
+      AdminGateway.broadcast('user_updated', {
+        userId,
+        profile: updatedProfile,
+      });
+      AdminGateway.broadcast('user_detail_updated', {
+        ...updatedProfile,
+        id: userId,
+        dbId: userId,
+      });
+      AdminGateway.broadcast('users_updated');
+    } catch (e) {}
 
     return updatedProfile;
   }

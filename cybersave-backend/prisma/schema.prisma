@@ -89,6 +89,7 @@ model Profile {
   pinCode     String?
   dob         String?
   gender      String?
+  addresses   Json?
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 
@@ -309,6 +310,8 @@ model RefundRequest {
   adminNotes     String?
   processedBy    String?
   processedAt    DateTime?
+  journey        Json?
+  destinationAccount Json?
   createdAt      DateTime      @default(now())
   updatedAt      DateTime      @updatedAt
 

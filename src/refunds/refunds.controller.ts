@@ -41,4 +41,9 @@ export class RefundsController {
     const adminName = body?.adminName || 'Admin Authority';
     return this.refundsService.rejectRefund(id, body?.rejectionReason, adminName);
   }
+
+  @Post(':id/journey')
+  async updateRefundJourneyPost(@Param('id') id: string, @Body() body: any) {
+    return this.refundsService.updateRefundJourney(id, body);
+  }
 }

@@ -383,4 +383,69 @@ export class RefundsService {
       notification: notif,
     };
   }
+
+  async updateRefundJourney(
+    id: string,
+    payload: {
+      journey?: Array<{
+        title: string;
+        description: string;
+        time?: string;
+        status: 'completed' | 'active' | 'pending';
+      }>;
+      destinationAccount?: {
+        bankName?: string;
+        accountNumber?: string;
+        referenceNumber?: string;
+        expectedDate?: string;
+      };
+      status?: RefundStatus;
+      adminNotes?: string;
+      adminName?: string;
+    },
+  ) {
+    const isMongoId = (val?: string) => typeof val === 'string' && /^[0-9a-fA-F]{24}$/.test(val);
+    const refund = await this.prisma.refundRequest.findFirst({
+      where: isMongoId(id) ? { OR: [{ id }, { refNumber: id }] } : { refNumber: id },
+      include: {
+        user: { include: { profile: true } },
+        application: true,
+      },
+    });
+
+    if (!refund) {
+      throw new NotFoundException('Refund request not found');
+    }
+
+    const updateData: any = {};
+    if (payload.journey !== undefined) updateData.journey = payload.journey;
+    if (payload.destinationAccount !== undefined) updateData.destinationAccount = payload.destinationAccount;
+    if (payload.status !== undefined) updateData.status = payload.status;
+    if (payload.adminNotes !== undefined) updateData.adminNotes = payload.adminNotes;
+    if (payload.adminName) updateData.processedBy = payload.adminName;
+    updateData.updatedAt = new Date();
+
+    const updated = await this.prisma.refundRequest.update({
+      where: { id: refund.id },
+      data: updateData,
+      include: {
+        user: { include: { profile: true } },
+        application: true,
+      },
+    });
+
+    try {
+      AdminGateway.broadcast('refund_journey_updated', updated);
+      AdminGateway.broadcast('refunds_updated', updated);
+      AdminGateway.emitToUser(refund.userId, 'refund_journey_updated', updated);
+      AdminGateway.emitToUser(refund.userId, 'refunds_updated', updated);
+    } catch (wsErr: any) {
+      this.logger.warn(`WS broadcast warning on journey update: ${wsErr?.message}`);
+    }
+
+    return {
+      success: true,
+      refund: updated,
+    };
+  }
 }

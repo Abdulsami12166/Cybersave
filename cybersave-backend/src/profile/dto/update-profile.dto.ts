@@ -94,4 +94,8 @@ export class UpdateProfileDto {
   @IsObject()
   @IsOptional()
   moodPreferences?: any;
+
+  @ApiProperty({ description: 'Saved addresses list', required: false })
+  @IsOptional()
+  addresses?: any;
 }
