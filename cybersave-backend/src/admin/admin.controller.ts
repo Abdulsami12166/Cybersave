@@ -1070,22 +1070,8 @@ export class AdminController {
       throw new BadRequestException('Title and message body are required');
     }
 
-    // 1. Send FCM Broadcast to topic 'all' with high-priority Android channel configuration
+    // 1. Send single FCM Broadcast to topic 'all' with high-priority Android channel configuration
     await sendFCMBroadcast(title, message).catch((e) => console.warn('[AdminController] FCM broadcast note:', e));
-
-    // 2. Also send FCM Multicast directly to all registered user device tokens
-    try {
-      const usersWithTokens = await this.prisma.user.findMany({
-        where: { fcmToken: { not: null } },
-        select: { fcmToken: true },
-      });
-      const tokens = usersWithTokens.map((u) => u.fcmToken).filter(Boolean) as string[];
-      if (tokens.length > 0) {
-        await sendFCMToTokens(tokens, title, message).catch((e) => console.warn('[AdminController] FCM multicast note:', e));
-      }
-    } catch (e) {
-      console.warn('[AdminController] Multicast token lookup note:', e);
-    }
 
     const systemUser =
       (await this.prisma.user.findFirst({ where: { role: 'ADMIN' }, select: { id: true } })) ||
@@ -1108,11 +1094,9 @@ export class AdminController {
           })
       : null;
 
-    // Broadcast across all socket events so mobile listeners catch it
-    AdminGateway.broadcast('receive_global_push', { title, body: message, message, id: notif?.id });
-    AdminGateway.broadcast('user_push_notification', { title, body: message, message, id: notif?.id });
-    AdminGateway.broadcast('new_notification', { title, body: message, message, id: notif?.id });
-    AdminGateway.broadcast('global_push', { title, body: message, message, id: notif?.id });
+    // 2. Broadcast single canonical socket event so mobile clients receive it exactly once
+    const notifPayload = { title, body: message, message, id: notif?.id || `notif_${Date.now()}` };
+    AdminGateway.broadcast('receive_global_push', notifPayload);
 
     await this.prisma.auditLog.create({
       data: {

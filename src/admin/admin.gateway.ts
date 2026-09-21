@@ -2529,22 +2529,8 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
       const body = (data?.body || '').trim();
       if (!title || !body) return;
 
-      // 1. Send FCM Broadcast to topic 'all' with high-priority Android channel configuration
+      // 1. Send single FCM Broadcast to topic 'all' with high-priority Android channel configuration
       await sendFCMBroadcast(title, body).catch((e) => console.warn('[AdminGateway] FCM broadcast note:', e));
-
-      // 2. Also send FCM Multicast directly to all registered user device tokens
-      try {
-        const usersWithTokens = await this.prisma.user.findMany({
-          where: { fcmToken: { not: null } },
-          select: { fcmToken: true },
-        });
-        const tokens = usersWithTokens.map((u) => u.fcmToken).filter(Boolean) as string[];
-        if (tokens.length > 0) {
-          await sendFCMToTokens(tokens, title, body).catch((e) => console.warn('[AdminGateway] FCM multicast note:', e));
-        }
-      } catch (e) {
-        console.warn('[AdminGateway] Multicast token lookup note:', e);
-      }
 
       const systemUser =
         (await this.prisma.user.findFirst({ where: { role: 'ADMIN' }, select: { id: true } })) ||
@@ -2565,15 +2551,13 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
       }
 
       const notifPayload = {
-        title: data.title,
-        body: data.body,
-        message: data.body,
+        title,
+        body,
+        message: body,
       };
 
+      // 2. Broadcast single canonical socket event
       AdminGateway.broadcast('receive_global_push', notifPayload);
-      AdminGateway.broadcast('user_push_notification', notifPayload);
-      AdminGateway.broadcast('new_notification', notifPayload);
-      AdminGateway.broadcast('global_push', notifPayload);
 
       const totalUsers = await this.prisma.user.count();
       client.emit('send_global_push_success', { count: totalUsers });
