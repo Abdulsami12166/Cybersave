@@ -988,17 +988,102 @@ app.post(['/api/admin/users/:id/block', '/api/v1/users/:id/block'], async (req: 
     if (!u) return res.status(404).json({ error: 'Citizen not found' });
 
     const nextStatus = status || (u.status === 'BLOCKED' ? 'Verified' : 'BLOCKED');
-    await prisma.user.update({ where: { id: u.id }, data: { status: nextStatus } });
+    const updatedUser = await prisma.user.update({ where: { id: u.id }, data: { status: nextStatus } });
     await prisma.auditLog.create({
       data: {
         userId: u.id,
         action: nextStatus === 'BLOCKED' ? 'USER_BLOCKED' : 'USER_UNBLOCKED',
-        details: `Admin changed citizen status to ${nextStatus}`
+        details: `Admin changed citizen ${u.email || u.id} status to ${nextStatus}`,
+        ipAddress: req.ip || '127.0.0.1',
+        userAgent: req.headers['user-agent'] || 'Admin Console'
       }
     }).catch(() => null);
 
-    const updated = await fetchCitizenFullDetails(u.id);
-    res.json({ success: true, status: nextStatus, user: updated });
+    auditLogsCache = null;
+    io.emit('audit_logs_updated');
+    io.emit('users_updated');
+    io.emit('citizen_status_updated', { id: u.id, status: nextStatus });
+    res.json({ success: true, status: nextStatus, user: updatedUser });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.post(['/api/admin/users/bulk-block', '/api/v1/users/bulk-block'], async (req: any, res: any) => {
+  try {
+    const { userIds = [], status = 'BLOCKED' } = req.body;
+    if (!Array.isArray(userIds) || userIds.length === 0) {
+      return res.status(400).json({ error: 'No user IDs provided' });
+    }
+
+    const isMongo = (idStr?: any) => typeof idStr === 'string' && /^[0-9a-fA-F]{24}$/.test(idStr.trim());
+    const mongoIds = userIds.filter(isMongo);
+    const nonMongo = userIds.filter(id => !isMongo(id));
+
+    const orConditions: any[] = [];
+    if (mongoIds.length > 0) orConditions.push({ id: { in: mongoIds } });
+    if (nonMongo.length > 0) orConditions.push({ email: { in: nonMongo } });
+
+    const updated = await prisma.user.updateMany({
+      where: { OR: orConditions },
+      data: { status }
+    });
+
+    await prisma.auditLog.create({
+      data: {
+        userId: 'admin_action',
+        action: status === 'BLOCKED' ? 'USERS_BULK_BLOCKED' : 'USERS_BULK_STATUS_CHANGED',
+        details: `Batch changed status to ${status} for ${updated.count} citizen(s)`,
+        ipAddress: req.ip || '127.0.0.1',
+        userAgent: req.headers['user-agent'] || 'Admin Console'
+      }
+    }).catch(() => null);
+
+    auditLogsCache = null;
+    io.emit('audit_logs_updated');
+    io.emit('users_updated');
+    io.emit('citizens_bulk_updated', { userIds, status });
+    res.json({ success: true, count: updated.count, status });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.post(['/api/admin/users/bulk-verify', '/api/v1/users/bulk-verify'], async (req: any, res: any) => {
+  try {
+    const { userIds = [] } = req.body;
+    if (!Array.isArray(userIds) || userIds.length === 0) {
+      return res.status(400).json({ error: 'No user IDs provided' });
+    }
+
+    const isMongo = (idStr?: any) => typeof idStr === 'string' && /^[0-9a-fA-F]{24}$/.test(idStr.trim());
+    const mongoIds = userIds.filter(isMongo);
+    const nonMongo = userIds.filter(id => !isMongo(id));
+
+    const orConditions: any[] = [];
+    if (mongoIds.length > 0) orConditions.push({ id: { in: mongoIds } });
+    if (nonMongo.length > 0) orConditions.push({ email: { in: nonMongo } });
+
+    const updated = await prisma.user.updateMany({
+      where: { OR: orConditions },
+      data: { status: 'ACTIVE' }
+    });
+
+    await prisma.auditLog.create({
+      data: {
+        userId: 'admin_action',
+        action: 'USERS_BULK_VERIFIED',
+        details: `Batch verified ${updated.count} citizen(s)`,
+        ipAddress: req.ip || '127.0.0.1',
+        userAgent: req.headers['user-agent'] || 'Admin Console'
+      }
+    }).catch(() => null);
+
+    auditLogsCache = null;
+    io.emit('audit_logs_updated');
+    io.emit('users_updated');
+    io.emit('citizens_bulk_updated', { userIds, status: 'Verified' });
+    res.json({ success: true, count: updated.count });
   } catch (e: any) {
     res.status(500).json({ error: e.message });
   }
@@ -1225,7 +1310,19 @@ app.all(['/api/admin/refunds/:id/approve', '/api/v1/refunds/:id/approve'], async
       }).catch(() => null);
     }
 
+    await prisma.auditLog.create({
+      data: {
+        userId: refund.userId || 'admin_action',
+        action: 'REFUND_APPROVED',
+        details: `Refund claim #${refund.refNumber || refund.id} for ₹${refund.amount || 50} officially APPROVED by Administrator. Payment marked as Refunded.`,
+        ipAddress: req.ip || '127.0.0.1',
+        userAgent: req.headers['user-agent'] || 'Admin Console'
+      }
+    }).catch(() => null);
+
+    auditLogsCache = null;
     if (io) {
+      io.emit('audit_logs_updated');
       io.emit('refund_approved', updatedRefund);
       io.emit('refunds_updated', updatedRefund);
       io.emit('transactions_updated');
@@ -1251,7 +1348,19 @@ app.all(['/api/admin/refunds/:id/reject', '/api/v1/refunds/:id/reject'], async (
       data: { status: 'REJECTED', updatedAt: new Date(), adminNotes: req.body?.rejectionReason || 'Rejected by Admin' }
     });
 
+    await prisma.auditLog.create({
+      data: {
+        userId: refund.userId || 'admin_action',
+        action: 'REFUND_REJECTED',
+        details: `Refund claim #${refund.refNumber || refund.id} DECLINED by Administrator. Reason: ${req.body?.rejectionReason || 'Declined'}`,
+        ipAddress: req.ip || '127.0.0.1',
+        userAgent: req.headers['user-agent'] || 'Admin Console'
+      }
+    }).catch(() => null);
+
+    auditLogsCache = null;
     if (io) {
+      io.emit('audit_logs_updated');
       io.emit('refunds_updated', updatedRefund);
     }
 
@@ -1720,6 +1829,7 @@ app.post(['/api/v1/support/feedback', '/api/support/feedback'], async (req: any,
 export const operatorCache = new Map<string, { data: any; timestamp: number }>();
 export let operatorsListCache: { data: any; timestamp: number } | null = null;
 export let auditLogsCache: { data: any; timestamp: number } | null = null;
+(global as any).__invalidateAuditLogsCache = () => { auditLogsCache = null; };
 
 export async function getFastOperatorData(id?: string) {
   const cacheKey = id || 'default';
@@ -2005,6 +2115,198 @@ app.get(['/api/admin/operators/:id', '/api/v1/operators/:id', '/api/operators/:i
   }
 });
 
+app.post(['/api/admin/operators', '/api/v1/operators', '/api/operators'], async (req: any, res: any) => {
+  try {
+    const { name, email, password, permissions = ['DASHBOARD'], department, phone } = req.body;
+    if (!email) return res.status(400).json({ error: 'Email is required' });
+    const cleanEmail = email.trim().toLowerCase();
+
+    let existing = await prisma.user.findFirst({ where: { email: cleanEmail } });
+    if (existing) {
+      const updated = await prisma.user.update({
+        where: { id: existing.id },
+        data: { permissions, role: 'ADMIN', status: 'ACTIVE' }
+      });
+
+      await prisma.auditLog.create({
+        data: {
+          userId: updated.id,
+          userName: name || (existing.email ? existing.email.split('@')[0] : 'Operator'),
+          userEmail: cleanEmail,
+          action: 'OPERATOR_UPDATED',
+          details: `Operator "${name || cleanEmail}" privileges re-configured: [${permissions.join(', ')}].`,
+          ipAddress: req.ip || '127.0.0.1',
+          userAgent: req.headers['user-agent'] || 'Admin Console'
+        }
+      }).catch(() => null);
+
+      operatorsListCache = null;
+      auditLogsCache = null;
+      operatorCache.clear();
+      io.emit('operators_updated');
+      io.emit('audit_logs_updated');
+      io.emit('dashboard_updated');
+      io.emit('operator_permissions_updated', { id: updated.id, permissions });
+      return res.json({ success: true, operator: updated });
+    }
+
+    const passwordHash = await bcrypt.hash(password || 'admin123', 8);
+
+    const newUser = await prisma.user.create({
+      data: {
+        email: cleanEmail,
+        passwordHash,
+        role: 'ADMIN',
+        status: 'ACTIVE',
+        permissions: permissions,
+        phone: phone || `+9198765${Math.floor(10000 + Math.random() * 90000)}`,
+        profile: {
+          create: {
+            fullName: name || 'Operator User',
+            email: cleanEmail,
+            district: department || 'CSC Operations & Verification Desk'
+          }
+        }
+      }
+    });
+
+    await prisma.auditLog.create({
+      data: {
+        userId: newUser.id,
+        userName: name || 'Seva Kendra Operator',
+        userEmail: cleanEmail,
+        action: 'OPERATOR_REGISTERED',
+        details: `New Seva Kendra Operator "${name || 'Operator'}" (${cleanEmail}) registered with least-privilege permissions: [${permissions.join(', ')}].`,
+        ipAddress: req.ip || '127.0.0.1',
+        userAgent: req.headers['user-agent'] || 'Admin Console'
+      }
+    }).catch(() => null);
+
+    operatorsListCache = null;
+    auditLogsCache = null;
+    operatorCache.clear();
+    io.emit('operators_updated');
+    io.emit('audit_logs_updated');
+    io.emit('dashboard_updated');
+    res.status(201).json({ success: true, operator: newUser });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.put(['/api/admin/operators/:id', '/api/v1/operators/:id', '/api/operators/:id'], async (req: any, res: any) => {
+  try {
+    const { id } = req.params;
+    const { permissions, status, name, phone, department } = req.body;
+
+    const updateData: any = {};
+    if (permissions !== undefined) updateData.permissions = permissions;
+    if (status !== undefined) updateData.status = status;
+    if (phone !== undefined) updateData.phone = phone;
+
+    const updated = await prisma.user.update({
+      where: { id },
+      data: updateData
+    });
+
+    if (name || department) {
+      await prisma.profile.upsert({
+        where: { userId: id },
+        update: { 
+          ...(name ? { fullName: name } : {}),
+          ...(department ? { district: department } : {})
+        },
+        create: { 
+          userId: id, 
+          fullName: name || 'Operator User',
+          district: department || 'CSC Operations'
+        }
+      }).catch(() => null);
+    }
+
+    await prisma.auditLog.create({
+      data: {
+        userId: id,
+        userName: name || updated.email,
+        userEmail: updated.email,
+        action: 'OPERATOR_UPDATED',
+        details: `Operator #${id.slice(-6)} profile/permissions updated: [${(updated.permissions || []).join(', ')}] status: ${updated.status}.`,
+        ipAddress: req.ip || '127.0.0.1',
+        userAgent: req.headers['user-agent'] || 'Admin Console'
+      }
+    }).catch(() => null);
+
+    operatorsListCache = null;
+    auditLogsCache = null;
+    operatorCache.delete(id);
+    operatorCache.delete('default');
+
+    io.emit('operators_updated');
+    io.emit('audit_logs_updated');
+    io.emit('dashboard_updated');
+    if (permissions !== undefined) {
+      io.emit('operator_permissions_updated', { id: updated.id, permissions: updated.permissions });
+    }
+    res.json({ success: true, operator: updated });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.post(['/api/admin/operators/:id/status', '/api/v1/operators/:id/status', '/api/operators/:id/status'], async (req: any, res: any) => {
+  try {
+    const { id } = req.params;
+    const { status } = req.body;
+    const updated = await prisma.user.update({
+      where: { id },
+      data: { status: status || 'ACTIVE' }
+    });
+
+    await prisma.auditLog.create({
+      data: {
+        userId: id,
+        userName: updated.email,
+        userEmail: updated.email,
+        action: 'OPERATOR_STATUS_CHANGED',
+        details: `Operator #${id.slice(-6)} status updated to ${status || 'ACTIVE'}.`,
+        ipAddress: req.ip || '127.0.0.1',
+        userAgent: req.headers['user-agent'] || 'Admin Console'
+      }
+    }).catch(() => null);
+
+    operatorsListCache = null;
+    auditLogsCache = null;
+    operatorCache.delete(id);
+    operatorCache.delete('default');
+
+    io.emit('operators_updated');
+    io.emit('audit_logs_updated');
+    io.emit('dashboard_updated');
+    if (status === 'SUSPENDED') {
+      io.emit('operator_suspended', { userId: id, message: 'Your account has been suspended by an Administrator.' });
+    }
+    res.json({ success: true, operator: updated });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.post(['/api/admin/operators/:id/request-document-update', '/api/v1/operators/:id/request-document-update'], async (req: any, res: any) => {
+  try {
+    const { id } = req.params;
+    await prisma.auditLog.create({
+      data: {
+        userId: id,
+        action: 'DOC_UPDATE_REQUESTED',
+        details: `Compliance document update request dispatched to operator ${id}`
+      }
+    }).catch(() => null);
+    res.json({ success: true, message: 'Compliance request recorded' });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 app.get(['/api/admin/audit-logs', '/api/v1/audit-logs', '/api/audit-logs'], async (req: any, res: any) => {
   try {
     const data = await getFastAuditLogs();
@@ -2140,7 +2442,8 @@ app.get(['/api/admin/support/tickets', '/api/v1/support/tickets', '/api/support/
         lastUpdated: t.updatedAt.toLocaleDateString('en-IN'),
         createdAt: t.createdAt,
         updatedAt: t.updatedAt,
-        assignedTo: { id: 'agent-01', name: assignedName },
+        assignedTo: assignedName,
+        assignedOfficer: { id: 'agent-01', name: assignedName },
         reporter: { id: reporterId, name: reporterName, email: reporterEmail },
         user: t.user,
         status: t.status,
@@ -2235,7 +2538,8 @@ app.get(['/api/admin/support/tickets/:id', '/api/v1/support/tickets/:id', '/api/
       createdAt: ticket.createdAt,
       updatedAt: ticket.updatedAt,
       attachmentUrl: ticket.attachmentUrl || null,
-      assignedTo: { id: 'agent-01', name: assignedName },
+      assignedTo: assignedName,
+      assignedOfficer: { id: 'agent-01', name: assignedName },
       reporter: { id: reporterId, name: reporterName, email: reporterEmail },
       user: ticket.user,
       messages,
@@ -2547,7 +2851,8 @@ app.get(['/api/admin/support/tickets', '/api/v1/support/tickets', '/api/support/
         createdAt: t.createdAt,
         updatedAt: t.updatedAt,
         attachmentUrl: t.attachmentUrl || null,
-        assignedTo: { id: 'agent-01', name: typeof t.assignedTo === 'string' ? t.assignedTo : 'Amit S. (Support Desk)' },
+        assignedTo: typeof t.assignedTo === 'string' ? t.assignedTo : 'Amit S. (Support Desk)',
+        assignedOfficer: { id: 'agent-01', name: typeof t.assignedTo === 'string' ? t.assignedTo : 'Amit S. (Support Desk)' },
         reporter: { id: reporterId, name: reporterName, email: reporterEmail },
         user: t.user,
         messages: Array.isArray(t.messages) ? t.messages : [],

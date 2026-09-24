@@ -973,11 +973,16 @@ export async function performApplicationStatusUpdate(params: {
   };
 
   const broadcastIo = io || (global as any).__cybersave_io;
+  if ((global as any).__invalidateAuditLogsCache) {
+    (global as any).__invalidateAuditLogsCache();
+  }
   if (broadcastIo) {
     broadcastIo.emit('application_status_changed', payload);
     broadcastIo.emit('applications_updated', payload);
     broadcastIo.emit('update_application_status_success', payload);
     broadcastIo.emit('transactions_updated');
+    broadcastIo.emit('audit_logs_updated');
+    broadcastIo.emit('dashboard_updated');
     broadcastIo.emit('user_push_notification', notificationPayload);
     broadcastIo.emit('new_notification', notificationPayload);
     broadcastIo.emit('notifications_updated', notificationPayload);
