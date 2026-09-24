@@ -143,6 +143,43 @@ export async function formatSupportTicketThread(idOrRef: string) {
   };
 }
 
+export async function resolveTicketTargetUserId(ticket: any): Promise<string | null> {
+  if (!ticket) return null;
+  if (ticket.userId && /^[0-9a-fA-F]{24}$/.test(String(ticket.userId))) {
+    return String(ticket.userId);
+  }
+  if (ticket.user?.id && /^[0-9a-fA-F]{24}$/.test(String(ticket.user.id))) {
+    return String(ticket.user.id);
+  }
+  // Check messages for a citizen/user sender ID
+  if (Array.isArray(ticket.messages)) {
+    for (const msg of ticket.messages) {
+      if ((msg.role === 'USER' || msg.role === 'CITIZEN') && msg.senderId && /^[0-9a-fA-F]{24}$/.test(String(msg.senderId))) {
+        return String(msg.senderId);
+      }
+    }
+  }
+  // Check reporter field if string or object
+  if (ticket.reporter) {
+    const repStr = typeof ticket.reporter === 'object' ? (ticket.reporter.id || ticket.reporter.email) : String(ticket.reporter);
+    if (repStr && /^[0-9a-fA-F]{24}$/.test(repStr)) {
+      return repStr;
+    }
+    if (repStr) {
+      const foundUser = await prisma.user.findFirst({
+        where: { OR: [{ email: repStr }, { phone: repStr }] }
+      }).catch(() => null);
+      if (foundUser) return foundUser.id;
+    }
+  }
+  // Fallback to active citizen user
+  const defaultCitizen = await prisma.user.findFirst({
+    where: { role: 'USER' },
+    orderBy: { updatedAt: 'desc' }
+  }).catch(() => null);
+  return defaultCitizen ? defaultCitizen.id : null;
+}
+
 export async function dispatchNotificationToCitizen(params: {
   userId?: string | null;
   title: string;
@@ -1678,18 +1715,41 @@ export function setupSockets(io: Server) {
         const isMongoId = /^[0-9a-fA-F]{24}$/.test(targetId);
         let ticket: any = null;
         if (isMongoId) {
-          ticket = await prisma.supportTicket.findUnique({ where: { id: targetId } });
+          ticket = await prisma.supportTicket.findUnique({ where: { id: targetId }, include: { user: { include: { profile: true } } } });
         }
         if (!ticket) {
-          ticket = await prisma.supportTicket.findFirst({ where: { refNumber: targetId } });
+          ticket = await prisma.supportTicket.findFirst({ where: { refNumber: targetId }, include: { user: { include: { profile: true } } } });
+        }
+        if (!ticket) {
+          ticket = await prisma.supportTicket.findFirst({
+            where: {
+              OR: [
+                { refNumber: { contains: targetId, mode: 'insensitive' } },
+                { id: { contains: targetId, mode: 'insensitive' } }
+              ]
+            },
+            include: { user: { include: { profile: true } } }
+          });
         }
         if (ticket) {
+          const targetUserId = await resolveTicketTargetUserId(ticket);
+          const replyText = String(data.text || '').trim();
           const existingMsgs = Array.isArray(ticket.messages) ? ticket.messages : [];
+
+          // Guard against duplicate reply within 3.5s
+          const isDuplicate = existingMsgs.some((m: any) =>
+            m.text === replyText &&
+            m.role === 'AGENT' &&
+            (Date.now() - new Date(m.timestamp || 0).getTime() < 3500)
+          );
+          if (isDuplicate) return;
+
           const newMsg = {
+            id: `msg-${Date.now()}`,
             senderId: data.adminId || 'admin-01',
             senderName: data.adminName || 'Support Desk Agent',
             role: 'AGENT',
-            text: data.text.trim(),
+            text: replyText,
             time: new Date().toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' }),
             timestamp: new Date().toISOString()
           };
@@ -1699,7 +1759,8 @@ export function setupSockets(io: Server) {
             data: {
               messages: updatedMsgs,
               status: 'IN_PROGRESS',
-              updatedAt: new Date()
+              updatedAt: new Date(),
+              ...(ticket.userId ? {} : targetUserId ? { userId: targetUserId } : {})
             }
           });
 
@@ -1707,19 +1768,22 @@ export function setupSockets(io: Server) {
             data: {
               userId: (data.adminId && /^[0-9a-fA-F]{24}$/.test(data.adminId)) ? data.adminId : null,
               action: 'SUPPORT_TICKET_REPLIED',
-              details: `Admin replied to ticket ${ticket.refNumber}: "${data.text.trim().substring(0, 60)}..."`,
+              details: `Admin replied to ticket ${ticket.refNumber}: "${replyText.substring(0, 60)}..."`,
             }
           }).catch(() => null);
 
           // Dispatch notification to citizen
           await dispatchNotificationToCitizen({
-            userId: ticket.userId,
-            title: 'New Reply on Support Ticket 💬',
-            body: `Official Response on Ticket #${ticket.refNumber}: "${data.text.trim().substring(0, 80)}..."`,
+            userId: targetUserId,
+            title: `Official Response: Ticket #${ticket.refNumber || ticket.id} 💬`,
+            body: replyText,
             type: 'INFO',
             metadata: {
               ticketId: ticket.id,
               refNumber: ticket.refNumber,
+              senderName: data.adminName || 'Support Desk Agent',
+              role: 'AGENT',
+              text: replyText
             },
             io
           });
@@ -1728,6 +1792,25 @@ export function setupSockets(io: Server) {
           socket.emit('response_ticket_thread', formatted);
           socket.emit('response_ticket_detail', formatted);
           io.emit('support_tickets_updated');
+          io.emit('support_ticket_replied', {
+            id: ticket.id,
+            refNumber: ticket.refNumber,
+            userId: targetUserId,
+            text: replyText,
+            senderName: data.adminName || 'Support Desk Agent',
+            role: 'AGENT',
+            time: newMsg.time,
+            timestamp: newMsg.timestamp,
+            ticket: formatted
+          });
+          io.emit('user_grievance_reply', {
+            userId: targetUserId,
+            userEmail: ticket.user?.email,
+            userPhone: ticket.user?.phone,
+            ticketId: ticket.refNumber,
+            ticketTitle: ticket.title,
+            message: newMsg,
+          });
           io.emit('response_ticket_thread', formatted);
           io.emit('response_ticket_detail', formatted);
         }
@@ -1760,44 +1843,87 @@ export function setupSockets(io: Server) {
           });
         }
         if (ticket) {
-          await prisma.supportTicket.update({
-            where: { id: ticket.id },
-            data: {
-              status: 'RESOLVED',
-              updatedAt: new Date()
-            }
-          });
-
+          const targetUserId = await resolveTicketTargetUserId(ticket);
           const resolutionSummary = data.resolutionSummary || 'Grievance verification completed. Issue marked as resolved.';
-          await prisma.auditLog.create({
-            data: {
-              userId: (data.adminId && /^[0-9a-fA-F]{24}$/.test(data.adminId)) ? data.adminId : (ticket.userId || null),
-              action: 'SUPPORT_TICKET_RESOLVED',
-              details: `Ticket ${ticket.refNumber} marked as resolved: ${resolutionSummary}`,
-            }
-          }).catch(() => null);
 
-          // Dispatch notification to citizen
-          await dispatchNotificationToCitizen({
-            userId: ticket.userId,
-            title: 'Support Ticket Resolved ✅',
-            body: `Admin has resolved your grievance ticket #${ticket.refNumber || ticket.id}: "${resolutionSummary.substring(0, 80)}"`,
-            type: 'INFO',
-            metadata: {
-              ticketId: ticket.id,
-              refNumber: ticket.refNumber,
-              status: 'RESOLVED',
-              category: data.resolutionCategory || ticket.category,
-              rootCause: data.rootCause,
-              summary: resolutionSummary
-            },
-            io
-          });
+          const existingMsgs = Array.isArray(ticket.messages) ? ticket.messages : [];
+          const hasRecentResolution = existingMsgs.some((m: any) => 
+            m.isResolution && 
+            (Date.now() - new Date(m.timestamp || 0).getTime() < 3500)
+          );
+
+          if (!hasRecentResolution) {
+            const resolutionMsg = {
+              id: `msg-resolve-${Date.now()}`,
+              senderId: data.adminId || 'admin-01',
+              senderName: `${data.adminName || 'Support Desk Officer'} (Official Resolution)`,
+              role: 'AGENT',
+              text: `✅ Grievance Ticket #${ticket.refNumber || ticket.id} has been marked as RESOLVED by the administrative verification officer.\nResolution: ${resolutionSummary}`,
+              time: new Date().toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' }),
+              timestamp: new Date().toISOString(),
+              isResolution: true
+            };
+            const updatedMsgs = [...existingMsgs, resolutionMsg];
+
+            await prisma.supportTicket.update({
+              where: { id: ticket.id },
+              data: {
+                status: 'RESOLVED',
+                messages: updatedMsgs,
+                updatedAt: new Date(),
+                ...(ticket.userId ? {} : targetUserId ? { userId: targetUserId } : {})
+              }
+            });
+
+            await prisma.auditLog.create({
+              data: {
+                userId: (data.adminId && /^[0-9a-fA-F]{24}$/.test(data.adminId)) ? data.adminId : (targetUserId || null),
+                action: 'SUPPORT_TICKET_RESOLVED',
+                details: `Ticket #${ticket.refNumber} marked as resolved: ${resolutionSummary}`,
+              }
+            }).catch(() => null);
+
+            // Dispatch notification to citizen
+            await dispatchNotificationToCitizen({
+              userId: targetUserId,
+              title: 'Support Ticket Resolved ✅',
+              body: `Admin has resolved your grievance ticket #${ticket.refNumber || ticket.id}: "${resolutionSummary}"`,
+              type: 'SUCCESS',
+              metadata: {
+                ticketId: ticket.id,
+                refNumber: ticket.refNumber,
+                status: 'RESOLVED',
+                category: data.resolutionCategory || ticket.category,
+                rootCause: data.rootCause,
+                summary: resolutionSummary
+              },
+              io
+            });
+          }
 
           const formatted = await formatSupportTicketThread(ticket.id);
           socket.emit('resolve_ticket_success', formatted);
           io.emit('support_tickets_updated');
-          io.emit('support_ticket_resolved', formatted);
+          io.emit('support_ticket_resolved', {
+            ...formatted,
+            userId: targetUserId,
+            resolutionSummary,
+            status: 'RESOLVED'
+          });
+          io.emit('user_grievance_reply', {
+            userId: targetUserId,
+            userEmail: ticket.user?.email,
+            userPhone: ticket.user?.phone,
+            ticketId: ticket.refNumber,
+            ticketTitle: ticket.title,
+            message: {
+              role: 'AGENT',
+              senderName: `${data.adminName || 'Support Desk Officer'} (Official Resolution)`,
+              text: `✅ Grievance Ticket #${ticket.refNumber || ticket.id} has been marked as RESOLVED.\nResolution: ${resolutionSummary}`,
+              time: new Date().toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' }),
+              isResolution: true
+            }
+          });
           io.emit('response_ticket_thread', formatted);
           io.emit('response_ticket_detail', formatted);
         }
