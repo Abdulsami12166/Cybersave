@@ -1009,6 +1009,8 @@ export function setupSockets(io: Server) {
         console.log('[Socket] Service configuration saved and published:', newService.id);
         socket.emit('save_service_config_success', newService);
         io.emit('services_updated', newService);
+        io.emit('service_created', newService);
+        io.emit('service_updated', newService);
       } catch (e) {
         console.error('Failed to save service config:', e);
         socket.emit('save_service_config_error', { error: (e as any).message });

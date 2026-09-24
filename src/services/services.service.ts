@@ -296,6 +296,7 @@ export class ServicesService implements OnModuleInit {
         details: `${isExisting ? 'Updated' : 'Created'} e-governance service scheme "${rawTitle}" (Category: ${service.category}, Fee: ₹${feeVal}, SLA: ${service.processingTime})`,
       });
       AdminGateway.broadcast('services_updated', service);
+      AdminGateway.broadcast(isExisting ? 'service_updated' : 'service_created', service);
     } catch (auditErr: any) {
       this.logger.warn(`Service audit log warning: ${auditErr?.message}`);
     }

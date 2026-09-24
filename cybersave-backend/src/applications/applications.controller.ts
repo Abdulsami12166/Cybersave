@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Param, Patch, Post, Put, Query } from '@nestjs/common';
+import { Body, Controller, Get, Param, Patch, Post, Put, Query, Res } from '@nestjs/common';
 import {
   ApplicationsService,
   CreateApplicationDto,
@@ -19,6 +19,16 @@ export class ApplicationsController {
     @Query('status') status?: string,
   ) {
     return this.applicationsService.getUserApplications(userId, status);
+  }
+
+  @Get(':id/certificate')
+  async getCertificateDetails(@Param('id') id: string) {
+    return this.applicationsService.getCertificateDetails(id);
+  }
+
+  @Get(':id/certificate.pdf')
+  async generateCertificatePdf(@Param('id') id: string, @Res() res: any) {
+    return this.applicationsService.generateCertificatePdf(id, res);
   }
 
   @Get(':id')
