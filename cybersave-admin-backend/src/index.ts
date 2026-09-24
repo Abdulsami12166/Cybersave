@@ -22,7 +22,7 @@ const io = new Server(server, {
 });
 setupSockets(io);
 
-import { findUserByIdOrCit, fetchCitizenFullDetails, fetchCitizensList, fetchRealTransactionsData, performApplicationStatusUpdate } from './citizenService';
+import { findUserByIdOrCit, fetchCitizenFullDetails, fetchCitizensList, fetchRealTransactionsData, performApplicationStatusUpdate, invalidateCitizensListCache, invalidateCitizenDetailsCache } from './citizenService';
 
 const prisma = new PrismaClient();
 const PORT = process.env.ADMIN_PORT || 3001;
@@ -1047,13 +1047,30 @@ app.post(['/api/admin/users/:id/block', '/api/v1/users/:id/block'], async (req: 
     let u = await findUserByIdOrCit(id);
     if (!u) return res.status(404).json({ error: 'Citizen not found' });
 
-    const nextStatus = status || (u.status === 'BLOCKED' ? 'Verified' : 'BLOCKED');
+    const nextStatus = status ? (String(status).toUpperCase() === 'BLOCKED' ? 'BLOCKED' : 'VERIFIED') : (u.status === 'BLOCKED' ? 'VERIFIED' : 'BLOCKED');
     const updatedUser = await prisma.user.update({ where: { id: u.id }, data: { status: nextStatus } });
+
+    invalidateCitizensListCache();
+    invalidateCitizenDetailsCache(u.id);
+
+    if (nextStatus === 'BLOCKED') {
+      await dispatchNotificationToCitizen({
+        userId: u.id,
+        title: 'Account Blocked by Administrator ⚠️',
+        body: 'Your Cybersave citizen account has been blocked by the administrative authority. Please contact support.',
+        type: 'WARNING',
+        io
+      }).catch(() => null);
+
+      io.emit('force_logout', { userId: u.id, reason: 'Your account has been suspended/blocked by an Administrator. Please contact support.' });
+      io.emit('user_blocked', { userId: u.id });
+    }
+
     await prisma.auditLog.create({
       data: {
         userId: u.id,
         action: nextStatus === 'BLOCKED' ? 'USER_BLOCKED' : 'USER_UNBLOCKED',
-        details: `Admin changed citizen ${u.email || u.id} status to ${nextStatus}`,
+        details: `Administrator ${nextStatus === 'BLOCKED' ? 'BLOCKED' : 'UNBLOCKED'} citizen ${u.email || u.id}. Immediate enforcement applied.`,
         ipAddress: req.ip || '127.0.0.1',
         userAgent: req.headers['user-agent'] || 'Admin Console'
       }
@@ -1063,6 +1080,8 @@ app.post(['/api/admin/users/:id/block', '/api/v1/users/:id/block'], async (req: 
     io.emit('audit_logs_updated');
     io.emit('users_updated');
     io.emit('citizen_status_updated', { id: u.id, status: nextStatus });
+    const freshUsers = await fetchCitizensList();
+    io.emit('response_users_data', freshUsers);
     res.json({ success: true, status: nextStatus, user: updatedUser });
   } catch (e: any) {
     res.status(500).json({ error: e.message });
@@ -1089,6 +1108,21 @@ app.post(['/api/admin/users/bulk-block', '/api/v1/users/bulk-block'], async (req
       data: { status }
     });
 
+    if (status === 'BLOCKED') {
+      for (const uid of mongoIds) {
+        dispatchNotificationToCitizen({
+          userId: uid,
+          title: 'Account Blocked by Administrator ⚠️',
+          body: 'Your Cybersave citizen account has been blocked by the administrative authority. Please contact support.',
+          type: 'WARNING',
+          io
+        }).catch(() => null);
+        io.emit('force_logout', { userId: uid, reason: 'Your account has been suspended/blocked by an Administrator. Please contact support.' });
+        io.emit('user_blocked', { userId: uid });
+        invalidateCitizenDetailsCache(uid);
+      }
+    }
+
     await prisma.auditLog.create({
       data: {
         userId: 'admin_action',
@@ -1099,10 +1133,13 @@ app.post(['/api/admin/users/bulk-block', '/api/v1/users/bulk-block'], async (req
       }
     }).catch(() => null);
 
+    invalidateCitizensListCache();
     auditLogsCache = null;
     io.emit('audit_logs_updated');
     io.emit('users_updated');
     io.emit('citizens_bulk_updated', { userIds, status });
+    const freshUsers = await fetchCitizensList();
+    io.emit('response_users_data', freshUsers);
     res.json({ success: true, count: updated.count, status });
   } catch (e: any) {
     res.status(500).json({ error: e.message });
@@ -3079,6 +3116,173 @@ app.post(['/api/admin/notifications/read-all', '/api/v1/notifications/read-all',
       data: { status: 'READ' }
     });
     res.json({ success: true, message: 'All notifications marked as read' });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ─── Campaigns Endpoints ───────────────────────────────────────────────────────
+app.post(['/api/admin/campaigns', '/api/v1/campaigns'], async (req: any, res: any) => {
+  try {
+    const { title, targetAudience = 'ALL', channel = 'PUSH_NOTIFICATION', priority = 'STANDARD', content, scheduleDate } = req.body;
+    if (!title || !content) {
+      return res.status(400).json({ error: 'Campaign title and content are required' });
+    }
+
+    // Broadcast live push to all mobile clients
+    io.emit('receive_global_push', {
+      title: `📢 ${title}`,
+      body: content,
+      type: priority === 'URGENT' ? 'WARNING' : 'INFO',
+      metadata: { targetAudience, channel, priority }
+    });
+
+    // Create notifications for users
+    const targetUsers = await prisma.user.findMany({
+      where: { role: 'USER', ...(targetAudience === 'VERIFIED' ? { status: 'VERIFIED' } : {}) },
+      take: 200,
+      select: { id: true }
+    });
+
+    if (targetUsers.length > 0) {
+      await prisma.notification.createMany({
+        data: targetUsers.map(u => ({
+          userId: u.id,
+          title: `📢 ${title}`,
+          body: content,
+          type: priority === 'URGENT' ? 'WARNING' : 'INFO',
+          status: 'PENDING'
+        }))
+      }).catch(() => null);
+    }
+
+    const campaignId = `CMP-${Date.now().toString(36).toUpperCase()}`;
+
+    // Record in AuditLog
+    await prisma.auditLog.create({
+      data: {
+        userId: req.user?.id && /^[0-9a-fA-F]{24}$/.test(req.user.id) ? req.user.id : null,
+        action: 'CAMPAIGN_BROADCAST',
+        details: `Broadcast Campaign "${title}" (${priority}) launched to "${targetAudience}" via ${channel}. Reach: ${targetUsers.length} citizens.`,
+        ipAddress: req.ip || '127.0.0.1',
+      }
+    }).catch(() => null);
+
+    auditLogsCache = null;
+    io.emit('audit_logs_updated');
+    io.emit('campaign_created', { id: campaignId, title, targetAudience, channel, priority, content, recipientCount: targetUsers.length, createdAt: new Date().toISOString() });
+
+    res.status(201).json({
+      success: true,
+      campaign: {
+        id: campaignId,
+        title,
+        targetAudience,
+        channel,
+        priority,
+        content,
+        recipientCount: targetUsers.length,
+        status: 'BROADCASTED',
+        createdAt: new Date().toISOString()
+      }
+    });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.get(['/api/admin/campaigns', '/api/v1/campaigns'], async (req: any, res: any) => {
+  try {
+    const recentAuditCampaigns = await prisma.auditLog.findMany({
+      where: { action: 'CAMPAIGN_BROADCAST' },
+      take: 20,
+      orderBy: { createdAt: 'desc' }
+    });
+
+    const campaigns = recentAuditCampaigns.map(l => ({
+      id: `CMP-${l.id.slice(-6).toUpperCase()}`,
+      title: (l.details || '').split('"')[1] || 'Citizen Broadcast Campaign',
+      details: l.details,
+      createdAt: l.createdAt,
+      status: 'DISPATCHED'
+    }));
+
+    res.json({ success: true, count: campaigns.length, campaigns });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ─── System Settings Endpoints ────────────────────────────────────────────────
+app.get(['/api/admin/system-settings', '/api/v1/system-settings'], async (req: any, res: any) => {
+  try {
+    const settings = await prisma.systemSetting.findMany();
+    const map: Record<string, any> = {};
+    settings.forEach(s => { map[s.key] = s.value; });
+    res.json({
+      success: true,
+      settings: {
+        maintenanceMode: map.maintenanceMode ?? false,
+        autoApprovalThreshold: map.autoApprovalThreshold ?? 85,
+        smsGatewayProvider: map.smsGatewayProvider ?? 'Gov NIC SMS Gateway',
+        biometricStrictness: map.biometricStrictness ?? 'High',
+        auditRetentionDays: map.auditRetentionDays ?? 90,
+        ...map
+      }
+    });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.post(['/api/admin/system-settings', '/api/v1/system-settings'], async (req: any, res: any) => {
+  try {
+    const entries = Object.entries(req.body);
+    for (const [key, value] of entries) {
+      await prisma.systemSetting.upsert({
+        where: { key },
+        update: { value: value as any },
+        create: { key, value: value as any }
+      });
+    }
+
+    const changedKeys = Object.keys(req.body).join(', ');
+    await prisma.auditLog.create({
+      data: {
+        userId: req.user?.id && /^[0-9a-fA-F]{24}$/.test(req.user.id) ? req.user.id : null,
+        action: 'SYSTEM_SETTINGS_UPDATED',
+        details: `Administrator updated system configuration parameters: [${changedKeys}]. Live policies reloaded.`,
+        ipAddress: req.ip || '127.0.0.1',
+      }
+    }).catch(() => null);
+
+    auditLogsCache = null;
+    io.emit('audit_logs_updated');
+    io.emit('system_settings_updated', req.body);
+    res.json({ success: true, message: 'System settings successfully updated' });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ─── Admin Logout with Audit Log ─────────────────────────────────────────────
+app.post(['/api/admin/auth/logout', '/api/v1/auth/admin-logout', '/api/auth/admin-logout'], async (req: any, res: any) => {
+  try {
+    const adminEmail = req.body?.email || req.user?.email || 'admin@cybersave.com';
+    const adminName = req.body?.name || req.user?.name || 'Administrator';
+    
+    await prisma.auditLog.create({
+      data: {
+        userId: (req.user?.id && /^[0-9a-fA-F]{24}$/.test(req.user.id)) ? req.user.id : null,
+        action: 'ADMIN_LOGOUT',
+        details: `Administrator ${adminName} (${adminEmail}) successfully logged out of administrative console.`,
+        ipAddress: req.ip || '127.0.0.1',
+      }
+    }).catch(() => null);
+
+    auditLogsCache = null;
+    io.emit('audit_logs_updated');
+    res.json({ success: true, message: 'Logged out successfully' });
   } catch (e: any) {
     res.status(500).json({ error: e.message });
   }

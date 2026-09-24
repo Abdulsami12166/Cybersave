@@ -71,6 +71,12 @@ export class AuthService {
     if (!phone) throw new BadRequestException('Phone number is required');
     const cleanPhone = phone.trim().replace(/\s+/g, '');
     
+    // Check if citizen account is blocked
+    const existingUser = await this.prisma.user.findFirst({ where: { phone: cleanPhone } });
+    if (existingUser && (existingUser.status === 'BLOCKED' || existingUser.status === 'SUSPENDED')) {
+      throw new UnauthorizedException('Your account has been suspended/blocked by an Administrator. Please contact support.');
+    }
+
     // Generate 6 digit OTP
     const otp = Math.floor(100000 + Math.random() * 900000).toString();
 
@@ -356,6 +362,10 @@ export class AuthService {
         include: { profile: true },
       });
 
+      if (user && (user.status === 'BLOCKED' || user.status === 'SUSPENDED')) {
+        throw new UnauthorizedException('Your account has been suspended/blocked by an Administrator. Please contact support.');
+      }
+
       if (!user) {
         const userEmail = `user_${cleanId.slice(-4)}_${Date.now()}@cybersave.gov.in`;
         user = await this.prisma.user.create({
@@ -397,6 +407,10 @@ export class AuthService {
       const user = await this.prisma.user.findUnique({ where: { email: cleanId }, include: { profile: true } });
       if (!user) {
         throw new UnauthorizedException('Invalid credentials');
+      }
+
+      if (user.status === 'BLOCKED' || user.status === 'SUSPENDED') {
+        throw new UnauthorizedException('Your account has been suspended/blocked by an Administrator. Please contact support.');
       }
 
       if (!user.otpCode || user.otpCode !== otp || !user.otpExpiry || user.otpExpiry < new Date()) {

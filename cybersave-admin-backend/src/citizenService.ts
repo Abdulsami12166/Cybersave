@@ -30,8 +30,9 @@ export async function findUserByIdOrCit(id: string, includeRelations?: any): Pro
     });
 
     const match = allUsers.find(u =>
-      u.id.substring(0, 5).toUpperCase() === short ||
+      u.id.slice(-6).toUpperCase() === short ||
       u.id.slice(-5).toUpperCase() === short ||
+      u.id.substring(0, 5).toUpperCase() === short ||
       u.id.toUpperCase().includes(short)
     );
 
@@ -73,6 +74,16 @@ export async function findUserByIdOrCit(id: string, includeRelations?: any): Pro
 }
 
 const citizenDetailsCache = new Map<string, { data: any; timestamp: number }>();
+
+export function invalidateCitizenDetailsCache(userId?: string) {
+  if (userId) {
+    citizenDetailsCache.delete(userId);
+    const short = userId.slice(-6).toUpperCase();
+    citizenDetailsCache.delete(`CIT-${short}`);
+  } else {
+    citizenDetailsCache.clear();
+  }
+}
 
 export async function fetchCitizenFullDetails(targetId: string): Promise<any | null> {
   const cached = citizenDetailsCache.get(targetId);
@@ -494,7 +505,7 @@ export async function fetchCitizenFullDetails(targetId: string): Promise<any | n
 
   // Format final citizen profile object
   const citizenPayload = {
-    id: `CIT-${user.id.substring(0, 5).toUpperCase()}`,
+    id: `CIT-${user.id.slice(-6).toUpperCase()}`,
     dbId: user.id,
     fullName: formattedFullName,
     fatherName,
@@ -510,7 +521,7 @@ export async function fetchCitizenFullDetails(targetId: string): Promise<any | n
     state,
     pinCode,
     joinedDate: user.createdAt ? new Date(user.createdAt).toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' }) : '15 March 2024',
-    status: user.status === 'BLOCKED' ? 'Blocked' : (user.status || 'Verified'),
+    status: (user.status === 'BLOCKED' || user.status === 'SUSPENDED') ? 'Blocked' : ((user.status === 'PENDING' || user.status === 'UNVERIFIED') ? 'Pending' : 'Verified'),
     isOnline: user.isOnline === true,
     lastActive: user.isOnline ? 'Active Now' : 'Active recently',
     lastSeenAt: user.lastSeenAt || user.createdAt,
@@ -621,7 +632,7 @@ export async function fetchCitizensList(params?: { page?: number; limit?: number
     const aadhaar = prof.dob ? `•••• •••• ${u.id.slice(-4)}` : `•••• •••• ${u.id.slice(-4)}`;
 
     return {
-      id: `CIT-${u.id.substring(0, 5).toUpperCase()}`,
+      id: `CIT-${u.id.slice(-6).toUpperCase()}`,
       dbId: u.id,
       fullName,
       email,
@@ -629,7 +640,7 @@ export async function fetchCitizensList(params?: { page?: number; limit?: number
       district,
       aadhaar,
       servicesUsed: u.applications?.length || 0,
-      status: u.status === 'BLOCKED' ? 'Blocked' : (u.status || 'Verified'),
+      status: (u.status === 'BLOCKED' || u.status === 'SUSPENDED') ? 'Blocked' : ((u.status === 'PENDING' || u.status === 'UNVERIFIED') ? 'Pending' : 'Verified'),
       isOnline: u.isOnline === true,
       lastActive: u.isOnline ? 'Active Now' : 'Active recently',
       avatarUrl: prof.avatarUrl || null,

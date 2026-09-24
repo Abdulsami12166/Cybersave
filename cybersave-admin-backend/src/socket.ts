@@ -2,7 +2,7 @@ import { Server, Socket } from 'socket.io';
 import { PrismaClient } from '@prisma/client';
 import { messaging } from './firebase';
 import bcrypt from 'bcrypt';
-import { findUserByIdOrCit, fetchCitizenFullDetails, fetchCitizensList, invalidateCitizensListCache, fetchRealTransactionsData, performApplicationStatusUpdate } from './citizenService';
+import { findUserByIdOrCit, fetchCitizenFullDetails, fetchCitizensList, invalidateCitizensListCache, invalidateCitizenDetailsCache, fetchRealTransactionsData, performApplicationStatusUpdate } from './citizenService';
 
 const prisma = new PrismaClient();
 
@@ -624,20 +624,41 @@ export function setupSockets(io: Server) {
           return;
         }
 
-        const nextStatus = data.status || (u.status === 'BLOCKED' ? 'Verified' : 'BLOCKED');
+        const nextStatus = data.status 
+          ? (String(data.status).toUpperCase() === 'BLOCKED' ? 'BLOCKED' : 'VERIFIED')
+          : (u.status === 'BLOCKED' ? 'VERIFIED' : 'BLOCKED');
 
         await prisma.user.update({
           where: { id: u.id },
           data: { status: nextStatus }
         });
 
+        invalidateCitizensListCache();
+        invalidateCitizenDetailsCache(u.id);
+
+        if (nextStatus === 'BLOCKED') {
+          await dispatchNotificationToCitizen({
+            userId: u.id,
+            title: 'Account Blocked by Administrator ⚠️',
+            body: 'Your Cybersave citizen account has been blocked by the administrative authority. Please contact support.',
+            type: 'WARNING',
+            io
+          }).catch(() => null);
+
+          io.emit('force_logout', { userId: u.id, reason: 'Your account has been suspended/blocked by an Administrator. Please contact support.' });
+          io.emit('user_blocked', { userId: u.id });
+        }
+
         await prisma.auditLog.create({
           data: {
             userId: u.id,
             action: nextStatus === 'BLOCKED' ? 'USER_BLOCKED' : 'USER_UNBLOCKED',
-            details: `Admin changed citizen status to ${nextStatus}`
+            details: `Admin changed citizen status to ${nextStatus}. ${nextStatus === 'BLOCKED' ? 'Immediate force logout and suspension enforced.' : 'Citizen unblocked.'}`
           }
         }).catch(() => null);
+
+        io.emit('audit_logs_updated');
+        io.emit('citizen_status_updated', { id: u.id, status: nextStatus });
 
         const formatted = await fetchCitizenFullDetails(u.id);
         socket.emit('block_citizen_success', formatted);
@@ -670,6 +691,21 @@ export function setupSockets(io: Server) {
           data: { status }
         });
 
+        if (status === 'BLOCKED') {
+          for (const uid of mongoIds) {
+            dispatchNotificationToCitizen({
+              userId: uid,
+              title: 'Account Blocked by Administrator ⚠️',
+              body: 'Your Cybersave citizen account has been blocked by the administrative authority. Please contact support.',
+              type: 'WARNING',
+              io
+            }).catch(() => null);
+            io.emit('force_logout', { userId: uid, reason: 'Your account has been suspended/blocked by an Administrator. Please contact support.' });
+            io.emit('user_blocked', { userId: uid });
+            invalidateCitizenDetailsCache(uid);
+          }
+        }
+
         await prisma.auditLog.create({
           data: {
             userId: 'admin_action',
@@ -678,6 +714,7 @@ export function setupSockets(io: Server) {
           }
         }).catch(() => null);
 
+        invalidateCitizensListCache();
         io.emit('audit_logs_updated');
         io.emit('users_updated');
         const usersData = await fetchCitizensList();
