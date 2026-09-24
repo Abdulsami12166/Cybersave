@@ -2,7 +2,7 @@ import { Server, Socket } from 'socket.io';
 import { PrismaClient } from '@prisma/client';
 import { messaging } from './firebase';
 import bcrypt from 'bcrypt';
-import { findUserByIdOrCit, fetchCitizenFullDetails, fetchCitizensList, fetchRealTransactionsData, performApplicationStatusUpdate } from './citizenService';
+import { findUserByIdOrCit, fetchCitizenFullDetails, fetchCitizensList, invalidateCitizensListCache, fetchRealTransactionsData, performApplicationStatusUpdate } from './citizenService';
 
 const prisma = new PrismaClient();
 
