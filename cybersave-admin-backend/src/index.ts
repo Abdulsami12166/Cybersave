@@ -2795,9 +2795,9 @@ app.get(['/api/admin/profile', '/api/v1/profile', '/api/admin/me'], async (req: 
       email: adminUser?.email || 'admin@cybersave.com',
       phone: adminUser?.phone || '+91 98450 19823',
       role: 'Super Admin',
-      kendraId: 'CSC-DEL-8841',
+      kendraId: 'CSB-KENDRA-01',
       designation: 'Principal Verification Officer (SDM)',
-      district: 'Central Delhi, NCT of Delhi',
+      district: 'CyberSave Regional Hub',
       avatarUrl: 'https://ui-avatars.com/api/?name=Suresh+Sharma&background=1E40AF&color=fff',
       permissions: ['DASHBOARD', 'APPLICATIONS', 'TRANSACTIONS', 'SERVICES', 'USERS', 'OPERATORS', 'SUPPORT', 'AUDIT', 'SETTINGS']
     });
@@ -2809,9 +2809,9 @@ app.get(['/api/admin/profile', '/api/v1/profile', '/api/admin/me'], async (req: 
       email: 'admin@cybersave.com',
       phone: '+91 98450 19823',
       role: 'Super Admin',
-      kendraId: 'CSC-DEL-8841',
+      kendraId: 'CSB-KENDRA-01',
       designation: 'Principal Verification Officer (SDM)',
-      district: 'Central Delhi, NCT of Delhi',
+      district: 'CyberSave Regional Hub',
       avatarUrl: 'https://ui-avatars.com/api/?name=Suresh+Sharma&background=1E40AF&color=fff',
       permissions: ['DASHBOARD', 'APPLICATIONS', 'TRANSACTIONS', 'SERVICES', 'USERS', 'OPERATORS', 'SUPPORT', 'AUDIT', 'SETTINGS']
     });
