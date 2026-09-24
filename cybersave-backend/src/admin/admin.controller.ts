@@ -717,9 +717,9 @@ export class AdminController {
           totalTransactionsCount: totalApps || 0,
         },
         collections: {
-          totalCollections: 1240000,
-          onlinePayments: 820000,
-          cashCollections: 420000,
+          totalCollections: revenueToday,
+          onlinePayments: revenueToday,
+          cashCollections: 0,
         },
         serviceShare: [
           { name: 'Aadhaar', percentage: 35 },
@@ -757,7 +757,7 @@ export class AdminController {
     } catch (e) {
       return {
         stats: { revenueToday: 0, appsToday: 0, pendingApps: 0, completedAppsToday: 0, rejectedAppsToday: 0, activeCentres: 4 },
-        collections: { totalCollections: 1240000, onlinePayments: 820000, cashCollections: 420000 },
+        collections: { totalCollections: 0, onlinePayments: 0, cashCollections: 0 },
         serviceShare: [{ name: 'Aadhaar', percentage: 35 }, { name: 'PAN Card', percentage: 22 }, { name: 'Certificates', percentage: 18 }, { name: 'Banking', percentage: 15 }, { name: 'Other', percentage: 10 }],
         recentApps: [],
         charts: { revenueOverview: [], applicationTrends: [] },

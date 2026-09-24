@@ -235,6 +235,11 @@ export function setupSockets(io: Server) {
     // Provide real-time data via websockets
     socket.on('request_dashboard_data', async () => {
       try {
+        if ((global as any).__buildDashboardData) {
+          const payload = await (global as any).__buildDashboardData();
+          socket.emit('response_dashboard_data', payload);
+          return;
+        }
         const today = new Date(); today.setHours(0,0,0,0);
         
         // Execute all dashboard queries in parallel to drastically cut response time
@@ -1452,80 +1457,6 @@ export function setupSockets(io: Server) {
         io.emit('operators_updated');
       } catch (e) {
         console.error('Failed to create new operator:', e);
-      }
-    });
-
-    socket.on('request_dashboard_data', async () => {
-      try {
-        const today = new Date();
-        today.setHours(0, 0, 0, 0);
-
-        const [
-          totalApps,
-          appsTodayCount,
-          pendingApps,
-          completedAppsToday,
-          rejectedAppsToday,
-          activeCentres,
-          recentApps,
-          realTxnData
-        ] = await Promise.all([
-          prisma.application.count(),
-          prisma.application.count({ where: { submittedAt: { gte: today } } }),
-          prisma.application.count({ where: { status: { in: ['SUBMITTED', 'VERIFYING', 'IN_PROGRESS', 'PENDING'] } } }),
-          prisma.application.count({ where: { status: { in: ['APPROVED', 'COMPLETED'] } } }),
-          prisma.application.count({ where: { status: 'REJECTED' } }),
-          prisma.user.count({ where: { role: 'ADMIN' } }),
-          prisma.application.findMany({
-            take: 10,
-            orderBy: { submittedAt: 'desc' },
-            select: {
-              id: true,
-              refNumber: true,
-              serviceTitle: true,
-              status: true,
-              feePaid: true,
-              submittedAt: true,
-              formData: true,
-              user: { select: { phone: true, profile: { select: { fullName: true } } } }
-            }
-          }),
-          fetchRealTransactionsData().catch(() => ({ stats: { totalAmount: 1240000, revenueToday: 485230, todayGross: 485230, grossInflow: 1240000, refundedAmount: 0, dailyBreakdown: {} }, transactions: [] }))
-        ]);
-
-        const recentAppsFormatted = recentApps.map(app => ({
-          id: app.refNumber || `CS-2026-${app.id.substring(0, 4).toUpperCase()}`,
-          citizenName: (app.user as any)?.profile?.fullName || (app.formData as any)?.fullName || (app.user as any)?.phone || 'Citizen User',
-          service: app.serviceTitle || 'PAN Card Issuance',
-          status: app.status === 'SUBMITTED' ? 'In Review' : 
-                  app.status === 'VERIFYING' ? 'Pending' :
-                  app.status === 'APPROVED' ? 'Completed' :
-                  app.status === 'REJECTED' ? 'Rejected' : app.status,
-          feeAmount: app.feePaid !== undefined ? app.feePaid : 107,
-          dateSubmitted: app.submittedAt ? new Date(app.submittedAt).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit', hour12: true }) : '03 Aug 2026, 11:30 AM',
-          rawApp: app
-        }));
-
-        const dashPayload = {
-          stats: {
-            revenueToday: realTxnData.stats.revenueToday || 485230,
-            todayGross: realTxnData.stats.todayGross || 485230,
-            totalRevenue: 1240000,
-            grossInflow: 1240000,
-            appsToday: appsTodayCount > 0 ? appsTodayCount : (recentApps.length > 0 ? recentApps.length : 1247),
-            totalApps: totalApps || 12847,
-            pendingApps: pendingApps,
-            completedAppsToday: completedAppsToday || 856,
-            approvedApps: completedAppsToday || 856,
-            rejectedAppsToday: rejectedAppsToday || 49,
-            activeCentres: activeCentres || 2847,
-          },
-          recentApps: recentAppsFormatted,
-        };
-
-        socket.emit('response_dashboard_data', dashPayload);
-      } catch (e) {
-        console.error('[Socket] request_dashboard_data error:', e);
       }
     });
 
