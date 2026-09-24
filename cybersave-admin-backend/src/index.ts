@@ -3,6 +3,7 @@ import cors from 'cors';
 import http from 'http';
 import { Server } from 'socket.io';
 import { setupSockets, formatSupportTicketThread, dispatchNotificationToCitizen, resolveTicketTargetUserId } from './socket';
+import { messaging } from './firebase';
 import { PrismaClient } from '@prisma/client';
 import dotenv from 'dotenv';
 import bcrypt from 'bcrypt';
@@ -1181,6 +1182,58 @@ app.post(['/api/admin/users/bulk-verify', '/api/v1/users/bulk-verify'], async (r
     io.emit('users_updated');
     io.emit('citizens_bulk_updated', { userIds, status: 'Verified' });
     res.json({ success: true, count: updated.count });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ─── Citizen FCM & Presence Endpoints (Mobile Client Support) ─────────────────
+app.post(['/api/admin/users/fcm-token', '/api/v1/users/fcm-token', '/api/users/fcm-token', '/users/fcm-token'], async (req: any, res: any) => {
+  try {
+    const { userId, fcmToken } = req.body;
+    if (!userId || !fcmToken) return res.status(400).json({ error: 'userId and fcmToken required' });
+    let targetId = userId;
+    if (!/^[0-9a-fA-F]{24}$/.test(targetId)) {
+      const u = await findUserByIdOrCit(targetId);
+      if (u) targetId = u.id;
+    }
+    if (/^[0-9a-fA-F]{24}$/.test(targetId)) {
+      await prisma.user.update({
+        where: { id: targetId },
+        data: { fcmToken, isOnline: true, lastSeenAt: new Date() }
+      }).catch(() => null);
+    }
+    res.json({ success: true, message: 'FCM token registered' });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.post(['/api/admin/users/heartbeat', '/api/v1/users/heartbeat', '/api/users/heartbeat', '/users/heartbeat'], async (req: any, res: any) => {
+  try {
+    const { userId } = req.body;
+    if (userId && /^[0-9a-fA-F]{24}$/.test(userId)) {
+      await prisma.user.update({
+        where: { id: userId },
+        data: { isOnline: true, lastSeenAt: new Date() }
+      }).catch(() => null);
+    }
+    res.json({ success: true });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.post(['/api/admin/users/offline', '/api/v1/users/offline', '/api/users/offline', '/users/offline'], async (req: any, res: any) => {
+  try {
+    const { userId } = req.body;
+    if (userId && /^[0-9a-fA-F]{24}$/.test(userId)) {
+      await prisma.user.update({
+        where: { id: userId },
+        data: { isOnline: false, lastSeenAt: new Date() }
+      }).catch(() => null);
+    }
+    res.json({ success: true });
   } catch (e: any) {
     res.status(500).json({ error: e.message });
   }
@@ -3059,12 +3112,16 @@ app.get(['/api/admin/notifications', '/api/v1/notifications', '/api/notification
     if (userId && userId !== 'all') {
       const isMongoId = /^[0-9a-fA-F]{24}$/.test(userId);
       if (isMongoId) {
-        where.userId = userId;
+        where.OR = [{ userId: userId }, { userId: '000000000000000000000000' }];
       } else {
         const u = await prisma.user.findFirst({
           where: { OR: [{ email: userId }, { phone: userId }] }
         }).catch(() => null);
-        if (u) where.userId = u.id;
+        if (u) {
+          where.OR = [{ userId: u.id }, { userId: '000000000000000000000000' }];
+        } else {
+          where.userId = '000000000000000000000000';
+        }
       }
     }
 
@@ -3129,34 +3186,111 @@ app.post(['/api/admin/campaigns', '/api/v1/campaigns'], async (req: any, res: an
       return res.status(400).json({ error: 'Campaign title and content are required' });
     }
 
-    // Broadcast live push to all mobile clients
-    io.emit('receive_global_push', {
-      title: `📢 ${title}`,
-      body: content,
-      type: priority === 'URGENT' ? 'WARNING' : 'INFO',
-      metadata: { targetAudience, channel, priority }
-    });
+    const campaignId = `CMP-${Date.now().toString(36).toUpperCase()}`;
+    const pushTitle = `📢 ${title}`;
+    const pushBody = content;
+    const notifType = priority === 'URGENT' ? 'WARNING' : 'INFO';
 
-    // Create notifications for users
+    // Broadcast live push across all socket event channels for all mobile versions
+    const pushPayload = {
+      id: campaignId,
+      campaignId,
+      title: pushTitle,
+      body: pushBody,
+      message: pushBody,
+      content: pushBody,
+      type: notifType,
+      priority,
+      status: 'SENT',
+      userId: 'all',
+      createdAt: new Date().toISOString(),
+      metadata: { targetAudience, channel, priority, campaignId }
+    };
+
+    io.emit('receive_global_push', pushPayload);
+    io.emit('user_push_notification', pushPayload);
+    io.emit('new_notification', pushPayload);
+    io.emit('campaign_created', { id: campaignId, title: pushTitle, body: pushBody, content: pushBody, targetAudience, channel, priority, createdAt: new Date().toISOString() });
+    io.emit('campaign_broadcast', pushPayload);
+    io.emit('broadcast_notification', pushPayload);
+    io.emit('notifications_updated');
+
+    // Query target citizens in the system
+    const targetWhere: any = {};
+    if (targetAudience === 'VERIFIED') {
+      targetWhere.OR = [{ status: 'VERIFIED' }, { status: 'ACTIVE' }, { status: 'Verified' }];
+    }
     const targetUsers = await prisma.user.findMany({
-      where: { role: 'USER', ...(targetAudience === 'VERIFIED' ? { status: 'VERIFIED' } : {}) },
-      take: 200,
-      select: { id: true }
+      where: targetWhere,
+      take: 500,
+      select: { id: true, fcmToken: true }
     });
 
+    // Create notifications for each individual user so it appears in their personal feed
     if (targetUsers.length > 0) {
       await prisma.notification.createMany({
         data: targetUsers.map(u => ({
           userId: u.id,
-          title: `📢 ${title}`,
-          body: content,
-          type: priority === 'URGENT' ? 'WARNING' : 'INFO',
+          title: pushTitle,
+          body: pushBody,
+          type: notifType as any,
           status: 'PENDING'
         }))
       }).catch(() => null);
     }
 
-    const campaignId = `CMP-${Date.now().toString(36).toUpperCase()}`;
+    // Also persist a canonical global notification record for all citizens
+    await prisma.notification.create({
+      data: {
+        userId: '000000000000000000000000',
+        title: pushTitle,
+        body: pushBody,
+        type: notifType as any,
+        status: 'SENT'
+      }
+    }).catch(() => null);
+
+    // Send real Firebase Cloud Messaging (FCM) Push Notifications
+    if (messaging) {
+      // 1. Broadcast to global 'all' topic
+      messaging.send({
+        topic: 'all',
+        notification: {
+          title: pushTitle,
+          body: pushBody,
+        },
+        data: {
+          title: pushTitle,
+          body: pushBody,
+          message: pushBody,
+          type: String(notifType),
+          campaignId,
+          priority: String(priority),
+        }
+      }).catch((err: any) => console.warn('[FCM Topic Send Error]:', err?.message));
+
+      // 2. Direct FCM send to all devices with active fcmToken
+      const validTokens = Array.from(new Set(targetUsers.map(u => u.fcmToken).filter(t => typeof t === 'string' && t.trim().length > 10))) as string[];
+      if (validTokens.length > 0) {
+        for (let i = 0; i < validTokens.length; i += 100) {
+          const tokenBatch = validTokens.slice(i, i + 100);
+          messaging.sendEachForMulticast({
+            tokens: tokenBatch,
+            notification: {
+              title: pushTitle,
+              body: pushBody,
+            },
+            data: {
+              title: pushTitle,
+              body: pushBody,
+              message: pushBody,
+              type: String(notifType),
+              campaignId,
+            }
+          }).catch((err: any) => console.warn('[FCM Multicast Error]:', err?.message));
+        }
+      }
+    }
 
     // Record in AuditLog
     await prisma.auditLog.create({
@@ -3170,7 +3304,6 @@ app.post(['/api/admin/campaigns', '/api/v1/campaigns'], async (req: any, res: an
 
     auditLogsCache = null;
     io.emit('audit_logs_updated');
-    io.emit('campaign_created', { id: campaignId, title, targetAudience, channel, priority, content, recipientCount: targetUsers.length, createdAt: new Date().toISOString() });
 
     res.status(201).json({
       success: true,

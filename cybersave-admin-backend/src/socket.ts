@@ -269,6 +269,60 @@ export function setupSockets(io: Server) {
   io.on('connection', (socket: Socket) => {
     console.log('Client connected:', socket.id);
 
+    // Mobile presence and token registration
+    socket.on('user_connected', async (data: { userId: string; fcmToken?: string }) => {
+      try {
+        if (!data || !data.userId) return;
+        const uid = String(data.userId).trim();
+        socket.join(uid);
+        socket.join('citizens');
+        socket.join('all');
+        if (/^[0-9a-fA-F]{24}$/.test(uid)) {
+          await prisma.user.update({
+            where: { id: uid },
+            data: {
+              isOnline: true,
+              lastSeenAt: new Date(),
+              ...(data.fcmToken ? { fcmToken: data.fcmToken } : {})
+            }
+          }).catch(() => null);
+        }
+        io.emit('citizen_presence_updated', { userId: uid, isOnline: true });
+      } catch (err) {
+        console.warn('[user_connected socket error]:', err);
+      }
+    });
+
+    socket.on('citizen_heartbeat', async (data: { userId: string }) => {
+      try {
+        if (!data?.userId || !/^[0-9a-fA-F]{24}$/.test(data.userId)) return;
+        await prisma.user.update({
+          where: { id: data.userId },
+          data: { isOnline: true, lastSeenAt: new Date() }
+        }).catch(() => null);
+      } catch (_) {}
+    });
+
+    socket.on('user_disconnected', async (data: { userId: string }) => {
+      try {
+        if (!data?.userId || !/^[0-9a-fA-F]{24}$/.test(data.userId)) return;
+        await prisma.user.update({
+          where: { id: data.userId },
+          data: { isOnline: false, lastSeenAt: new Date() }
+        }).catch(() => null);
+      } catch (_) {}
+    });
+
+    socket.on('citizen_app_closed', async (data: { userId: string }) => {
+      try {
+        if (!data?.userId || !/^[0-9a-fA-F]{24}$/.test(data.userId)) return;
+        await prisma.user.update({
+          where: { id: data.userId },
+          data: { isOnline: false, lastSeenAt: new Date() }
+        }).catch(() => null);
+      } catch (_) {}
+    });
+
     // Provide real-time data via websockets
     socket.on('request_dashboard_data', async () => {
       try {
