@@ -870,6 +870,83 @@ export function setupSockets(io: Server) {
       }
     });
 
+    socket.on('bulk_approve_applications', async (data: { applicationIds: string[]; adminName?: string; adminEmail?: string }) => {
+      try {
+        const ids = data?.applicationIds || [];
+        for (const id of ids) {
+          await performApplicationStatusUpdate({
+            targetId: id,
+            status: 'APPROVED',
+            adminName: data.adminName || 'Principal Verification Officer (SDM)',
+            adminEmail: data.adminEmail || 'admin@cybersave.com',
+            io,
+          }).catch(() => null);
+        }
+        io.emit('applications_updated');
+        io.emit('dashboard_updated');
+      } catch (e: any) {
+        console.error('[Socket] bulk_approve_applications error:', e.message);
+      }
+    });
+
+    socket.on('bulk_assign_applications', async (data: { applicationIds: string[]; operatorName: string }) => {
+      try {
+        const ids = data?.applicationIds || [];
+        const opName = data?.operatorName || 'Principal Verification Officer (SDM)';
+        const isMongoId = (idStr?: any) => typeof idStr === 'string' && /^[0-9a-fA-F]{24}$/.test(idStr.trim());
+        const mongoIds = ids.filter(isMongoId);
+        const refNumbers = ids.filter(id => !isMongoId(id));
+
+        const orConditions: any[] = [];
+        if (mongoIds.length > 0) orConditions.push({ id: { in: mongoIds } });
+        if (refNumbers.length > 0) orConditions.push({ refNumber: { in: refNumbers } });
+
+        if (orConditions.length > 0) {
+          await prisma.application.updateMany({
+            where: { OR: orConditions },
+            data: { officialOfficer: opName }
+          });
+          io.emit('applications_updated');
+          io.emit('dashboard_updated');
+        }
+      } catch (e: any) {
+        console.error('[Socket] bulk_assign_applications error:', e.message);
+      }
+    });
+
+    socket.on('bulk_escalate_applications', async (data: { applicationIds: string[] }) => {
+      try {
+        const ids = data?.applicationIds || [];
+        const isMongoId = (idStr?: any) => typeof idStr === 'string' && /^[0-9a-fA-F]{24}$/.test(idStr.trim());
+        const mongoIds = ids.filter(isMongoId);
+        const refNumbers = ids.filter(id => !isMongoId(id));
+
+        const orConditions: any[] = [];
+        if (mongoIds.length > 0) orConditions.push({ id: { in: mongoIds } });
+        if (refNumbers.length > 0) orConditions.push({ refNumber: { in: refNumbers } });
+
+        if (orConditions.length > 0) {
+          const apps = await prisma.application.findMany({
+            where: { OR: orConditions },
+            select: { id: true, formData: true }
+          });
+          for (const app of apps) {
+            const prevForm = (app.formData as any) || {};
+            await prisma.application.update({
+              where: { id: app.id },
+              data: {
+                formData: { ...prevForm, priority: 'High', escalatedAt: new Date().toISOString() }
+              }
+            }).catch(() => null);
+          }
+          io.emit('applications_updated');
+          io.emit('dashboard_updated');
+        }
+      } catch (e: any) {
+        console.error('[Socket] bulk_escalate_applications error:', e.message);
+      }
+    });
+
     socket.on('request_services_data', async () => {
       try {
         const [totalServices, activeServices, services] = await Promise.all([
