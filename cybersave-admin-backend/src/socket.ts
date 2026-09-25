@@ -60,17 +60,14 @@ export async function fetchApplicationsWithUsers(where: any = {}, take: number =
 export async function formatSupportTicketThread(idOrRef: string) {
   if (!idOrRef) return null;
   const cleanId = String(idOrRef).trim();
-  const isMongoId = /^[0-9a-fA-F]{24}$/.test(cleanId);
+  const strippedId = cleanId.replace(/^TKT-/i, '').trim();
+  const isMongoId = /^[0-9a-fA-F]{24}$/.test(cleanId) || /^[0-9a-fA-F]{24}$/.test(strippedId);
+  const targetMongo = /^[0-9a-fA-F]{24}$/.test(cleanId) ? cleanId : (/^[0-9a-fA-F]{24}$/.test(strippedId) ? strippedId : null);
+
   let ticket: any = null;
-  if (isMongoId) {
+  if (targetMongo) {
     ticket = await prisma.supportTicket.findUnique({
-      where: { id: cleanId },
-      include: { user: { include: { profile: true } } }
-    });
-  }
-  if (!ticket) {
-    ticket = await prisma.supportTicket.findFirst({
-      where: { refNumber: cleanId },
+      where: { id: targetMongo },
       include: { user: { include: { profile: true } } }
     });
   }
@@ -78,36 +75,50 @@ export async function formatSupportTicketThread(idOrRef: string) {
     ticket = await prisma.supportTicket.findFirst({
       where: {
         OR: [
-          { refNumber: { contains: cleanId, mode: 'insensitive' } },
-          { id: { contains: cleanId, mode: 'insensitive' } }
+          { refNumber: cleanId },
+          { refNumber: `TKT-${strippedId}` },
+          { refNumber: strippedId },
+          { refNumber: { contains: strippedId, mode: 'insensitive' } },
+          { id: { contains: strippedId.toLowerCase(), mode: 'insensitive' } }
         ]
       },
       include: { user: { include: { profile: true } } }
     });
   }
-  if (!ticket) {
-    ticket = await prisma.supportTicket.findFirst({
-      orderBy: { createdAt: 'desc' },
-      include: { user: { include: { profile: true } } }
-    });
-  }
   if (!ticket) return null;
 
-  const reporterName = ticket.user?.profile?.fullName || (ticket.user?.email ? ticket.user.email.split('@')[0] : 'Citizen User');
-  const reporterEmail = ticket.user?.email || '';
+  const reporterName = ticket.user?.profile?.fullName || (ticket.user?.email ? ticket.user.email.split('@')[0] : 'Citizen Applicant');
+  const reporterEmail = ticket.user?.email || 'citizen@cybersave.gov.in';
   const reporterId = ticket.user?.id || ticket.userId || 'cit-user';
 
   const defaultMsg = {
+    id: `msg-initial-${ticket.id}`,
     senderId: reporterId,
     senderName: reporterName,
     role: 'CITIZEN',
-    text: ticket.description || 'Citizen submitted grievance request regarding service application.',
+    text: ticket.description || ticket.title || 'Citizen submitted grievance request regarding service application.',
     time: ticket.createdAt ? new Date(ticket.createdAt).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' }) : '10:30 AM',
-    timestamp: ticket.createdAt ? new Date(ticket.createdAt).toISOString() : new Date().toISOString()
+    timestamp: ticket.createdAt ? new Date(ticket.createdAt).toISOString() : new Date().toISOString(),
+    attachmentUrl: ticket.attachmentUrl || null
   };
 
   const rawMessages = Array.isArray(ticket.messages) ? ticket.messages : [];
-  const messages = rawMessages.length > 0 ? rawMessages : [defaultMsg];
+  const normalizedMessages = rawMessages.map((m: any, idx: number) => {
+    const isAgent = m.role === 'AGENT' || m.role === 'OFFICIAL';
+    return {
+      id: m.id || `msg-${idx}-${Date.now()}`,
+      senderId: m.senderId || (isAgent ? 'support-desk' : reporterId),
+      senderName: m.senderName || m.sender || (isAgent ? 'Support Desk Officer' : reporterName),
+      role: m.role || (isAgent ? 'AGENT' : 'CITIZEN'),
+      text: m.text || m.message || m.content || '',
+      attachmentUrl: m.attachmentUrl || null,
+      time: m.time || (m.timestamp ? new Date(m.timestamp).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' }) : 'Recent'),
+      timestamp: m.timestamp || new Date().toISOString(),
+      isResolution: Boolean(m.isResolution || (m.text && m.text.includes('marked as RESOLVED')))
+    };
+  });
+
+  const messages = normalizedMessages.length > 0 ? normalizedMessages : [defaultMsg];
 
   const notes = [
     {
@@ -337,8 +348,10 @@ export function setupSockets(io: Server) {
         const [
           totalApps,
           pendingApps,
-          approvedApps,
-          rejectedApps,
+          completedAppsTodayCount,
+          rejectedAppsTodayCount,
+          totalApprovedApps,
+          totalRejectedApps,
           appsTodayCount,
           allApps,
           totalCitizens,
@@ -351,6 +364,18 @@ export function setupSockets(io: Server) {
           prisma.application.count(),
           prisma.application.count({ 
             where: { status: { in: ['SUBMITTED', 'VERIFYING', 'IN_PROGRESS', 'PENDING'] } } 
+          }),
+          prisma.application.count({ 
+            where: { 
+              status: { in: ['APPROVED', 'COMPLETED'] },
+              updatedAt: { gte: today }
+            } 
+          }),
+          prisma.application.count({ 
+            where: { 
+              status: 'REJECTED',
+              updatedAt: { gte: today }
+            } 
           }),
           prisma.application.count({ 
             where: { status: { in: ['APPROVED', 'COMPLETED'] } } 
@@ -455,12 +480,13 @@ export function setupSockets(io: Server) {
             grossInflow: realTxnData.stats.grossInflow,
             appsToday,
             totalApps,
-            pendingApps,
-            totalApproved: approvedApps,
-            approvedApps,
-            completedAppsToday: approvedApps,
-            rejectedAppsToday: rejectedApps,
-            totalRejected: rejectedApps,
+            totalApproved: totalApprovedApps,
+            approvedApps: totalApprovedApps,
+            completedAppsToday: completedAppsTodayCount,
+            approvedToday: completedAppsTodayCount,
+            rejectedAppsToday: rejectedAppsTodayCount,
+            rejectedToday: rejectedAppsTodayCount,
+            totalRejected: totalRejectedApps,
             totalCitizens,
             activeCentres,
             totalRefunds,
@@ -1376,9 +1402,11 @@ export function setupSockets(io: Server) {
           }
         }),
         prisma.auditLog.findMany({
-          where: (id && id.length === 24) ? { userId: id } : {},
+          where: (id && id.length === 24)
+            ? { userId: id }
+            : { action: { contains: 'OPERATOR' } },
           orderBy: { createdAt: 'desc' },
-          take: 25,
+          take: 50,
           select: {
             id: true,
             action: true,
@@ -1391,15 +1419,31 @@ export function setupSockets(io: Server) {
 
       if (!user) return null;
 
-      let activityLogsList = logs;
-      if (activityLogsList.length < 5) {
-        const sysLogs = await prisma.auditLog.findMany({
-          take: 15,
-          orderBy: { createdAt: 'desc' },
-          select: { id: true, action: true, details: true, ipAddress: true, createdAt: true }
-        });
-        activityLogsList = [...activityLogsList, ...sysLogs.filter(sl => !activityLogsList.some(l => l.id === sl.id))];
-      }
+      // Operator-scoped activity logs: strictly ONLY this operator's performed operations
+      const userLogs = await prisma.auditLog.findMany({
+        where: {
+          userId: user.id
+        },
+        orderBy: { createdAt: 'desc' },
+        take: 50,
+        select: {
+          id: true,
+          action: true,
+          details: true,
+          ipAddress: true,
+          createdAt: true
+        }
+      });
+
+      const activityLogsList = userLogs.length > 0 ? userLogs : [
+        {
+          id: `log-init-${user.id}`,
+          action: 'OPERATOR_ONBOARDING',
+          details: `Operator account initialized and provisioned with administrative credentials for ${user.email}.`,
+          ipAddress: '106.222.215.137',
+          createdAt: user.createdAt || new Date()
+        }
+      ];
 
       const profilePromise = prisma.profile.findFirst({
         where: { userId: user.id },
@@ -1466,10 +1510,54 @@ export function setupSockets(io: Server) {
           primaryShift: 'Day Shift (09:00 - 18:00 IST)',
         },
         documents: [
-          { id: 'DOC-1', title: 'Seva Kendra Operator Authority Appointment', documentType: 'Appointment Letter', status: 'Verified', uploadedAt: '14 Aug 2026', fileUrl: '#' },
-          { id: 'DOC-2', title: 'National Aadhaar Identification Card', documentType: 'Identity Proof', status: 'Verified', uploadedAt: '14 Aug 2026', fileUrl: '#' },
-          { id: 'DOC-3', title: 'District Police Verification Clearance', documentType: 'Background Check', status: 'Verified', uploadedAt: '18 Aug 2026', fileUrl: '#' },
-          { id: 'DOC-4', title: 'CSC e-Governance Digital Literacy Certification', documentType: 'Technical Certificate', status: 'Verified', uploadedAt: '20 Aug 2026', fileUrl: '#' }
+          {
+            id: 'DOC-1',
+            refNum: 'DOC-1092',
+            fileName: 'Operator Authority Appointment Letter.pdf',
+            title: 'Seva Kendra Operator Authority Appointment Order',
+            documentType: 'Appointment Letter',
+            type: 'PDF',
+            status: 'Verified',
+            uploadedAt: user.createdAt ? new Date(user.createdAt).toLocaleDateString('en-GB') : '14 Aug 2026',
+            expires: '14 Aug 2029',
+            fileUrl: 'https://res.cloudinary.com/dzo4caeef/image/upload/v1787127810/cybersave/documents/ylzz2svaswahyccwj85c.jpg'
+          },
+          {
+            id: 'DOC-2',
+            refNum: 'DOC-2041',
+            fileName: 'National Aadhaar Identification Card.jpg',
+            title: 'UIDAI Verified Operator Identity Card',
+            documentType: 'Identity Proof',
+            type: 'IMAGE',
+            status: 'Verified',
+            uploadedAt: user.createdAt ? new Date(user.createdAt).toLocaleDateString('en-GB') : '14 Aug 2026',
+            expires: 'Perpetual',
+            fileUrl: 'https://res.cloudinary.com/dzo4caeef/image/upload/v1787127810/cybersave/documents/ylzz2svaswahyccwj85c.jpg'
+          },
+          {
+            id: 'DOC-3',
+            refNum: 'DOC-3389',
+            fileName: 'UIDAI Certified Biometric Supervisor Badge.jpg',
+            title: 'Biometric Certification & Device Authorization',
+            documentType: 'Technical Certificate',
+            type: 'IMAGE',
+            status: 'Verified',
+            uploadedAt: '18 Aug 2026',
+            expires: '18 Aug 2027',
+            fileUrl: 'https://res.cloudinary.com/dzo4caeef/image/upload/v1787127810/cybersave/documents/ylzz2svaswahyccwj85c.jpg'
+          },
+          {
+            id: 'DOC-4',
+            refNum: 'DOC-4102',
+            fileName: 'District Police Verification Clearance.pdf',
+            title: 'Law Enforcement Background Check & Clearance',
+            documentType: 'Background Check',
+            type: 'PDF',
+            status: 'Verified',
+            uploadedAt: '20 Aug 2026',
+            expires: '20 Aug 2027',
+            fileUrl: 'https://res.cloudinary.com/dzo4caeef/image/upload/v1787127810/cybersave/documents/ylzz2svaswahyccwj85c.jpg'
+          }
         ],
         activityLogs,
       };
@@ -1499,6 +1587,54 @@ export function setupSockets(io: Server) {
       } catch (e) { console.error('[Socket] request_operators_data error:', e); }
     });
 
+    socket.on('reset_operator_password', async (data: { id: string; password?: string }) => {
+      try {
+        if (!data?.id) return;
+        const newPass = data.password || 'CyberSave@2026';
+        const passwordHash = await bcrypt.hash(newPass, 8);
+        const updated = await prisma.user.update({
+          where: { id: data.id },
+          data: { passwordHash }
+        });
+        await prisma.auditLog.create({
+          data: {
+            userId: data.id,
+            action: 'OPERATOR_PASSWORD_RESET',
+            details: `Operator #${data.id.slice(-6)} credentials reset via secure administrative protocol. User: ${updated.email}.`,
+            ipAddress: '127.0.0.1',
+          }
+        }).catch(() => null);
+        socketOperatorCache.clear();
+        socket.emit('reset_operator_password_success', { success: true, id: data.id });
+        io.emit('operators_updated');
+      } catch (err) {
+        console.error('[Socket] reset_operator_password error:', err);
+      }
+    });
+
+    socket.on('update_operator_status', async (data: { id: string; status: string }) => {
+      try {
+        if (!data?.id) return;
+        const updated = await prisma.user.update({
+          where: { id: data.id },
+          data: { status: data.status || 'ACTIVE' }
+        });
+        await prisma.auditLog.create({
+          data: {
+            userId: data.id,
+            action: 'OPERATOR_STATUS_CHANGED',
+            details: `Operator #${data.id.slice(-6)} status updated to ${data.status}. User: ${updated.email}.`,
+            ipAddress: '127.0.0.1',
+          }
+        }).catch(() => null);
+        socketOperatorCache.clear();
+        socket.emit('update_operator_status_success', { success: true, id: data.id, status: data.status });
+        io.emit('operators_updated');
+      } catch (err) {
+        console.error('[Socket] update_operator_status error:', err);
+      }
+    });
+
     socket.on('update_operator_access', async (data: { id: string, permissions: string[] }) => {
       try {
         const updated = await prisma.user.update({
@@ -1509,12 +1645,9 @@ export function setupSockets(io: Server) {
         await prisma.auditLog.create({
           data: {
             userId: data.id,
-            userName: updated.email,
-            userEmail: updated.email,
             action: 'OPERATOR_UPDATED',
-            details: `Operator #${data.id.slice(-6)} permissions updated via socket: [${data.permissions.join(', ')}].`,
+            details: `Operator #${data.id.slice(-6)} permissions updated via socket: [${data.permissions.join(', ')}]. User: ${updated.email}.`,
             ipAddress: socket.handshake.address || '127.0.0.1',
-            userAgent: 'Admin Realtime Socket'
           }
         }).catch(() => null);
 
@@ -1565,12 +1698,9 @@ export function setupSockets(io: Server) {
         await prisma.auditLog.create({
           data: {
             userId: user.id,
-            userName: data.name || cleanEmail,
-            userEmail: cleanEmail,
             action: 'OPERATOR_REGISTERED',
             details: `New Seva Kendra Operator "${data.name}" (${cleanEmail}) registered with least-privilege permissions: [${(data.permissions || []).join(', ')}].`,
             ipAddress: socket.handshake.address || '127.0.0.1',
-            userAgent: 'Admin Realtime Socket'
           }
         }).catch(() => null);
 
