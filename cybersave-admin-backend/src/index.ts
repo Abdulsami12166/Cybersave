@@ -3284,8 +3284,10 @@ app.post(['/api/admin/campaigns', '/api/v1/campaigns'], async (req: any, res: an
     const targetUsers = await prisma.user.findMany({
       where: targetWhere,
       take: 500,
-      select: { id: true, fcmToken: true }
+      select: { id: true, fcmToken: true, email: true, phone: true }
     });
+
+    const anyUser = (targetUsers.length > 0) ? targetUsers[0] : await prisma.user.findFirst({ select: { id: true } });
 
     // Create notifications for each individual user so it appears in their personal feed
     if (targetUsers.length > 0) {
@@ -3297,19 +3299,18 @@ app.post(['/api/admin/campaigns', '/api/v1/campaigns'], async (req: any, res: an
           type: notifType as any,
           status: 'PENDING'
         }))
-      }).catch(() => null);
+      }).catch((e: any) => console.warn('[Campaign Notification createMany warn]:', e?.message));
+    } else if (anyUser) {
+      await prisma.notification.create({
+        data: {
+          userId: anyUser.id,
+          title: pushTitle,
+          body: pushBody,
+          type: notifType as any,
+          status: 'PENDING'
+        }
+      }).catch((e: any) => console.warn('[Campaign Notification create warn]:', e?.message));
     }
-
-    // Also persist a canonical global notification record for all citizens
-    await prisma.notification.create({
-      data: {
-        userId: '000000000000000000000000',
-        title: pushTitle,
-        body: pushBody,
-        type: notifType as any,
-        status: 'SENT'
-      }
-    }).catch(() => null);
 
     // Send real Firebase Cloud Messaging (FCM) Push Notifications
     if (messaging) {
@@ -3353,18 +3354,34 @@ app.post(['/api/admin/campaigns', '/api/v1/campaigns'], async (req: any, res: an
       }
     }
 
-    // Record in AuditLog
-    await prisma.auditLog.create({
+    // Record in AuditLog safely (verifying user exists if passed)
+    let auditUserId: string | null = null;
+    if (req.user?.id && /^[0-9a-fA-F]{24}$/.test(req.user.id)) {
+      const uExists = await prisma.user.findUnique({ where: { id: req.user.id }, select: { id: true } }).catch(() => null);
+      if (uExists) auditUserId = uExists.id;
+    }
+    if (!auditUserId && anyUser) {
+      auditUserId = anyUser.id;
+    }
+
+    const createdAuditLog = await prisma.auditLog.create({
       data: {
-        userId: req.user?.id && /^[0-9a-fA-F]{24}$/.test(req.user.id) ? req.user.id : null,
+        userId: auditUserId,
         action: 'CAMPAIGN_BROADCAST',
         details: `Broadcast Campaign "${title}" (${priority}) launched to "${targetAudience}" via ${channel}. Reach: ${targetUsers.length} citizens.`,
         ipAddress: req.ip || '127.0.0.1',
       }
-    }).catch(() => null);
+    }).catch((e: any) => {
+      console.warn('[AuditLog create error]:', e?.message);
+      return null;
+    });
 
     auditLogsCache = null;
+    if (createdAuditLog) {
+      io.emit('audit_log_added', createdAuditLog);
+    }
     io.emit('audit_logs_updated');
+    io.emit('notifications_updated');
 
     res.status(201).json({
       success: true,

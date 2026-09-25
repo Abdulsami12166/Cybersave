@@ -572,22 +572,19 @@ export async function fetchCitizensList(params?: { page?: number; limit?: number
 
   const startOfMonth = new Date(new Date().getFullYear(), new Date().getMonth(), 1);
 
-  const [totalCitizens, newThisMonth, activeCitizensCount, pendingVerifications, users] = await Promise.all([
-    prisma.user.count({ where: { role: 'USER' } }),
-    prisma.user.count({
-      where: {
-        role: 'USER',
-        createdAt: { gte: startOfMonth }
+  // Retrieve all citizens for stats to guarantee 100% precision and avoid MongoDB collation mismatches
+  const [allCitizensForStats, users] = await Promise.all([
+    prisma.user.findMany({
+      where: { role: 'USER' },
+      select: {
+        id: true,
+        status: true,
+        createdAt: true,
+        applications: {
+          select: { id: true, status: true },
+          take: 20
+        }
       }
-    }),
-    prisma.user.count({
-      where: {
-        role: 'USER',
-        status: { not: 'BLOCKED' }
-      }
-    }),
-    prisma.application.count({
-      where: { status: { in: ['SUBMITTED', 'VERIFYING', 'IN_PROGRESS', 'PENDING'] } }
     }),
     prisma.user.findMany({
       where: { role: 'USER' },
@@ -620,6 +617,18 @@ export async function fetchCitizensList(params?: { page?: number; limit?: number
       orderBy: { createdAt: 'desc' }
     })
   ]);
+
+  const totalCitizens = allCitizensForStats.length;
+  const activeCitizensCount = allCitizensForStats.filter(u => {
+    const s = String(u.status || '').toUpperCase();
+    return s !== 'BLOCKED' && s !== 'SUSPENDED';
+  }).length;
+  const newThisMonth = allCitizensForStats.filter(u => new Date(u.createdAt) >= startOfMonth).length;
+  const pendingVerifications = allCitizensForStats.filter(u => {
+    const s = String(u.status || '').toUpperCase();
+    if (s === 'PENDING' || s === 'UNVERIFIED') return true;
+    return u.applications?.some(a => ['SUBMITTED', 'VERIFYING', 'IN_PROGRESS', 'PENDING'].includes(a.status));
+  }).length;
 
   const formattedUsers = users.map(u => {
     const prof = u.profile || ({} as any);

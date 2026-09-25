@@ -886,9 +886,13 @@ export function setupSockets(io: Server) {
           const sub = new Date(a.submittedAt || Date.now());
           return sub >= today;
         }).length;
-        const pending = apps.filter(a => ['SUBMITTED', 'VERIFYING', 'IN_PROGRESS', 'PENDING'].includes(a.status)).length;
-        const processing = apps.filter(a => a.status === 'IN_PROGRESS').length;
-        const completed = apps.filter(a => ['APPROVED', 'COMPLETED'].includes(a.status)).length;
+        const submitted = apps.filter(a => a.status === 'SUBMITTED').length;
+        const underReview = apps.filter(a => ['VERIFYING', 'PENDING'].includes(a.status)).length;
+        const pending = submitted + underReview;
+        const processing = apps.filter(a => ['IN_PROGRESS', 'PROCESSING'].includes(a.status)).length;
+        const approved = apps.filter(a => a.status === 'APPROVED').length;
+        const completedTotal = apps.filter(a => a.status === 'COMPLETED').length;
+        const completedToday = apps.filter(a => ['APPROVED', 'COMPLETED'].includes(a.status) && new Date(a.updatedAt || a.submittedAt || Date.now()) >= today).length;
 
         const formattedApps = apps.map(a => ({
           id: a.refNumber || `APP-2026-${a.id.substring(0, 4).toUpperCase()}`,
@@ -915,7 +919,8 @@ export function setupSockets(io: Server) {
         }));
 
         socket.emit('response_applications_data', {
-          stats: { totalApps, todayApps: todayApps > 0 ? todayApps : totalApps, pending, processing, completed },
+          stats: { totalApps, todayApps, pending, processing, completed: completedToday },
+          pipeline: { submitted, underReview, processing, approved, completed: completedTotal },
           applications: formattedApps
         });
       } catch(e: any) {
