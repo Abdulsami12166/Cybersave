@@ -2110,6 +2110,128 @@ export function setupSockets(io: Server) {
       }
     });
 
+    // Real-time typing indicators between Admin and Citizen
+    socket.on('admin_typing', (data: { ticketId: string; adminName?: string; isTyping: boolean }) => {
+      io.emit('admin_typing', {
+        ticketId: data?.ticketId || 'all',
+        adminName: data?.adminName || 'Support Desk Officer',
+        isTyping: Boolean(data?.isTyping)
+      });
+    });
+
+    socket.on('user_typing', (data: { ticketId: string; userId?: string; userName?: string; isTyping: boolean }) => {
+      io.emit('user_typing', {
+        ticketId: data?.ticketId || 'all',
+        userId: data?.userId || 'citizen',
+        userName: data?.userName || 'Citizen User',
+        isTyping: Boolean(data?.isTyping)
+      });
+    });
+
+    // Instant Mobile Citizen message via WebSocket
+    socket.on('user_ticket_message', async (data: { ticketId: string; text: string; userId?: string; userName?: string; attachmentUrl?: string }) => {
+      try {
+        const targetId = String(data?.ticketId || '').trim();
+        if (!targetId || (!data?.text && !data?.attachmentUrl)) return;
+        const isMongoId = /^[0-9a-fA-F]{24}$/.test(targetId);
+        let ticket: any = null;
+        if (isMongoId) {
+          ticket = await prisma.supportTicket.findUnique({ where: { id: targetId }, include: { user: { include: { profile: true } } } });
+        }
+        if (!ticket) {
+          ticket = await prisma.supportTicket.findFirst({ where: { refNumber: targetId }, include: { user: { include: { profile: true } } } });
+        }
+        if (!ticket) {
+          ticket = await prisma.supportTicket.findFirst({
+            where: {
+              OR: [
+                { refNumber: { contains: targetId, mode: 'insensitive' } },
+                { id: { contains: targetId, mode: 'insensitive' } }
+              ]
+            },
+            include: { user: { include: { profile: true } } }
+          });
+        }
+        if (ticket) {
+          const currentMsgs = Array.isArray(ticket.messages) ? ticket.messages : [];
+          const newMsg = {
+            id: `msg-${Date.now()}`,
+            sender: data.userName || ticket.user?.profile?.fullName || 'Citizen User',
+            senderName: data.userName || ticket.user?.profile?.fullName || 'Citizen User',
+            role: 'CITIZEN',
+            text: (data.text || '').trim(),
+            attachmentUrl: data.attachmentUrl,
+            time: new Date().toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' }),
+            timestamp: new Date().toISOString()
+          };
+          const updatedMsgs = [...currentMsgs, newMsg];
+          await prisma.supportTicket.update({
+            where: { id: ticket.id },
+            data: {
+              messages: updatedMsgs,
+              status: 'OPEN',
+              updatedAt: new Date()
+            }
+          });
+          const formatted = await formatSupportTicketThread(ticket.id);
+          io.emit('support_tickets_updated');
+          io.emit('new_ticket_message', { ticketId: ticket.refNumber, id: ticket.id, message: newMsg, ticket: formatted });
+          io.emit('response_ticket_thread', formatted);
+          io.emit('response_ticket_detail', formatted);
+        }
+      } catch (e: any) {
+        console.error('[Socket] user_ticket_message error:', e);
+      }
+    });
+
+    // Sub-millisecond mobile user tickets inquiry via WebSocket
+    socket.on('request_user_tickets', async (data: { userId: string }) => {
+      try {
+        const userId = data?.userId;
+        if (!userId) {
+          socket.emit('response_user_tickets', { success: true, tickets: [] });
+          return;
+        }
+        const isMongo = /^[0-9a-fA-F]{24}$/.test(String(userId));
+        const targetUser = await prisma.user.findFirst({
+          where: {
+            OR: [
+              ...(isMongo ? [{ id: String(userId) }] : []),
+              { email: String(userId).trim() },
+              { phone: String(userId).trim() },
+            ]
+          }
+        }).catch(() => null);
+
+        const orConditions: any[] = [{ userId: String(userId) }];
+        if (targetUser) orConditions.push({ userId: targetUser.id });
+
+        const tickets = await prisma.supportTicket.findMany({
+          where: { OR: orConditions },
+          orderBy: { createdAt: 'desc' },
+        });
+
+        socket.emit('response_user_tickets', {
+          success: true,
+          tickets: tickets.map(t => ({
+            id: t.id,
+            refNumber: t.refNumber,
+            title: t.title,
+            description: t.description,
+            category: t.category,
+            priority: t.priority,
+            status: t.status,
+            attachmentUrl: t.attachmentUrl,
+            createdAt: t.createdAt,
+            updatedAt: t.updatedAt,
+            messages: Array.isArray(t.messages) ? t.messages : [],
+          }))
+        });
+      } catch (e) {
+        socket.emit('response_user_tickets', { success: false, tickets: [] });
+      }
+    });
+
     socket.on('resolve_support_ticket', async (data: any) => {
       try {
         const targetId = String(data?.id || '').trim();
