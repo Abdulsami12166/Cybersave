@@ -841,32 +841,84 @@ export function setupSockets(io: Server) {
 
     socket.on('send_push_notification', async (data: { userId: string; title: string; body: string; type?: string }) => {
       try {
-        const { userId, title, body } = data;
+        const { userId, title, body, type = 'INFO' } = data;
         const u = await findUserByIdOrCit(userId);
         const targetUserId = u ? u.id : userId;
 
+        const notifTitle = (title || '📢 Cybersave Notification').trim();
+        const notifBody = (body || '').trim();
+
+        const notifPayload = {
+          id: `notif_${Date.now()}`,
+          userId: targetUserId,
+          title: notifTitle,
+          body: notifBody,
+          message: notifBody,
+          content: notifBody,
+          type: type || 'INFO',
+          status: 'SENT',
+          createdAt: new Date().toISOString()
+        };
+
         const isMongoId = (s?: string) => typeof s === 'string' && /^[0-9a-fA-F]{24}$/.test(s);
         if (targetUserId && isMongoId(targetUserId)) {
-          await prisma.notification.create({
+          const createdDbNotif = await prisma.notification.create({
             data: {
               userId: targetUserId,
-              title: title || 'Cybersave Notification',
-              body: body || '',
+              title: notifTitle,
+              body: notifBody,
               status: 'SENT',
               sentAt: new Date(),
             },
           }).catch(() => null);
 
+          if (createdDbNotif) notifPayload.id = createdDbNotif.id;
+
           await prisma.auditLog.create({
             data: {
               userId: targetUserId,
               action: 'NOTIFICATION_SENT',
-              details: `Dispatch sent: "${title}"`,
+              details: `Dispatch sent: "${notifTitle}"`,
             },
           }).catch(() => null);
         }
 
-        socket.emit('response_push_sent', { success: true, message: 'Notification dispatched successfully' });
+        // Live broadcast across all mobile sockets and admin dashboards
+        io.emit('user_push_notification', notifPayload);
+        io.emit('receive_global_push', notifPayload);
+        io.emit('new_notification', notifPayload);
+        io.emit('notifications_updated');
+
+        // Direct FCM push if device has fcmToken
+        if (messaging && u?.fcmToken && u.fcmToken.length > 10) {
+          messaging.send({
+            token: u.fcmToken,
+            notification: {
+              title: notifTitle,
+              body: notifBody
+            },
+            android: {
+              priority: 'high',
+              notification: {
+                channelId: 'cybersave_alerts_channel',
+                priority: 'max',
+                defaultSound: true,
+                defaultVibrateTimings: true,
+                visibility: 'public',
+                icon: 'ic_launcher'
+              }
+            },
+            data: {
+              title: notifTitle,
+              body: notifBody,
+              message: notifBody,
+              type: String(type),
+              userId: targetUserId
+            }
+          }).catch((err: any) => console.warn('[Socket send_push_notification FCM note]:', err?.message));
+        }
+
+        socket.emit('response_push_sent', { success: true, message: 'Notification dispatched successfully', notification: notifPayload });
       } catch (e: any) {
         console.error('[Socket] send_push_notification error:', e);
         socket.emit('response_push_sent', { success: false, error: e.message });
@@ -880,19 +932,31 @@ export function setupSockets(io: Server) {
         const skip = (page - 1) * limit;
         const today = new Date(); today.setHours(0,0,0,0);
 
-        const apps = await fetchApplicationsWithUsers({}, limit, skip);
-        const totalApps = apps.length;
-        const todayApps = apps.filter(a => {
+        // Fetch all applications lightweight for real overall stats & pipeline
+        const allDbApps = await prisma.application.findMany({
+          select: {
+            id: true,
+            status: true,
+            submittedAt: true,
+            updatedAt: true
+          }
+        });
+
+        const totalApps = allDbApps.length;
+        const todayApps = allDbApps.filter(a => {
           const sub = new Date(a.submittedAt || Date.now());
           return sub >= today;
         }).length;
-        const submitted = apps.filter(a => a.status === 'SUBMITTED').length;
-        const underReview = apps.filter(a => ['VERIFYING', 'PENDING'].includes(a.status)).length;
-        const pending = submitted + underReview;
-        const processing = apps.filter(a => ['IN_PROGRESS', 'PROCESSING'].includes(a.status)).length;
-        const approved = apps.filter(a => a.status === 'APPROVED').length;
-        const completedTotal = apps.filter(a => a.status === 'COMPLETED').length;
-        const completedToday = apps.filter(a => ['APPROVED', 'COMPLETED'].includes(a.status) && new Date(a.updatedAt || a.submittedAt || Date.now()) >= today).length;
+
+        const submitted = allDbApps.filter(a => a.status === 'SUBMITTED').length;
+        const underReview = allDbApps.filter(a => ['VERIFYING', 'PENDING', 'UNDER_REVIEW'].includes(a.status)).length;
+        const processing = allDbApps.filter(a => ['IN_PROGRESS', 'PROCESSING'].includes(a.status)).length;
+        const approved = allDbApps.filter(a => a.status === 'APPROVED').length;
+        const completedTotal = allDbApps.filter(a => a.status === 'COMPLETED').length;
+        const pending = submitted + underReview + processing;
+        const completedToday = allDbApps.filter(a => ['APPROVED', 'COMPLETED'].includes(a.status) && new Date(a.updatedAt || a.submittedAt || Date.now()) >= today).length;
+
+        const apps = await fetchApplicationsWithUsers({}, limit, skip);
 
         const formattedApps = apps.map(a => ({
           id: a.refNumber || `APP-2026-${a.id.substring(0, 4).toUpperCase()}`,
@@ -906,7 +970,7 @@ export function setupSockets(io: Server) {
           serviceType: a.serviceTitle || a.service?.title || 'Government Service',
           service: a.serviceTitle || a.service?.title || 'Government Service',
           priority: 'Medium',
-          status: a.status === 'APPROVED' || a.status === 'COMPLETED' ? 'Approved' : (a.status === 'REJECTED' ? 'Rejected' : (a.status === 'IN_PROGRESS' ? 'Processing' : 'In Review')),
+          status: a.status === 'APPROVED' ? 'Approved' : (a.status === 'COMPLETED' ? 'Completed' : (a.status === 'REJECTED' ? 'Rejected' : (a.status === 'IN_PROGRESS' || a.status === 'PROCESSING' ? 'Processing' : (a.status === 'VERIFYING' || a.status === 'PENDING' ? 'Under Review' : 'Submitted')))),
           rawStatus: a.status,
           assigned: a.officialOfficer || 'Auto Assigned',
           submitted: a.submittedAt ? a.submittedAt.toISOString() : new Date().toISOString(),
@@ -927,6 +991,7 @@ export function setupSockets(io: Server) {
         console.error('[Socket] request_applications_data error:', e);
         socket.emit('response_applications_data', {
           stats: { totalApps: 0, todayApps: 0, pending: 0, processing: 0, completed: 0 },
+          pipeline: { submitted: 0, underReview: 0, processing: 0, approved: 0, completed: 0 },
           applications: []
         });
       }

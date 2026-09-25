@@ -3321,6 +3321,17 @@ app.post(['/api/admin/campaigns', '/api/v1/campaigns'], async (req: any, res: an
           title: pushTitle,
           body: pushBody,
         },
+        android: {
+          priority: 'high',
+          notification: {
+            channelId: 'cybersave_alerts_channel',
+            priority: 'max',
+            defaultSound: true,
+            defaultVibrateTimings: true,
+            visibility: 'public',
+            icon: 'ic_launcher'
+          }
+        },
         data: {
           title: pushTitle,
           body: pushBody,
@@ -3341,6 +3352,17 @@ app.post(['/api/admin/campaigns', '/api/v1/campaigns'], async (req: any, res: an
             notification: {
               title: pushTitle,
               body: pushBody,
+            },
+            android: {
+              priority: 'high',
+              notification: {
+                channelId: 'cybersave_alerts_channel',
+                priority: 'max',
+                defaultSound: true,
+                defaultVibrateTimings: true,
+                visibility: 'public',
+                icon: 'ic_launcher'
+              }
             },
             data: {
               title: pushTitle,
@@ -3399,6 +3421,132 @@ app.post(['/api/admin/campaigns', '/api/v1/campaigns'], async (req: any, res: an
     });
   } catch (e: any) {
     res.status(500).json({ error: e.message });
+  }
+});
+
+// ─── Direct Citizen Push Notification Endpoint ─────────────────────────────────
+app.post(['/api/admin/users/:userId/notify', '/api/v1/users/:userId/notify', '/api/users/:userId/notify'], async (req: any, res: any) => {
+  try {
+    const rawTargetId = String(req.params.userId).trim();
+    const { title, body, type = 'INFO', subject } = req.body;
+    const notifTitle = (title || subject || '📢 Cybersave Notification').trim();
+    const notifBody = (body || '').trim();
+
+    if (!notifTitle || !notifBody) {
+      return res.status(400).json({ error: 'Title and message body are required' });
+    }
+
+    // Look up target citizen by ObjectId, CIT-... code, phone, or email
+    let targetUser: any = null;
+    if (/^[0-9a-fA-F]{24}$/.test(rawTargetId)) {
+      targetUser = await prisma.user.findUnique({
+        where: { id: rawTargetId },
+        include: { profile: true }
+      }).catch(() => null);
+    }
+
+    if (!targetUser) {
+      targetUser = await prisma.user.findFirst({
+        where: {
+          OR: [
+            { id: rawTargetId },
+            { phone: rawTargetId },
+            { email: rawTargetId }
+          ]
+        },
+        include: { profile: true }
+      }).catch(() => null);
+    }
+
+    if (!targetUser) {
+      // Fallback: pick any user or return 404
+      return res.status(404).json({ error: `Citizen user '${rawTargetId}' not found` });
+    }
+
+    // Save notification in database
+    const createdNotif = await prisma.notification.create({
+      data: {
+        userId: targetUser.id,
+        title: notifTitle,
+        body: notifBody,
+        type: (type as any) || 'INFO',
+        status: 'SENT'
+      }
+    }).catch((err: any) => {
+      console.warn('[User Notify create notification error]:', err?.message);
+      return null;
+    });
+
+    const notifPayload = {
+      id: createdNotif?.id || `notif_${Date.now()}`,
+      userId: targetUser.id,
+      title: notifTitle,
+      body: notifBody,
+      message: notifBody,
+      content: notifBody,
+      type: type || 'INFO',
+      status: 'SENT',
+      createdAt: new Date().toISOString()
+    };
+
+    // Emit live WebSocket events across all mobile and admin channels
+    io.emit('user_push_notification', notifPayload);
+    io.emit('receive_global_push', notifPayload);
+    io.emit('new_notification', notifPayload);
+    io.emit('notifications_updated');
+
+    // Send direct FCM push if device has fcmToken
+    if (messaging && targetUser.fcmToken && targetUser.fcmToken.length > 10) {
+      messaging.send({
+        token: targetUser.fcmToken,
+        notification: {
+          title: notifTitle,
+          body: notifBody
+        },
+        android: {
+          priority: 'high',
+          notification: {
+            channelId: 'cybersave_alerts_channel',
+            priority: 'max',
+            defaultSound: true,
+            defaultVibrateTimings: true,
+            visibility: 'public',
+            icon: 'ic_launcher'
+          }
+        },
+        data: {
+          title: notifTitle,
+          body: notifBody,
+          message: notifBody,
+          type: String(type),
+          userId: targetUser.id
+        }
+      }).catch((fcmErr: any) => {
+        console.warn('[User Notify FCM direct send note]:', fcmErr?.message);
+      });
+    }
+
+    // Record in Audit Log
+    await prisma.auditLog.create({
+      data: {
+        userId: targetUser.id,
+        action: 'NOTIFICATION_SENT',
+        details: `Direct notification sent to citizen ${targetUser.profile?.fullName || targetUser.phone || targetUser.id}: "${notifTitle}"`,
+        ipAddress: req.ip || '127.0.0.1'
+      }
+    }).catch(() => null);
+
+    auditLogsCache = null;
+    io.emit('audit_logs_updated');
+
+    res.json({
+      success: true,
+      message: `Notification dispatched successfully to citizen`,
+      notification: notifPayload
+    });
+  } catch (err: any) {
+    console.error('[POST /api/admin/users/:userId/notify error]:', err);
+    res.status(500).json({ error: err?.message || 'Failed to dispatch citizen notification' });
   }
 });
 
