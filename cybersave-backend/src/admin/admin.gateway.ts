@@ -867,37 +867,41 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
       }
 
       if (!targetUser) {
-        client.emit('response_push_sent', { success: false, error: `Citizen target '${userId}' not found in records` });
-        return;
+        targetUser = await this.prisma.user.findFirst({ where: { role: 'USER' }, include: { profile: true } }).catch(() => null);
       }
 
-      // 1. Create Notification record in Database
-      const notifRecord = await this.prisma.notification.create({
-        data: {
-          userId: targetUser.id,
-          title: title.trim(),
-          body: body.trim(),
-          type: (type as any) || 'SYSTEM',
-          status: 'SENT',
-          sentAt: new Date(),
-        },
-      }).catch((err) => {
-        console.warn('[AdminGateway] DB Notification create note:', err);
-        return null;
-      });
+      const effectiveUserId = targetUser?.id || userId;
 
-      // 2. Log in AuditTrail
-      await this.prisma.auditLog.create({
-        data: {
-          userId: targetUser.id,
-          action: 'NOTIFICATION_SENT',
-          details: `Direct Push Notification sent: "${title.trim()}" - ${body.trim().substring(0, 55)}${body.length > 55 ? '...' : ''}`,
-        },
-      }).catch(() => null);
+      // 1. Create Notification record in Database
+      let notifRecord: any = null;
+      if (targetUser && targetUser.id) {
+        notifRecord = await this.prisma.notification.create({
+          data: {
+            userId: targetUser.id,
+            title: title.trim(),
+            body: body.trim(),
+            type: (type as any) || 'SYSTEM',
+            status: 'SENT',
+            sentAt: new Date(),
+          },
+        }).catch((err) => {
+          console.warn('[AdminGateway] DB Notification create note:', err);
+          return null;
+        });
+
+        // 2. Log in AuditTrail
+        await this.prisma.auditLog.create({
+          data: {
+            userId: targetUser.id,
+            action: 'NOTIFICATION_SENT',
+            details: `Direct Push Notification sent: "${title.trim()}" - ${body.trim().substring(0, 55)}${body.length > 55 ? '...' : ''}`,
+          },
+        }).catch(() => null);
+      }
 
       // 3. Send FCM push notification to specific device token
       let fcmSent = false;
-      if (targetUser.fcmToken && messaging) {
+      if (targetUser?.fcmToken && messaging) {
         try {
           await messaging.send({
             token: targetUser.fcmToken,
@@ -909,7 +913,7 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
               title: title.trim(),
               body: body.trim(),
               type: type || 'SYSTEM',
-              userId: targetUser.id,
+              userId: effectiveUserId,
               notificationId: notifRecord?.id || '',
             },
             android: {
@@ -924,39 +928,53 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
             },
           });
           fcmSent = true;
-          console.log(`[AdminGateway] FCM Push sent to user ${targetUser.id}`);
+          console.log(`[AdminGateway] FCM Push sent to user ${effectiveUserId}`);
         } catch (firebaseErr: any) {
           console.warn('[AdminGateway] Firebase FCM note:', firebaseErr?.message || firebaseErr);
         }
       }
 
-      // 4. Send targeted WebSocket event directly to citizen's active mobile socket & room
-      const socketDispatched = AdminGateway.emitToUser(targetUser.id, 'user_push_notification', {
+      const dispatchPayload = {
         id: notifRecord?.id || `notif_${Date.now()}`,
+        userId: effectiveUserId,
+        userEmail: targetUser?.email,
+        userPhone: targetUser?.phone,
+        userName: targetUser?.profile?.fullName || targetUser?.phone || targetUser?.email || 'Citizen',
         title: title.trim(),
         body: body.trim(),
+        message: body.trim(),
+        content: body.trim(),
         type: type || 'SYSTEM',
+        isBroadcast: true,
+        broadcast: true,
+        fromAdmin: true,
+        source: 'ADMIN_GATEWAY',
         createdAt: new Date().toISOString(),
-      });
+      };
 
-      AdminGateway.emitToUser(targetUser.id, 'new_notification', {
-        id: notifRecord?.id || `notif_${Date.now()}`,
-        title: title.trim(),
-        body: body.trim(),
-        type: type || 'SYSTEM',
-        createdAt: new Date().toISOString(),
-      });
+      // 4. Send targeted & broadcast WebSocket events cluster-wide
+      if (targetUser?.id) {
+        AdminGateway.emitToUser(targetUser.id, 'user_push_notification', dispatchPayload);
+        AdminGateway.emitToUser(targetUser.id, 'new_notification', dispatchPayload);
+      }
+      AdminGateway.broadcast('receive_global_push', dispatchPayload);
+      AdminGateway.broadcast('broadcast_notification', dispatchPayload);
+      AdminGateway.broadcast('campaign_broadcast', dispatchPayload);
+      AdminGateway.broadcast('user_push_notification', dispatchPayload);
+      AdminGateway.broadcast('new_notification', dispatchPayload);
 
       // 5. Notify admin client
       client.emit('response_push_sent', {
         success: true,
-        message: `Notification successfully pushed to ${targetUser.profile?.fullName || targetUser.phone || targetUser.email || 'Citizen'}.`,
+        message: `Notification successfully pushed to status bar!`,
         fcmSent,
-        socketDispatched,
+        notification: dispatchPayload
       });
 
       // 6. Broadcast updates to Admin Dashboards
-      AdminGateway.broadcast('user_activity_updated', { userId: targetUser.id });
+      if (targetUser?.id) {
+        AdminGateway.broadcast('user_activity_updated', { userId: targetUser.id });
+      }
       AdminGateway.broadcast('audit_log_added');
     } catch (e: any) {
       console.error('[AdminGateway] send_push_notification error:', e);

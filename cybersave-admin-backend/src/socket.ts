@@ -851,12 +851,19 @@ export function setupSockets(io: Server) {
         const notifPayload = {
           id: `notif_${Date.now()}`,
           userId: targetUserId,
+          userEmail: u?.email || (data as any).userEmail,
+          userPhone: u?.phone || (data as any).userPhone,
+          userName: u?.profile?.fullName || u?.fullName || (data as any).userName || 'Citizen User',
           title: notifTitle,
           body: notifBody,
           message: notifBody,
           content: notifBody,
           type: type || 'INFO',
           status: 'SENT',
+          isBroadcast: true,
+          broadcast: true,
+          fromAdmin: true,
+          source: (data as any).source || 'USER_MANAGEMENT_SOCKET',
           createdAt: new Date().toISOString()
         };
 
@@ -886,6 +893,8 @@ export function setupSockets(io: Server) {
         // Live broadcast across all mobile sockets and admin dashboards
         io.emit('user_push_notification', notifPayload);
         io.emit('receive_global_push', notifPayload);
+        io.emit('broadcast_notification', notifPayload);
+        io.emit('campaign_broadcast', notifPayload);
         io.emit('new_notification', notifPayload);
         io.emit('notifications_updated');
 

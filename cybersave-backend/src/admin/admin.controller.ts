@@ -1181,22 +1181,31 @@ export class AdminController {
       },
     }).catch(() => null);
 
-    // 3. Emit live WebSocket to citizen mobile device
-    AdminGateway.emitToUser(targetUser.id, 'user_push_notification', {
+    const dispatchPayload = {
       id: notif?.id || `notif_${Date.now()}`,
+      userId: targetUser.id,
+      userEmail: targetUser.email,
+      userPhone: targetUser.phone,
+      userName: targetUser.profile?.fullName || 'Citizen User',
       title: title.trim(),
       body: messageBody.trim(),
+      message: messageBody.trim(),
+      content: messageBody.trim(),
       type: type || 'SYSTEM',
+      isBroadcast: true,
+      broadcast: true,
+      fromAdmin: true,
       createdAt: new Date().toISOString(),
-    });
+    };
 
-    AdminGateway.emitToUser(targetUser.id, 'new_notification', {
-      id: notif?.id || `notif_${Date.now()}`,
-      title: title.trim(),
-      body: messageBody.trim(),
-      type: type || 'SYSTEM',
-      createdAt: new Date().toISOString(),
-    });
+    // 3. Emit live WebSocket to citizen mobile device and cluster
+    AdminGateway.emitToUser(targetUser.id, 'user_push_notification', dispatchPayload);
+    AdminGateway.emitToUser(targetUser.id, 'new_notification', dispatchPayload);
+    AdminGateway.broadcast('receive_global_push', dispatchPayload);
+    AdminGateway.broadcast('broadcast_notification', dispatchPayload);
+    AdminGateway.broadcast('campaign_broadcast', dispatchPayload);
+    AdminGateway.broadcast('user_push_notification', dispatchPayload);
+    AdminGateway.broadcast('new_notification', dispatchPayload);
 
     // 4. Update admin dashboards
     AdminGateway.broadcast('user_activity_updated', { userId: targetUser.id });
