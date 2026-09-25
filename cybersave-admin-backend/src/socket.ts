@@ -1930,6 +1930,75 @@ export function setupSockets(io: Server) {
       }
     });
 
+    socket.on('broadcast_notification', async (data: any) => {
+      try {
+        const title = data.title || '📢 Cybersave Government Alert';
+        const body = data.body || data.content || data.message || '';
+        const pushTitle = title.startsWith('📢') ? title : `📢 ${title}`;
+        const notifId = data.id || `NOTIF-${Date.now().toString(36).toUpperCase()}`;
+        const notifType = data.priority === 'URGENT' || data.priority === 'HIGH' ? 'WARNING' : 'INFO';
+
+        const pushPayload = {
+          id: notifId,
+          campaignId: notifId,
+          title: pushTitle,
+          body,
+          message: body,
+          content: body,
+          type: notifType,
+          priority: data.priority || 'HIGH',
+          status: 'SENT',
+          userId: 'all',
+          createdAt: new Date().toISOString(),
+          metadata: data
+        };
+
+        io.emit('receive_global_push', pushPayload);
+        io.emit('user_push_notification', pushPayload);
+        io.emit('new_notification', pushPayload);
+        io.emit('campaign_created', pushPayload);
+        io.emit('campaign_broadcast', pushPayload);
+        io.emit('broadcast_notification', pushPayload);
+        io.emit('notifications_updated');
+
+        if (messaging) {
+          messaging.send({
+            topic: 'all',
+            notification: { title: pushTitle, body },
+            android: {
+              priority: 'high',
+              notification: {
+                channelId: 'cybersave_alerts_channel',
+                priority: 'max',
+                defaultSound: true,
+                defaultVibrateTimings: true,
+                visibility: 'public',
+                icon: 'ic_launcher'
+              }
+            }
+          }).catch(() => null);
+        }
+
+        socket.emit('broadcast_notification_success', { success: true });
+      } catch (e) {
+        console.error('[Socket] broadcast_notification error:', e);
+      }
+    });
+
+    socket.on('campaign_broadcast', async (data: any) => {
+      try {
+        io.emit('receive_global_push', data);
+        io.emit('user_push_notification', data);
+        io.emit('new_notification', data);
+        io.emit('campaign_created', data);
+        io.emit('campaign_broadcast', data);
+        io.emit('broadcast_notification', data);
+        io.emit('notifications_updated');
+      } catch (e) {
+        console.error('[Socket] campaign_broadcast error:', e);
+      }
+    });
+
     socket.on('request_support_tickets', async () => {
       try {
         const [total, open, inProgress, resolved, tickets] = await Promise.all([

@@ -3239,6 +3239,111 @@ app.post(['/api/admin/notifications/read-all', '/api/v1/notifications/read-all',
   }
 });
 
+// Broadcast Push Notification Endpoint (Quick Actions & Notifications Screen)
+app.post(['/api/admin/notifications/broadcast', '/api/v1/notifications/broadcast', '/api/notifications/broadcast'], async (req: any, res: any) => {
+  try {
+    const { title, body, message, content, priority = 'HIGH', targetAudience = 'ALL' } = req.body;
+    const finalTitle = (title || '📢 Cybersave Government Alert').trim();
+    const finalBody = (body || message || content || '').trim();
+
+    if (!finalTitle && !finalBody) {
+      return res.status(400).json({ error: 'Notification title or message body is required' });
+    }
+
+    const notifId = `NOTIF-${Date.now().toString(36).toUpperCase()}`;
+    const pushTitle = finalTitle.startsWith('📢') ? finalTitle : `📢 ${finalTitle}`;
+    const notifType = priority === 'URGENT' || priority === 'HIGH' ? 'WARNING' : 'INFO';
+
+    const pushPayload = {
+      id: notifId,
+      campaignId: notifId,
+      title: pushTitle,
+      body: finalBody,
+      message: finalBody,
+      content: finalBody,
+      type: notifType,
+      priority,
+      status: 'SENT',
+      userId: 'all',
+      createdAt: new Date().toISOString(),
+      metadata: { targetAudience, channel: 'PUSH_NOTIFICATION', priority, notifId }
+    };
+
+    // Instant real-time multi-channel socket broadcast to all mobile & web clients
+    io.emit('receive_global_push', pushPayload);
+    io.emit('user_push_notification', pushPayload);
+    io.emit('new_notification', pushPayload);
+    io.emit('campaign_created', pushPayload);
+    io.emit('campaign_broadcast', pushPayload);
+    io.emit('broadcast_notification', pushPayload);
+    io.emit('notifications_updated');
+
+    // Create system notification record in DB
+    try {
+      const anyUser = await prisma.user.findFirst({ select: { id: true } });
+      if (anyUser) {
+        await prisma.notification.create({
+          data: {
+            userId: anyUser.id,
+            title: pushTitle,
+            body: finalBody,
+            type: notifType as any,
+            status: 'SENT'
+          }
+        });
+      }
+    } catch (_) {}
+
+    // Send real Firebase Cloud Messaging (FCM) topic broadcast if configured
+    if (messaging) {
+      messaging.send({
+        topic: 'all',
+        notification: {
+          title: pushTitle,
+          body: finalBody,
+        },
+        android: {
+          priority: 'high',
+          notification: {
+            channelId: 'cybersave_alerts_channel',
+            priority: 'max',
+            defaultSound: true,
+            defaultVibrateTimings: true,
+            visibility: 'public',
+            icon: 'ic_launcher'
+          }
+        },
+        data: {
+          title: pushTitle,
+          body: finalBody,
+          message: finalBody,
+          type: String(notifType),
+          notifId,
+        }
+      }).catch((err: any) => console.warn('[FCM Topic Broadcast Error]:', err?.message));
+    }
+
+    // Record in Audit Log
+    prisma.auditLog.create({
+      data: {
+        userId: 'admin_action',
+        action: 'BROADCAST_NOTIFICATION',
+        details: `Dispatched status bar push broadcast: "${pushTitle}"`,
+        ipAddress: req.ip || '127.0.0.1',
+      }
+    }).catch(() => null);
+
+    res.status(200).json({
+      success: true,
+      message: 'Status bar broadcast dispatched successfully to all citizen devices',
+      payload: pushPayload
+    });
+  } catch (e: any) {
+    console.error('[Broadcast Notification error]:', e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // ─── Campaigns Endpoints ───────────────────────────────────────────────────────
 app.post(['/api/admin/campaigns', '/api/v1/campaigns'], async (req: any, res: any) => {
   try {
@@ -3463,13 +3568,25 @@ app.post(['/api/admin/users/:userId/notify', '/api/v1/users/:userId/notify', '/a
       return res.status(404).json({ error: `Citizen user '${rawTargetId}' not found` });
     }
 
+    const cleanNotifType = (() => {
+      if (!type) return 'INFO';
+      const t = String(type).toUpperCase().replace(/\s+/g, '_');
+      if (t.includes('APPLICATION') || t.includes('UPDATE')) return 'APPLICATION_UPDATE';
+      if (t.includes('PAY') || t.includes('BILL') || t.includes('REFUND')) return 'PAYMENT';
+      if (t.includes('SYS') || t.includes('MAINT')) return 'SYSTEM';
+      if (t.includes('SEC') || t.includes('AUTH')) return 'SECURITY';
+      if (t.includes('WARN') || t.includes('ALERT') || t.includes('URGENT')) return 'WARNING';
+      if (t.includes('SUCC') || t.includes('APPROV') || t.includes('COMPLET')) return 'SUCCESS';
+      return 'INFO';
+    })();
+
     // Save notification in database
     const createdNotif = await prisma.notification.create({
       data: {
         userId: targetUser.id,
         title: notifTitle,
         body: notifBody,
-        type: (type as any) || 'INFO',
+        type: cleanNotifType as any,
         status: 'SENT'
       }
     }).catch((err: any) => {
@@ -3480,11 +3597,13 @@ app.post(['/api/admin/users/:userId/notify', '/api/v1/users/:userId/notify', '/a
     const notifPayload = {
       id: createdNotif?.id || `notif_${Date.now()}`,
       userId: targetUser.id,
+      userEmail: targetUser.email,
+      userPhone: targetUser.phone,
       title: notifTitle,
       body: notifBody,
       message: notifBody,
       content: notifBody,
-      type: type || 'INFO',
+      type: cleanNotifType,
       status: 'SENT',
       createdAt: new Date().toISOString()
     };
@@ -3493,6 +3612,8 @@ app.post(['/api/admin/users/:userId/notify', '/api/v1/users/:userId/notify', '/a
     io.emit('user_push_notification', notifPayload);
     io.emit('receive_global_push', notifPayload);
     io.emit('new_notification', notifPayload);
+    io.emit('broadcast_notification', notifPayload);
+    io.emit('campaign_broadcast', notifPayload);
     io.emit('notifications_updated');
 
     // Send direct FCM push if device has fcmToken
