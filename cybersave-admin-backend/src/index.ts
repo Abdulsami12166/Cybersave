@@ -1445,6 +1445,78 @@ app.get(['/api/admin/refunds', '/api/v1/refunds', '/api/refunds'], async (req: a
   }
 });
 
+app.post(['/api/admin/refunds', '/api/v1/refunds', '/api/refunds'], async (req: any, res: any) => {
+  try {
+    const { applicationId, amount, reason, userId, details, destinationAccount } = req.body;
+    
+    let appObj: any = null;
+    if (applicationId) {
+      const isMongo = /^[0-9a-fA-F]{24}$/.test(String(applicationId).trim());
+      appObj = await prisma.application.findFirst({
+        where: isMongo ? { OR: [{ id: String(applicationId).trim() }, { refNumber: String(applicationId).trim() }] } : { refNumber: String(applicationId).trim() }
+      }).catch(() => null);
+    }
+    if (!appObj) {
+      appObj = await prisma.application.findFirst().catch(() => null);
+    }
+
+    if (!appObj) {
+      return res.status(400).json({ error: 'No application available to attach refund' });
+    }
+
+    const refNumber = `REF-2026${Math.floor(100000 + Math.random() * 900000)}`;
+    const finalAmount = Number(amount || appObj.feePaid || 2450);
+
+    const newRefund = await prisma.refundRequest.create({
+      data: {
+        refNumber,
+        applicationId: appObj.id,
+        userId: (userId && /^[0-9a-fA-F]{24}$/.test(userId)) ? userId : appObj.userId,
+        serviceTitle: appObj.serviceTitle || 'Government Service Fee',
+        amount: finalAmount,
+        reason: reason || 'Transaction Payment Refund Request',
+        status: 'PENDING',
+        adminNotes: details || 'Initiated from CyberSave Mobile',
+      },
+      include: {
+        application: {
+          select: {
+            id: true,
+            refNumber: true,
+            serviceTitle: true,
+            status: true,
+            feePaid: true,
+          }
+        },
+        user: {
+          select: {
+            id: true,
+            email: true,
+            phone: true,
+            profile: { select: { fullName: true, phone: true } }
+          }
+        }
+      }
+    });
+
+    if (io) {
+      io.emit('new_refund_request', newRefund);
+      io.emit('refund_created', newRefund);
+      io.emit('refunds_updated', newRefund);
+      io.emit('transactions_updated');
+      io.emit('dashboard_updated');
+    }
+
+    res.json({
+      success: true,
+      refund: newRefund,
+      message: 'Refund request processed successfully'
+    });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 app.all(['/api/admin/refunds/:id/approve', '/api/v1/refunds/:id/approve'], async (req: any, res: any) => {
   try {
     const targetId = String(req.params.id).trim();
