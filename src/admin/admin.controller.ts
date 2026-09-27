@@ -105,7 +105,7 @@ export class AdminController {
           lastUpdated: t.updatedAt ? new Date(t.updatedAt).toLocaleDateString('en-IN') : new Date().toLocaleDateString('en-IN'),
           createdAt: t.createdAt,
           updatedAt: t.updatedAt,
-          assignedTo: t.assignedTo || 'Amit S. (Support Desk)',
+          assignedTo: t.assignedTo || null,
           status: t.status,
           attachmentUrl: t.attachmentUrl,
           reporter: {
@@ -117,7 +117,7 @@ export class AdminController {
       });
 
       return {
-        stats: { totalTickets: total || 12, openTickets: open || 4, inProgress: inProgress || 3, resolved: resolved || 5 },
+        stats: { totalTickets: total, openTickets: open, inProgress: inProgress, resolved: resolved },
         tickets: formatted,
       };
     } catch (e) {
@@ -303,6 +303,145 @@ export class AdminController {
       message: 'Official response sent to citizen successfully',
       ticket: updatedTicket,
       reply: replyMsg,
+    };
+  }
+
+  @Get(['api/v1/support/tickets/:id', 'api/support/tickets/:id', 'api/admin/support/tickets/:id'])
+  @ApiOperation({ summary: 'Get Single Support Ticket by ID or refNumber' })
+  async getSupportTicketByIdRest(@Param('id') id: string) {
+    const isMongoId = (s?: string) => typeof s === 'string' && /^[0-9a-fA-F]{24}$/.test(s);
+    const orConditions: any[] = [{ refNumber: id }, { refNumber: `TKT-${id}` }];
+    if (isMongoId(id)) {
+      orConditions.push({ id });
+    }
+
+    const ticket = await this.prisma.supportTicket.findFirst({
+      where: { OR: orConditions },
+      include: { user: { include: { profile: true } } },
+    });
+
+    if (!ticket) {
+      throw new NotFoundException(`Grievance / Ticket ${id} not found`);
+    }
+
+    const u: any = ticket.user;
+    return {
+      id: ticket.refNumber || ticket.id,
+      rawId: ticket.id,
+      refNumber: ticket.refNumber,
+      title: ticket.title,
+      description: ticket.description,
+      category: ticket.category,
+      priority: ticket.priority,
+      createdOn: ticket.createdAt ? new Date(ticket.createdAt).toLocaleDateString('en-IN') : new Date().toLocaleDateString('en-IN'),
+      lastUpdated: ticket.updatedAt ? new Date(ticket.updatedAt).toLocaleDateString('en-IN') : new Date().toLocaleDateString('en-IN'),
+      createdAt: ticket.createdAt,
+      updatedAt: ticket.updatedAt,
+      assignedTo: ticket.assignedTo || null,
+      status: ticket.status,
+      attachmentUrl: ticket.attachmentUrl,
+      reporter: {
+        id: ticket.userId || '',
+        name: u?.profile?.fullName || (u?.email ? u.email.split('@')[0] : 'Citizen User'),
+        email: u?.email || '',
+      },
+      messages: Array.isArray(ticket.messages) ? ticket.messages : [],
+      resolutionSummary: (ticket as any).resolutionSummary || null,
+      resolutionCategory: (ticket as any).resolutionCategory || null,
+      rootCause: (ticket as any).rootCause || null,
+    };
+  }
+
+  @Post(['api/v1/support/tickets/:id/resolve', 'api/support/tickets/:id/resolve', 'support/tickets/:id/resolve'])
+  @ApiOperation({ summary: 'Resolve a Support Ticket / Grievance' })
+  async resolveSupportTicketRest(@Param('id') id: string, @Body() body: any) {
+    const { resolutionSummary, resolutionCategory, rootCause, timeToResolution, internalTags, adminId, adminName, notifyCitizen, csatSurvey } = body;
+
+    const isMongoId = (s?: string) => typeof s === 'string' && /^[0-9a-fA-F]{24}$/.test(s);
+    const orConditions: any[] = [{ refNumber: id }, { refNumber: `TKT-${id}` }];
+    if (isMongoId(id)) {
+      orConditions.push({ id });
+    }
+
+    const ticket = await this.prisma.supportTicket.findFirst({
+      where: { OR: orConditions },
+      include: { user: { include: { profile: true } } },
+    });
+
+    if (!ticket) {
+      throw new NotFoundException(`Grievance / Ticket ${id} not found`);
+    }
+
+    const actingName = adminName || 'Support Desk Officer';
+    const nowTimeStr = new Date().toLocaleString('en-IN', { dateStyle: 'medium', timeStyle: 'short' });
+
+    const existingMsgs = Array.isArray(ticket.messages) ? (ticket.messages as any[]) : [];
+    const resolutionMsg = {
+      id: `msg-resolve-${Date.now()}`,
+      senderId: adminId || 'admin',
+      senderName: `${actingName} (Resolution)`,
+      role: 'AGENT',
+      text: `✅ Ticket Resolved — ${resolutionSummary || 'Issue has been resolved.'}`,
+      time: nowTimeStr,
+      isResolution: true,
+    };
+    const updatedMsgs = [...existingMsgs, resolutionMsg];
+
+    const updateData: any = {
+      messages: updatedMsgs as any,
+      status: 'RESOLVED',
+      updatedAt: new Date(),
+    };
+
+    const updatedTicket = await this.prisma.supportTicket.update({
+      where: { id: ticket.id },
+      data: updateData,
+      include: { user: { include: { profile: true } } },
+    });
+
+    // Notify citizen
+    if (notifyCitizen !== false && ticket.userId) {
+      await this.prisma.notification.create({
+        data: {
+          userId: ticket.userId,
+          title: `Ticket #${ticket.refNumber} Resolved`,
+          body: resolutionSummary || 'Your support ticket has been resolved.',
+          type: 'INFO',
+          status: 'SENT',
+        },
+      }).catch(() => null);
+
+      AdminGateway.broadcast('user_grievance_reply', {
+        userId: ticket.userId,
+        ticketId: ticket.refNumber,
+        ticketTitle: ticket.title,
+        message: resolutionMsg,
+      });
+    }
+
+    // Audit log
+    await AdminGateway.logActivity(this.prisma, {
+      userId: adminId,
+      userName: actingName,
+      action: 'GRIEVANCE_RESOLVED',
+      details: `Ticket #${ticket.refNumber} resolved. Category: ${resolutionCategory || 'N/A'}. Summary: ${(resolutionSummary || '').slice(0, 100)}`,
+    });
+
+    // Broadcast to admin console
+    AdminGateway.broadcast('support_tickets_updated');
+    AdminGateway.broadcast('resolve_ticket_success', {
+      id: ticket.refNumber,
+      rawId: ticket.id,
+      refNumber: ticket.refNumber,
+      title: ticket.title,
+      status: 'RESOLVED',
+      messages: updatedMsgs,
+    });
+
+    return {
+      success: true,
+      message: `Ticket #${ticket.refNumber} resolved successfully`,
+      ticket: updatedTicket,
     };
   }
 

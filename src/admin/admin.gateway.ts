@@ -2895,7 +2895,7 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
         status: foundTicket?.status || 'OPEN',
         createdOn: foundTicket ? foundTicket.createdAt.toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' }) : 'Today',
         lastUpdated: foundTicket ? foundTicket.updatedAt.toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' }) : 'Today',
-        assignedTo: { id: 'admin1', name: foundTicket?.assignedTo || 'Amit S. (Support Desk)' },
+        assignedTo: foundTicket?.assignedTo ? { id: 'admin1', name: foundTicket.assignedTo } : null,
         reporter: { id: reporterId, name: reporterName },
         messages: rawMessages,
         notes: [
@@ -2909,6 +2909,58 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
       });
     } catch (e) {
       console.error('[AdminGateway] request_ticket_thread error:', e);
+    }
+  }
+
+  @SubscribeMessage('request_ticket_detail')
+  async handleTicketDetail(
+    @ConnectedSocket() client: Socket,
+    @MessageBody() data: { id: string },
+  ) {
+    try {
+      const ticketId = data?.id;
+      if (!ticketId) return;
+
+      const isMongoId = (idStr?: string) => typeof idStr === 'string' && /^[0-9a-fA-F]{24}$/.test(idStr);
+      const orConditions: any[] = [
+        { refNumber: ticketId },
+        { refNumber: `TKT-${ticketId}` },
+      ];
+      if (isMongoId(ticketId)) {
+        orConditions.push({ id: ticketId });
+      }
+
+      const foundTicket = await this.prisma.supportTicket.findFirst({
+        where: { OR: orConditions },
+        include: { user: { include: { profile: true } } },
+      });
+
+      if (!foundTicket) return;
+
+      const u: any = foundTicket.user;
+      const reporterName = u?.profile?.fullName || u?.fullName || u?.email || 'Citizen User';
+      const reporterId = foundTicket.userId || '';
+
+      client.emit('response_ticket_detail', {
+        id: foundTicket.refNumber || foundTicket.id,
+        rawId: foundTicket.id,
+        refNumber: foundTicket.refNumber,
+        title: foundTicket.title,
+        description: foundTicket.description,
+        attachmentUrl: foundTicket.attachmentUrl,
+        category: foundTicket.category,
+        priority: foundTicket.priority,
+        status: foundTicket.status,
+        createdOn: foundTicket.createdAt.toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' }),
+        lastUpdated: foundTicket.updatedAt.toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' }),
+        createdAt: foundTicket.createdAt,
+        updatedAt: foundTicket.updatedAt,
+        assignedTo: foundTicket.assignedTo ? { id: 'admin1', name: foundTicket.assignedTo } : null,
+        reporter: { id: reporterId, name: reporterName, email: u?.email || '' },
+        messages: Array.isArray(foundTicket.messages) ? foundTicket.messages : [],
+      });
+    } catch (e) {
+      console.error('[AdminGateway] request_ticket_detail error:', e);
     }
   }
 
@@ -3013,6 +3065,80 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
       });
     } catch (e) {
       console.error('[AdminGateway] send_ticket_reply error:', e);
+    }
+  }
+
+  @SubscribeMessage('resolve_support_ticket')
+  async handleResolveTicket(
+    @ConnectedSocket() client: Socket,
+    @MessageBody() data: { id: string; resolutionSummary?: string; resolutionCategory?: string; rootCause?: string; adminId?: string; adminName?: string },
+  ) {
+    try {
+      const ticketId = data?.id;
+      if (!ticketId) return;
+
+      const isMongoId = (idStr?: string) => typeof idStr === 'string' && /^[0-9a-fA-F]{24}$/.test(idStr);
+      const orConditions: any[] = [{ refNumber: ticketId }, { refNumber: `TKT-${ticketId}` }];
+      if (isMongoId(ticketId)) {
+        orConditions.push({ id: ticketId });
+      }
+
+      const ticket = await this.prisma.supportTicket.findFirst({
+        where: { OR: orConditions },
+        include: { user: { include: { profile: true } } },
+      });
+
+      if (!ticket) return;
+
+      const actingName = data.adminName || 'Support Desk Officer';
+      const nowTimeStr = new Date().toLocaleString('en-IN', { dateStyle: 'medium', timeStyle: 'short' });
+
+      const existingMsgs = Array.isArray(ticket.messages) ? (ticket.messages as any[]) : [];
+      const resolutionMsg = {
+        id: `msg-resolve-${Date.now()}`,
+        senderId: data.adminId || 'admin',
+        senderName: `${actingName} (Resolution)`,
+        role: 'AGENT',
+        text: `✅ Ticket Resolved — ${data.resolutionSummary || 'Issue has been resolved.'}`,
+        time: nowTimeStr,
+        isResolution: true,
+      };
+      const updatedMsgs = [...existingMsgs, resolutionMsg];
+
+      await this.prisma.supportTicket.update({
+        where: { id: ticket.id },
+        data: {
+          messages: updatedMsgs as any,
+          status: 'RESOLVED',
+          updatedAt: new Date(),
+        },
+      });
+
+      // Broadcast resolve success to all admin clients
+      this.server.emit('resolve_ticket_success', {
+        id: ticket.refNumber,
+        rawId: ticket.id,
+        refNumber: ticket.refNumber,
+        title: ticket.title,
+        status: 'RESOLVED',
+        messages: updatedMsgs,
+      });
+      this.server.emit('support_tickets_updated');
+
+      // Notify citizen
+      if (ticket.userId) {
+        await this.prisma.notification.create({
+          data: {
+            userId: ticket.userId,
+            title: `Ticket #${ticket.refNumber} Resolved`,
+            body: data.resolutionSummary || 'Your support ticket has been resolved.',
+            type: 'INFO',
+            status: 'SENT',
+          },
+        }).catch(() => null);
+      }
+    } catch (e) {
+      console.error('[AdminGateway] resolve_support_ticket error:', e);
     }
   }
 
