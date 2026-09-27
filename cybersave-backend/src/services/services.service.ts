@@ -199,44 +199,57 @@ export class ServicesService implements OnModuleInit {
       iconUrl: data.iconUrl || data.imageUrl || (resolvedIcon.startsWith('http') ? resolvedIcon : undefined),
     };
 
-    const isExisting = await this.prisma.service.findUnique({ where: { slug } }).catch(() => null);
+    const isMongoId = (s?: string) => typeof s === 'string' && /^[0-9a-fA-F]{24}$/.test(s);
+    let isExisting: any = null;
+    if (isMongoId(data.id)) {
+      isExisting = await this.prisma.service.findUnique({ where: { id: data.id } }).catch(() => null);
+    }
+    if (!isExisting) {
+      isExisting = await this.prisma.service.findUnique({ where: { slug } }).catch(() => null);
+    }
 
-    const service = await this.prisma.service.upsert({
-      where: { slug },
-      update: {
-        title: rawTitle,
-        description: data.description || 'Government certified digital service workflow.',
-        category: data.category || 'Government',
-        department: data.department || data.departmentRole || 'General Administration',
-        fee: feeVal,
-        processingTime: data.processingTime || '7-15 Days',
-        eligibility: data.eligibility || ['Citizen of India', 'Valid ID verification credentials'],
-        requiredDocs: data.requiredDocs || data.documents || defaultDocs,
-        subServices: data.subServices || [],
-        formDataSchema: data.formDataSchema || data.formElements || defaultSchema,
-        pricingConfig: pricingObj,
-        iconName: resolvedIcon,
-        colorHex: data.colorHex || '#2563eb',
-        isActive: data.isActive !== undefined ? data.isActive : true,
-      },
-      create: {
-        slug,
-        title: rawTitle,
-        description: data.description || 'Government certified digital service workflow.',
-        category: data.category || 'Government',
-        department: data.department || data.departmentRole || 'General Administration',
-        fee: feeVal,
-        processingTime: data.processingTime || '7-15 Days',
-        eligibility: data.eligibility || ['Citizen of India', 'Valid ID verification credentials'],
-        requiredDocs: data.requiredDocs || data.documents || defaultDocs,
-        subServices: data.subServices || [],
-        formDataSchema: data.formDataSchema || data.formElements || defaultSchema,
-        pricingConfig: pricingObj,
-        iconName: resolvedIcon,
-        colorHex: data.colorHex || '#2563eb',
-        isActive: data.isActive !== undefined ? data.isActive : true,
-      },
-    });
+    let service: any;
+    if (isExisting) {
+      service = await this.prisma.service.update({
+        where: { id: isExisting.id },
+        data: {
+          title: rawTitle,
+          description: data.description || 'Government certified digital service workflow.',
+          category: data.category || 'Government',
+          department: data.department || data.departmentRole || 'General Administration',
+          fee: feeVal,
+          processingTime: data.processingTime || '7-15 Days',
+          eligibility: data.eligibility || ['Citizen of India', 'Valid ID verification credentials'],
+          requiredDocs: data.requiredDocs || data.documents || defaultDocs,
+          subServices: data.subServices !== undefined ? data.subServices : isExisting.subServices,
+          formDataSchema: data.formDataSchema || data.formElements || defaultSchema,
+          pricingConfig: pricingObj,
+          iconName: resolvedIcon,
+          colorHex: data.colorHex || '#2563eb',
+          isActive: data.isActive !== undefined ? data.isActive : true,
+        },
+      });
+    } else {
+      service = await this.prisma.service.create({
+        data: {
+          slug,
+          title: rawTitle,
+          description: data.description || 'Government certified digital service workflow.',
+          category: data.category || 'Government',
+          department: data.department || data.departmentRole || 'General Administration',
+          fee: feeVal,
+          processingTime: data.processingTime || '7-15 Days',
+          eligibility: data.eligibility || ['Citizen of India', 'Valid ID verification credentials'],
+          requiredDocs: data.requiredDocs || data.documents || defaultDocs,
+          subServices: data.subServices || [],
+          formDataSchema: data.formDataSchema || data.formElements || defaultSchema,
+          pricingConfig: pricingObj,
+          iconName: resolvedIcon,
+          colorHex: data.colorHex || '#2563eb',
+          isActive: data.isActive !== undefined ? data.isActive : true,
+        },
+      });
+    }
 
     try {
       await AdminGateway.logActivity(this.prisma, {

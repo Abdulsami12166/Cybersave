@@ -1,4 +1,4 @@
-import { Controller, Get, Post, Body, Param, Query } from '@nestjs/common';
+import { Controller, Get, Post, Put, Patch, Body, Param, Query } from '@nestjs/common';
 import { ServicesService } from './services.service';
 import { ApiTags, ApiOperation } from '@nestjs/swagger';
 
@@ -17,6 +17,18 @@ export class ServicesController {
   @ApiOperation({ summary: 'Create or update a government service workflow' })
   async createService(@Body() body: any) {
     return this.servicesService.createOrUpdateService(body);
+  }
+
+  @Put(':id')
+  @ApiOperation({ summary: 'Update existing service scheme and configure sub-services' })
+  async updateService(@Param('id') id: string, @Body() body: any) {
+    return this.servicesService.createOrUpdateService({ ...body, id });
+  }
+
+  @Patch(':id')
+  @ApiOperation({ summary: 'Patch existing service scheme and configure sub-services' })
+  async patchService(@Param('id') id: string, @Body() body: any) {
+    return this.servicesService.createOrUpdateService({ ...body, id });
   }
 
   @Get(':slug')

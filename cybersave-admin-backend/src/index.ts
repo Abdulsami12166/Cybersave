@@ -2,7 +2,7 @@ import express from 'express';
 import cors from 'cors';
 import http from 'http';
 import { Server } from 'socket.io';
-import { setupSockets, formatSupportTicketThread, dispatchNotificationToCitizen, resolveTicketTargetUserId } from './socket';
+import { setupSockets, formatSupportTicketThread, findSupportTicketOrLinked, dispatchNotificationToCitizen, resolveTicketTargetUserId, invalidateSocketOperatorCache } from './socket';
 import { messaging } from './firebase';
 import { PrismaClient } from '@prisma/client';
 import dotenv from 'dotenv';
@@ -1359,6 +1359,82 @@ app.post(['/api/v1/services', '/api/services'], async (req: any, res: any) => {
     res.status(500).json({ error: (e as any).message });
   }
 });
+
+app.put(['/api/v1/services/:id', '/api/services/:id'], async (req: any, res: any) => {
+  try {
+    const { id } = req.params;
+    const data = req.body;
+    const isMongoId = /^[0-9a-fA-F]{24}$/.test(id);
+    let target = isMongoId ? await prisma.service.findUnique({ where: { id } }) : await prisma.service.findFirst({ where: { slug: id } });
+    if (!target) {
+      return res.status(404).json({ error: 'Service not found' });
+    }
+
+    const rawTitle = data.title || data.name || target.title;
+    const feeVal = typeof data.fee === 'number'
+      ? data.fee
+      : (typeof data.pricing?.fee === 'number' ? data.pricing.fee : (parseFloat(data.fee || String(target.fee)) || target.fee));
+
+    const resolvedIcon = data.iconUrl || data.imageUrl || data.iconName || target.iconName || 'file-document-outline';
+
+    const updated = await prisma.service.update({
+      where: { id: target.id },
+      data: {
+        title: rawTitle,
+        description: data.description || data.shortDescription || target.description,
+        category: data.category || target.category,
+        department: data.department || data.departmentRole || target.department,
+        fee: feeVal,
+        processingTime: data.tat || data.processingTime || target.processingTime,
+        subServices: data.subServices !== undefined ? data.subServices : target.subServices,
+        formDataSchema: data.formElements || data.formDataSchema || target.formDataSchema,
+        requiredDocs: data.documents || data.requiredDocs || target.requiredDocs,
+        pricingConfig: data.pricing || data.pricingConfig || { ...((target.pricingConfig as any) || {}), fee: feeVal, iconUrl: data.iconUrl || data.imageUrl },
+        iconName: resolvedIcon,
+        colorHex: data.colorHex || target.colorHex,
+        isActive: data.status ? data.status === 'Active' : (data.isActive !== undefined ? data.isActive : target.isActive),
+      }
+    });
+
+    io.emit('services_updated', updated);
+    io.emit('service_updated', updated);
+    res.json(updated);
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.patch(['/api/v1/services/:id', '/api/services/:id'], async (req: any, res: any) => {
+  try {
+    const { id } = req.params;
+    const data = req.body;
+    const isMongoId = /^[0-9a-fA-F]{24}$/.test(id);
+    let target = isMongoId ? await prisma.service.findUnique({ where: { id } }) : await prisma.service.findFirst({ where: { slug: id } });
+    if (!target) {
+      return res.status(404).json({ error: 'Service not found' });
+    }
+
+    const updated = await prisma.service.update({
+      where: { id: target.id },
+      data: {
+        ...(data.title ? { title: data.title } : {}),
+        ...(data.description ? { description: data.description } : {}),
+        ...(data.category ? { category: data.category } : {}),
+        ...(data.department ? { department: data.department } : {}),
+        ...(data.fee !== undefined ? { fee: typeof data.fee === 'number' ? data.fee : parseFloat(data.fee) } : {}),
+        ...(data.subServices !== undefined ? { subServices: data.subServices } : {}),
+        ...(data.iconName || data.iconUrl ? { iconName: data.iconUrl || data.iconName } : {}),
+        ...(data.isActive !== undefined ? { isActive: data.isActive } : {}),
+      }
+    });
+
+    io.emit('services_updated', updated);
+    io.emit('service_updated', updated);
+    res.json(updated);
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
 // Duplicate /api/v1/applications route removed — authoritative handler with refNumbers support is defined above at line ~320
 
 app.get(['/api/v1/users', '/api/users'], async (req: any, res: any) => {
@@ -1499,10 +1575,41 @@ app.post(['/api/admin/refunds', '/api/v1/refunds', '/api/refunds'], async (req: 
       }
     });
 
+    // Also create corresponding SupportTicket record for Support Ticket Management
+    const targetUserId = (userId && /^[0-9a-fA-F]{24}$/.test(userId)) ? userId : appObj.userId;
+    const citizenName = newRefund.user?.profile?.fullName || (newRefund.user?.email ? newRefund.user.email.split('@')[0] : 'Citizen Applicant');
+    await prisma.supportTicket.create({
+      data: {
+        refNumber,
+        userId: targetUserId,
+        title: `Refund Claim: ₹${finalAmount} - ${appObj.serviceTitle || 'Government Service Fee'}`,
+        description: `Citizen refund request for Application #${appObj.refNumber || 'N/A'}.\nReason: ${reason || 'Transaction Payment Refund Request'}${details ? '\nDetails: ' + details : ''}`,
+        category: 'Refund Request',
+        priority: 'High',
+        status: 'OPEN',
+        assignedTo: req.body?.assignedTo || '',
+        attachmentUrl: req.body?.proofUrl || null,
+        messages: [
+          {
+            id: `msg-${Date.now()}`,
+            senderId: targetUserId,
+            senderName: citizenName,
+            role: 'CITIZEN',
+            text: `Refund claim of ₹${finalAmount} submitted for Application #${appObj.refNumber || 'N/A'}.\n\nReason: ${reason || 'Transaction Payment Refund Request'}${details ? '\n\nDetails: ' + details : ''}`,
+            attachmentUrl: req.body?.proofUrl || null,
+            time: new Date().toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' }),
+            timestamp: new Date().toISOString()
+          }
+        ]
+      }
+    }).catch(err => console.warn('Could not create support ticket for refund:', err?.message));
+
     if (io) {
       io.emit('new_refund_request', newRefund);
       io.emit('refund_created', newRefund);
       io.emit('refunds_updated', newRefund);
+      io.emit('new_support_ticket');
+      io.emit('support_tickets_updated');
       io.emit('transactions_updated');
       io.emit('dashboard_updated');
     }
@@ -1568,11 +1675,27 @@ app.all(['/api/admin/refunds/:id/approve', '/api/v1/refunds/:id/approve'], async
       }
     }).catch(() => null);
 
+    // Synchronize corresponding support ticket
+    await prisma.supportTicket.updateMany({
+      where: {
+        OR: [
+          { refNumber: refund.refNumber },
+          { id: refund.id },
+          { title: { contains: refund.refNumber } }
+        ]
+      },
+      data: {
+        status: 'RESOLVED',
+        updatedAt: new Date()
+      }
+    }).catch(() => null);
+
     auditLogsCache = null;
     if (io) {
       io.emit('audit_logs_updated');
       io.emit('refund_approved', updatedRefund);
       io.emit('refunds_updated', updatedRefund);
+      io.emit('support_tickets_updated');
       io.emit('applications_updated');
       io.emit('transactions_updated');
       io.emit('dashboard_updated');
@@ -1617,6 +1740,21 @@ app.all(['/api/admin/refunds/:id/reject', '/api/v1/refunds/:id/reject'], async (
       }).catch(() => null);
     }
 
+    // Synchronize corresponding support ticket
+    await prisma.supportTicket.updateMany({
+      where: {
+        OR: [
+          { refNumber: refund.refNumber },
+          { id: refund.id },
+          { title: { contains: refund.refNumber } }
+        ]
+      },
+      data: {
+        status: 'RESOLVED',
+        updatedAt: new Date()
+      }
+    }).catch(() => null);
+
     await prisma.auditLog.create({
       data: {
         ...(refund.userId ? { userId: refund.userId } : {}),
@@ -1630,6 +1768,7 @@ app.all(['/api/admin/refunds/:id/reject', '/api/v1/refunds/:id/reject'], async (
     if (io) {
       io.emit('audit_logs_updated');
       io.emit('refunds_updated', updatedRefund);
+      io.emit('support_tickets_updated');
       io.emit('applications_updated');
       io.emit('dashboard_updated');
     }
@@ -1936,6 +2075,34 @@ app.post([
 
     auditLogsCache = null;
 
+    // Also create corresponding SupportTicket record for Support Ticket Management
+    const fbTicketRef = `FDB-${feedback.id.slice(-6).toUpperCase()}`;
+    await prisma.supportTicket.create({
+      data: {
+        refNumber: fbTicketRef,
+        userId: matchedUserId,
+        title: `Citizen Feedback (${rating}★): ${improvementCategory || 'App Experience'}`,
+        description: `"${feedback.feedbackText}"`,
+        category: 'Citizen Feedback',
+        priority: rating <= 2 ? 'High' : (rating === 3 ? 'Medium' : 'Low'),
+        status: rating <= 2 ? 'OPEN' : 'RESOLVED',
+        assignedTo: 'Amit S. (Support Desk)',
+        attachmentUrl: imageUrl || null,
+        messages: [
+          {
+            id: `msg-${Date.now()}`,
+            senderId: matchedUserId || 'citizen',
+            senderName: matchedUserId ? 'Citizen User' : 'Mobile Citizen',
+            role: 'CITIZEN',
+            text: `Citizen Rating: ${'★'.repeat(rating)}${'☆'.repeat(Math.max(0, 5 - rating))} (${rating}/5)\nCategory: ${improvementCategory || 'App Experience'}\n\n"${feedback.feedbackText}"`,
+            attachmentUrl: imageUrl || null,
+            time: new Date().toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' }),
+            timestamp: new Date().toISOString()
+          }
+        ]
+      }
+    }).catch(err => console.warn('Could not create support ticket for feedback:', err?.message));
+
     // Real-time Socket.io broadcast to all admin dashboards & citizen profile tabs
     if (io) {
       const socketPayload = {
@@ -1955,6 +2122,8 @@ app.post([
       io.emit('new_user_feedback', socketPayload);
       io.emit('user_detail_updated', socketPayload);
       io.emit('feedback_submitted', socketPayload);
+      io.emit('new_support_ticket');
+      io.emit('support_tickets_updated');
       io.emit('audit_logs_updated');
     }
 
@@ -2043,9 +2212,24 @@ export async function getFastOperatorData(id?: string) {
     return cached.data;
   }
 
+  const isMongoId = (s?: string) => typeof s === 'string' && /^[0-9a-fA-F]{24}$/.test(s);
+  let userWhere: any = { role: 'ADMIN' };
+  if (isMongoId(id)) {
+    userWhere = { id };
+  } else if (id && typeof id === 'string') {
+    const cleanId = id.trim().toLowerCase();
+    userWhere = {
+      OR: [
+        { email: { equals: cleanId, mode: 'insensitive' } },
+        { keycloakId: id },
+        { phone: id }
+      ]
+    };
+  }
+
   const [user, logs] = await Promise.all([
     prisma.user.findFirst({
-      where: (id && id.length === 24) ? { id } : (id ? { email: id } : { role: 'ADMIN' }),
+      where: userWhere,
       select: {
         id: true,
         email: true,
@@ -2131,6 +2315,58 @@ export async function getFastOperatorData(id?: string) {
     details: l.details || '-'
   }));
 
+  // Real Database queries for documents & applications handled by this operator
+  const [userDocUploads, operatorApps] = await Promise.all([
+    prisma.documentUpload.findMany({
+      where: { userId: user.id },
+      orderBy: { uploadedAt: 'desc' }
+    }).catch(() => []),
+    prisma.application.findMany({
+      where: {
+        OR: [
+          { userId: user.id },
+          ...(profile?.fullName ? [{ officialOfficer: { contains: profile.fullName } }] : []),
+          ...(user.email ? [{ officialOfficer: { contains: user.email } }] : [])
+        ]
+      },
+      include: {
+        documentUploads: true
+      },
+      take: 100,
+      orderBy: { updatedAt: 'desc' }
+    }).catch(() => [])
+  ]);
+
+  const realDocuments: any[] = [];
+  const seenDocIds = new Set<string>();
+
+  // Strictly this operator's own uploaded identity and compliance credentials
+  for (const doc of (userDocUploads || [])) {
+    if (!seenDocIds.has(doc.id)) {
+      seenDocIds.add(doc.id);
+      const isImg = (doc.fileType?.toLowerCase().includes('image') || (doc.fileName && /\.(jpg|jpeg|png|webp|gif)$/i.test(doc.fileName)) || (doc.fileUrl && doc.fileUrl.startsWith('data:image')));
+      realDocuments.push({
+        id: doc.id,
+        refNum: `DOC-${doc.id.slice(-4).toUpperCase()}`,
+        fileName: doc.fileName || 'Uploaded_Document',
+        title: (doc.fileName || 'Uploaded Document').replace(/\.[^/.]+$/, '').replace(/_/g, ' '),
+        documentType: doc.fileType || (isImg ? 'Identity Proof' : 'Compliance Document'),
+        type: isImg ? 'IMAGE' : 'PDF',
+        status: 'Verified',
+        uploadedAt: doc.uploadedAt ? new Date(doc.uploadedAt).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' }) : 'Recent',
+        expires: 'N/A',
+        fileUrl: doc.fileUrl
+      });
+    }
+  }
+
+  const totalProcessed = (operatorApps || []).length;
+  const approvalsCount = (operatorApps || []).filter(a => ['APPROVED', 'COMPLETED'].includes(a.status)).length;
+  const rejectionsCount = (operatorApps || []).filter(a => a.status === 'REJECTED').length;
+  const pendingCount = (operatorApps || []).filter(a => ['SUBMITTED', 'UNDER_REVIEW', 'PENDING'].includes(a.status)).length;
+  const rejectionRateStr = totalProcessed > 0 ? `${((rejectionsCount / totalProcessed) * 100).toFixed(1)}%` : '0.0%';
+  const accuracyStr = totalProcessed > 0 ? `${(((totalProcessed - rejectionsCount) / totalProcessed) * 100).toFixed(1)}% Accuracy` : '100% Accuracy';
+
   const operatorData = {
     id: user.id,
     name: profile?.fullName || (user.email ? user.email.split('@')[0] : 'Admin Officer'),
@@ -2150,87 +2386,40 @@ export async function getFastOperatorData(id?: string) {
     dob: profile?.dob || '1992-06-15',
     gender: profile?.gender || 'Male',
     twoFactorEnabled: true,
+    metrics: {
+      tasksCompleted: totalProcessed,
+      tasksMom: totalProcessed > 0 ? '+12% MoM' : '0% MoM',
+      avgResponseTime: totalProcessed > 0 ? '12 min' : '—',
+      responseTier: totalProcessed > 0 ? 'Tier 1' : 'Standard',
+      satisfactionRating: totalProcessed > 0 ? 4.9 : 0,
+      documentsProcessed: realDocuments.length,
+      accuracyRate: accuracyStr,
+    },
     stats: {
-      applicationsProcessed: 148,
-      approvalsCompleted: 139,
-      rejectionRate: '3.2%',
-      averageProcessingTime: '12 min',
-      pendingApplications: 9,
-      satisfactionRating: 4.9,
-      documentsProcessed: 312,
-      accuracyRate: '98.5% Accuracy'
+      applicationsProcessed: totalProcessed,
+      approvalsCompleted: approvalsCount,
+      rejectionRate: rejectionRateStr,
+      averageProcessingTime: totalProcessed > 0 ? '12 min' : '0 min',
+      pendingApplications: pendingCount,
+      satisfactionRating: totalProcessed > 0 ? 4.9 : 0,
+      documentsProcessed: realDocuments.length,
+      accuracyRate: accuracyStr
     },
     reportingStructure: {
       supervisorName: 'Super Administrator',
       supervisorRole: 'District Collectorate / IT Mission',
       primaryShift: 'Day Shift (09:00 - 18:00 IST)',
     },
-    documents: [
-      {
-        id: 'DOC-1',
-        refNum: '•••• •••• 4820',
-        fileName: 'Government_ID_Aadhaar.pdf',
-        title: 'Government ID (Aadhaar)',
-        documentType: 'Identity Proof',
-        type: 'PDF',
-        status: 'Verified',
-        uploadedAt: 'Jan 12, 2024',
-        expires: 'N/A',
-        fileUrl: 'https://res.cloudinary.com/dzo4caeef/image/upload/v1787127810/cybersave/documents/ylzz2svaswahyccwj85c.jpg'
-      },
-      {
-        id: 'DOC-2',
-        refNum: 'DL-3820240982',
-        fileName: 'Driving_License.pdf',
-        title: 'Driving License',
-        documentType: 'Transport License',
-        type: 'PDF',
-        status: 'Valid',
-        uploadedAt: 'Jan 15, 2024',
-        expires: 'Jun 2028',
-        fileUrl: 'https://res.cloudinary.com/dzo4caeef/image/upload/v1787127810/cybersave/documents/ylzz2svaswahyccwj85c.jpg'
-      },
-      {
-        id: 'DOC-3',
-        refNum: 'BHIPK••••D',
-        fileName: 'PAN_Card.jpg',
-        title: 'PAN Card',
-        documentType: 'Taxation ID',
-        type: 'IMAGE',
-        status: 'Verified',
-        uploadedAt: 'Jan 12, 2024',
-        expires: 'N/A',
-        fileUrl: 'https://res.cloudinary.com/dzo4caeef/image/upload/v1787127810/cybersave/documents/ylzz2svaswahyccwj85c.jpg'
-      },
-      {
-        id: 'DOC-4',
-        refNum: 'Z8320492',
-        fileName: 'Passport_Documents.pdf',
-        title: 'Passport Documents',
-        documentType: 'Travel & Identity',
-        type: 'PDF',
-        status: 'Verified',
-        uploadedAt: 'Feb 02, 2024',
-        expires: 'Dec 2032',
-        fileUrl: 'https://res.cloudinary.com/dzo4caeef/image/upload/v1787127810/cybersave/documents/ylzz2svaswahyccwj85c.jpg'
-      }
-    ],
-    complianceActions: [
+    documents: realDocuments,
+    complianceActions: realDocuments.some(d => d.status === 'Expired') ? [
       {
         id: 'comp-1',
-        title: 'Hazmat Handling Expired',
+        title: 'Document Expiration Alert',
         status: 'Action Required',
         severity: 'danger',
-        description: 'Operator cannot be assigned to Tier-2 transit tasks involving chemical assets.'
-      },
-      {
-        id: 'comp-2',
-        title: 'Driving License Renew',
-        status: '4 Years Left',
-        severity: 'warning',
-        description: 'Regular permit audit recommended before the scheduled Q3 compliance checklist.'
+        description: 'One or more assigned/reviewed documents require compliance re-verification.'
       }
-    ],
+    ] : [],
     activityLogs,
   };
 
@@ -2606,6 +2795,82 @@ app.post(['/api/admin/operators/:id/request-document-update', '/api/v1/operators
   }
 });
 
+app.post(['/api/admin/operators/:id/upload-document', '/api/v1/operators/:id/upload-document', '/api/operators/:id/upload-document'], async (req: any, res: any) => {
+  try {
+    const { id } = req.params;
+    const { fileName, fileUrl, fileData, fileType, title, fileSize } = req.body || {};
+    
+    // Check if operator exists
+    const isMongoId = (s?: string) => typeof s === 'string' && /^[0-9a-fA-F]{24}$/.test(s);
+    let opUser: any = null;
+    if (isMongoId(id)) {
+      opUser = await prisma.user.findUnique({ where: { id } });
+    }
+    if (!opUser && id && typeof id === 'string') {
+      const cleanId = id.trim().toLowerCase();
+      opUser = await prisma.user.findFirst({
+        where: {
+          OR: [
+            { email: { equals: cleanId, mode: 'insensitive' } },
+            { keycloakId: id },
+            { phone: id }
+          ]
+        }
+      });
+    }
+    if (!opUser) return res.status(404).json({ error: 'Operator not found' });
+
+    const cleanFileUrl = fileUrl || fileData;
+    if (!cleanFileUrl) {
+      return res.status(400).json({ error: 'File data or URL is required' });
+    }
+
+    const cleanFileName = fileName || title || 'Operator_Credential.pdf';
+    const isPdf = cleanFileName.toLowerCase().endsWith('.pdf') || (typeof cleanFileUrl === 'string' && cleanFileUrl.startsWith('data:application/pdf'));
+    const isImg = !isPdf && (Boolean(cleanFileName.toLowerCase().match(/\.(jpg|jpeg|png|webp|gif)$/)) || (typeof cleanFileUrl === 'string' && cleanFileUrl.startsWith('data:image')));
+    const cleanFileType = fileType || (isPdf ? 'application/pdf' : (isImg ? 'image/jpeg' : 'application/octet-stream'));
+
+    const newDoc = await prisma.documentUpload.create({
+      data: {
+        userId: opUser.id,
+        fileName: cleanFileName,
+        fileUrl: cleanFileUrl,
+        fileType: cleanFileType,
+        fileSize: fileSize || (typeof cleanFileUrl === 'string' ? Math.round(cleanFileUrl.length * 0.75) : 1024 * 100),
+      }
+    });
+
+    await prisma.auditLog.create({
+      data: {
+        userId: opUser.id,
+        action: 'DOC_UPLOADED',
+        details: `Administrator uploaded verified document for operator: ${newDoc.fileName}`
+      }
+    }).catch(() => null);
+
+    operatorCache.delete(opUser.id);
+    operatorCache.delete('default');
+    invalidateSocketOperatorCache(opUser.id);
+    io.emit('operators_updated');
+    io.emit('operator_detail_updated', { id: opUser.id });
+    res.json({
+      success: true,
+      document: {
+        id: newDoc.id,
+        fileName: newDoc.fileName,
+        refNum: `DOC-${newDoc.id.slice(-4).toUpperCase()}`,
+        type: isImg ? 'IMAGE' : 'PDF',
+        status: 'Verified',
+        uploadedAt: new Date(newDoc.uploadedAt).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' }),
+        expires: 'N/A',
+        fileUrl: newDoc.fileUrl
+      }
+    });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 app.post(['/api/admin/operators/:id/reset-password', '/api/v1/operators/:id/reset-password', '/api/operators/:id/reset-password'], async (req: any, res: any) => {
   try {
     const { id } = req.params;
@@ -2963,19 +3228,25 @@ app.get(['/api/admin/profile', '/api/v1/profile', '/api/admin/me'], async (req: 
 // --- Support Tickets REST Endpoints ---
 app.get(['/api/admin/support/tickets', '/api/v1/support/tickets', '/api/support/tickets'], async (req: any, res: any) => {
   try {
-    const [total, open, inProgress, resolved, tickets] = await Promise.all([
-      prisma.supportTicket.count(),
-      prisma.supportTicket.count({ where: { status: 'OPEN' } }),
-      prisma.supportTicket.count({ where: { status: 'IN_PROGRESS' } }),
-      prisma.supportTicket.count({ where: { status: 'RESOLVED' } }),
+    const [tickets, refundRequests, feedbacks] = await Promise.all([
       prisma.supportTicket.findMany({
+        take: 150,
+        orderBy: { createdAt: 'desc' },
+        include: { user: { include: { profile: true } } }
+      }),
+      prisma.refundRequest.findMany({
+        take: 100,
+        orderBy: { createdAt: 'desc' },
+        include: { application: true, user: { include: { profile: true } } }
+      }),
+      prisma.feedback.findMany({
         take: 100,
         orderBy: { createdAt: 'desc' },
         include: { user: { include: { profile: true } } }
       })
     ]);
 
-    const formatted = tickets.map(t => {
+    const formatted: any[] = tickets.map(t => {
       const reporterName = t.user?.profile?.fullName || (t.user?.email ? t.user.email.split('@')[0] : 'Citizen User');
       const reporterEmail = t.user?.email || '';
       const reporterId = t.user?.id || t.userId || 'cit-user';
@@ -2993,16 +3264,142 @@ app.get(['/api/admin/support/tickets', '/api/v1/support/tickets', '/api/support/
         createdAt: t.createdAt,
         updatedAt: t.updatedAt,
         attachmentUrl: t.attachmentUrl || null,
-        assignedTo: typeof t.assignedTo === 'string' ? t.assignedTo : 'Amit S. (Support Desk)',
-        assignedOfficer: { id: 'agent-01', name: typeof t.assignedTo === 'string' ? t.assignedTo : 'Amit S. (Support Desk)' },
-        reporter: { id: reporterId, name: reporterName, email: reporterEmail },
+        assignedTo: typeof t.assignedTo === 'string' && t.assignedTo.trim() ? t.assignedTo : '',
+        assignedOfficer: typeof t.assignedTo === 'string' && t.assignedTo.trim() ? { id: 'agent-01', name: t.assignedTo } : null,
+        reporter: { id: reporterId, name: reporterName, email: reporterEmail, phone: t.user?.phone || t.user?.profile?.phone || '' },
         user: t.user,
         messages: Array.isArray(t.messages) ? t.messages : [],
       };
     });
 
+    const existingRefs = new Set(formatted.map(t => String(t.refNumber || t.id).toUpperCase()));
+
+    // Integrate Refund Requests into Support Tickets
+    for (const r of refundRequests) {
+      const rRef = String(r.refNumber || `REF-${r.id.slice(-6)}`).toUpperCase();
+      if (!existingRefs.has(rRef)) {
+        existingRefs.add(rRef);
+        const reporterName = r.user?.profile?.fullName || (r.user?.email ? r.user.email.split('@')[0] : 'Citizen Applicant');
+        const reporterEmail = r.user?.email || '';
+        const reporterPhone = r.user?.phone || r.user?.profile?.phone || '';
+        const isApproved = r.status === 'APPROVED';
+        const isRejected = r.status === 'REJECTED';
+
+        formatted.push({
+          id: r.refNumber,
+          rawId: r.id,
+          refNumber: r.refNumber,
+          title: `Refund Claim: ₹${r.amount} - ${r.serviceTitle || r.application?.serviceTitle || 'Government Service Fee'}`,
+          description: `Citizen requested refund for Application #${r.application?.refNumber || 'N/A'}.\nReason: ${r.reason}${r.details ? '\nDetails: ' + r.details : ''}`,
+          category: 'Refund Request',
+          priority: 'High',
+          status: isApproved ? 'RESOLVED' : (isRejected ? 'RESOLVED' : 'OPEN'),
+          createdOn: r.createdAt ? new Date(r.createdAt).toLocaleDateString('en-IN') : 'Today',
+          lastUpdated: r.updatedAt ? new Date(r.updatedAt).toLocaleDateString('en-IN') : 'Today',
+          createdAt: r.createdAt,
+          updatedAt: r.updatedAt,
+          attachmentUrl: r.proofUrl || null,
+          assignedTo: '',
+          assignedOfficer: null,
+          reporter: { id: r.user?.id || r.userId || 'cit-user', name: reporterName, email: reporterEmail, phone: reporterPhone },
+          user: r.user,
+          refundAmount: r.amount,
+          refundStatus: r.status,
+          refundId: r.id,
+          applicationId: r.applicationId,
+          applicationRef: r.application?.refNumber,
+          serviceTitle: r.serviceTitle || r.application?.serviceTitle,
+          messages: [
+            {
+              id: `msg-refund-${r.id}`,
+              senderId: r.user?.id || r.userId || 'citizen',
+              senderName: reporterName,
+              role: 'CITIZEN',
+              text: `Refund Request of ₹${r.amount} submitted for Application #${r.application?.refNumber || 'N/A'}.\n\nReason: ${r.reason}${r.details ? '\n\nDetails: ' + r.details : ''}`,
+              attachmentUrl: r.proofUrl || null,
+              time: r.createdAt ? new Date(r.createdAt).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' }) : 'Recent',
+              timestamp: r.createdAt ? new Date(r.createdAt).toISOString() : new Date().toISOString()
+            },
+            ...(isApproved ? [{
+              id: `msg-appr-${r.id}`,
+              senderId: 'support-desk',
+              senderName: 'Support Officer (SDM)',
+              role: 'AGENT',
+              text: `Refund Claim Approved! ₹${r.amount} has been officially re-credited to citizen digital wallet. ✓`,
+              time: r.updatedAt ? new Date(r.updatedAt).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' }) : 'Recent',
+              timestamp: r.updatedAt ? new Date(r.updatedAt).toISOString() : new Date().toISOString(),
+              isResolution: true
+            }] : []),
+            ...(isRejected ? [{
+              id: `msg-decl-${r.id}`,
+              senderId: 'support-desk',
+              senderName: 'Support Officer (SDM)',
+              role: 'AGENT',
+              text: `Refund Claim Declined: ${r.adminNotes || 'Declined by Administrator'}`,
+              time: r.updatedAt ? new Date(r.updatedAt).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' }) : 'Recent',
+              timestamp: r.updatedAt ? new Date(r.updatedAt).toISOString() : new Date().toISOString(),
+              isResolution: true
+            }] : [])
+          ]
+        });
+      }
+    }
+
+    // Integrate Citizen Feedbacks into Support Tickets
+    for (const f of feedbacks) {
+      const fbRef = `FDB-${f.id.slice(-6).toUpperCase()}`;
+      if (!existingRefs.has(fbRef) && !existingRefs.has(f.id.toUpperCase())) {
+        existingRefs.add(fbRef);
+        const reporterName = f.user?.profile?.fullName || (f.user?.email ? f.user.email.split('@')[0] : 'Citizen User');
+        const reporterEmail = f.user?.email || '';
+        const reporterPhone = f.user?.phone || f.user?.profile?.phone || '';
+
+        formatted.push({
+          id: fbRef,
+          rawId: f.id,
+          refNumber: fbRef,
+          title: `Citizen Feedback (${f.rating}★): ${f.improvementCategory || 'App Experience'}`,
+          description: `"${f.feedbackText}"`,
+          category: 'Citizen Feedback',
+          priority: f.rating <= 2 ? 'High' : (f.rating === 3 ? 'Medium' : 'Low'),
+          status: f.rating <= 2 ? 'OPEN' : 'RESOLVED',
+          createdOn: f.createdAt ? new Date(f.createdAt).toLocaleDateString('en-IN') : 'Today',
+          lastUpdated: f.updatedAt ? new Date(f.updatedAt).toLocaleDateString('en-IN') : 'Today',
+          createdAt: f.createdAt,
+          updatedAt: f.updatedAt,
+          attachmentUrl: f.imageUrl || null,
+          assignedTo: '',
+          assignedOfficer: null,
+          reporter: { id: f.user?.id || f.userId || 'cit-user', name: reporterName, email: reporterEmail, phone: reporterPhone },
+          user: f.user,
+          rating: f.rating,
+          feedbackCategory: f.improvementCategory,
+          messages: [
+            {
+              id: `msg-fb-${f.id}`,
+              senderId: f.user?.id || f.userId || 'citizen',
+              senderName: reporterName,
+              role: 'CITIZEN',
+              text: `Rating: ${'★'.repeat(f.rating)}${'☆'.repeat(Math.max(0, 5 - f.rating))} (${f.rating}/5)\nCategory: ${f.improvementCategory || 'App Experience'}\n\nFeedback:\n"${f.feedbackText}"`,
+              attachmentUrl: f.imageUrl || null,
+              time: f.createdAt ? new Date(f.createdAt).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' }) : 'Recent',
+              timestamp: f.createdAt ? new Date(f.createdAt).toISOString() : new Date().toISOString()
+            }
+          ]
+        });
+      }
+    }
+
+    // Sort all tickets descending by createdAt
+    formatted.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+
+    const totalTickets = formatted.length;
+    const openTickets = formatted.filter(t => t.status === 'OPEN').length;
+    const inProgress = formatted.filter(t => t.status === 'IN_PROGRESS').length;
+    const resolved = formatted.filter(t => t.status === 'RESOLVED').length;
+
     res.json({
-      stats: { totalTickets: total, openTickets: open, inProgress, resolved },
+      stats: { totalTickets, openTickets, inProgress, resolved },
       tickets: formatted
     });
   } catch (e: any) {
@@ -3022,26 +3419,8 @@ app.get(['/api/admin/support/tickets/:id', '/api/v1/support/tickets/:id', '/api/
 
 app.post(['/api/admin/support/tickets/:id/resolve', '/api/v1/support/tickets/:id/resolve', '/api/support/tickets/:id/resolve'], async (req: any, res: any) => {
   try {
-    const targetId = String(req.params.id || '').trim();
-    const isMongoId = /^[0-9a-fA-F]{24}$/.test(targetId);
-    let ticket: any = null;
-    if (isMongoId) {
-      ticket = await prisma.supportTicket.findUnique({ where: { id: targetId }, include: { user: { include: { profile: true } } } });
-    }
-    if (!ticket) {
-      ticket = await prisma.supportTicket.findFirst({ where: { refNumber: targetId }, include: { user: { include: { profile: true } } } });
-    }
-    if (!ticket) {
-      ticket = await prisma.supportTicket.findFirst({
-        where: {
-          OR: [
-            { refNumber: { contains: targetId, mode: 'insensitive' } },
-            { id: { contains: targetId, mode: 'insensitive' } }
-          ]
-        },
-        include: { user: { include: { profile: true } } }
-      });
-    }
+    const targetId = String(req.params.id || req.body?.id || '').trim();
+    const ticket = await findSupportTicketOrLinked(targetId);
     if (!ticket) return res.status(404).json({ error: 'Ticket not found' });
 
     const targetUserId = await resolveTicketTargetUserId(ticket);
@@ -3135,29 +3514,11 @@ app.post(['/api/admin/support/tickets/:id/resolve', '/api/v1/support/tickets/:id
 
 app.post(['/api/admin/support/tickets/:id/reply', '/api/v1/support/tickets/:id/reply', '/api/support/tickets/:id/reply'], async (req: any, res: any) => {
   try {
-    const targetId = String(req.params.id || '').trim();
+    const targetId = String(req.params.id || req.body?.id || req.body?.ticketId || req.body?.rawId || req.body?.refNumber || '').trim();
     const text = (req.body?.text || '').trim();
     if (!text) return res.status(400).json({ error: 'Reply text is required' });
 
-    const isMongoId = /^[0-9a-fA-F]{24}$/.test(targetId);
-    let ticket: any = null;
-    if (isMongoId) {
-      ticket = await prisma.supportTicket.findUnique({ where: { id: targetId }, include: { user: { include: { profile: true } } } });
-    }
-    if (!ticket) {
-      ticket = await prisma.supportTicket.findFirst({ where: { refNumber: targetId }, include: { user: { include: { profile: true } } } });
-    }
-    if (!ticket) {
-      ticket = await prisma.supportTicket.findFirst({
-        where: {
-          OR: [
-            { refNumber: { contains: targetId, mode: 'insensitive' } },
-            { id: { contains: targetId, mode: 'insensitive' } }
-          ]
-        },
-        include: { user: { include: { profile: true } } }
-      });
-    }
+    const ticket = await findSupportTicketOrLinked(targetId);
     if (!ticket) return res.status(404).json({ error: 'Ticket not found' });
 
     const targetUserId = await resolveTicketTargetUserId(ticket);

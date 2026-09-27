@@ -95,10 +95,44 @@ export class RefundsService {
       data: { refundStatus: 'PENDING' },
     });
 
+    // 5b. Create SupportTicket for Support Ticket Management
+    try {
+      const citizenName = application.user?.profile?.fullName || (application.user?.email ? application.user.email.split('@')[0] : 'Citizen Applicant');
+      await this.prisma.supportTicket.create({
+        data: {
+          refNumber: refundRefNumber,
+          userId: resolvedUserId,
+          title: `Refund Claim: ₹${refundAmount} - ${application.serviceTitle}`,
+          description: `Citizen refund request for Application #${application.refNumber}.\nReason: ${dto.reason || 'Citizen requested fee refund'}${dto.details ? '\nDetails: ' + dto.details : ''}`,
+          category: 'Refund Request',
+          priority: 'High',
+          status: 'OPEN',
+          assignedTo: 'Amit S. (Support Desk)',
+          attachmentUrl: dto.proofUrl || null,
+          messages: [
+            {
+              id: `msg-${Date.now()}`,
+              senderId: resolvedUserId,
+              senderName: citizenName,
+              role: 'CITIZEN',
+              text: `Refund Request of ₹${refundAmount} submitted for Application #${application.refNumber}.\n\nReason: ${dto.reason || 'Citizen requested fee refund'}${dto.details ? '\n\nDetails: ' + dto.details : ''}`,
+              attachmentUrl: dto.proofUrl || null,
+              time: new Date().toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' }),
+              timestamp: new Date().toISOString()
+            }
+          ]
+        }
+      });
+    } catch (ticketErr: any) {
+      this.logger.warn(`Could not create supportTicket for refund: ${ticketErr?.message}`);
+    }
+
     // 6. Broadcast real-time events to Admin Web Panel & Mobile
     try {
       AdminGateway.broadcast('new_refund_requested', refund);
       AdminGateway.broadcast('refunds_updated', refund);
+      AdminGateway.broadcast('new_support_ticket');
+      AdminGateway.broadcast('support_tickets_updated');
       AdminGateway.broadcast('application_status_changed', {
         id: application.id,
         refNumber: application.refNumber,
@@ -288,8 +322,21 @@ export class RefundsService {
 
       AdminGateway.emitToUser(refund.userId, 'notification_received', notification);
 
+      // Synchronize corresponding support ticket
+      await this.prisma.supportTicket.updateMany({
+        where: {
+          OR: [
+            { refNumber: refund.refNumber },
+            { id: refund.id },
+            { title: { contains: refund.refNumber } }
+          ]
+        },
+        data: { status: 'RESOLVED', updatedAt: now }
+      }).catch(() => null);
+
       AdminGateway.broadcast('refund_approved', updatedRefund);
       AdminGateway.broadcast('refunds_updated', updatedRefund);
+      AdminGateway.broadcast('support_tickets_updated');
       AdminGateway.broadcast('applications_updated');
       AdminGateway.broadcast('wallet_transactions_updated');
       AdminGateway.broadcast('transactions_updated');
@@ -365,7 +412,20 @@ export class RefundsService {
         notification: notif,
       });
       AdminGateway.emitToUser(refund.userId, 'notification_received', notif);
+      // Synchronize corresponding support ticket
+      await this.prisma.supportTicket.updateMany({
+        where: {
+          OR: [
+            { refNumber: refund.refNumber },
+            { id: refund.id },
+            { title: { contains: refund.refNumber } }
+          ]
+        },
+        data: { status: 'RESOLVED', updatedAt: new Date() }
+      }).catch(() => null);
+
       AdminGateway.broadcast('refunds_updated', updatedRefund);
+      AdminGateway.broadcast('support_tickets_updated');
       AdminGateway.broadcast('applications_updated');
 
       await AdminGateway.logActivity(this.prisma, {

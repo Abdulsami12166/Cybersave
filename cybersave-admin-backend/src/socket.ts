@@ -57,6 +57,152 @@ export async function fetchApplicationsWithUsers(where: any = {}, take: number =
   return apps as any[];
 }
 
+
+export async function findSupportTicketOrLinked(idOrRef: string) {
+  if (!idOrRef) return null;
+  const cleanId = String(idOrRef).trim();
+  const strippedId = cleanId.replace(/^(TKT|REF|FDB)-/i, '').trim();
+  const isMongoId = /^[0-9a-fA-F]{24}$/.test(cleanId) || /^[0-9a-fA-F]{24}$/.test(strippedId);
+  const targetMongo = /^[0-9a-fA-F]{24}$/.test(cleanId) ? cleanId : (/^[0-9a-fA-F]{24}$/.test(strippedId) ? strippedId : null);
+
+  let ticket = null;
+  if (targetMongo) {
+    ticket = await prisma.supportTicket.findUnique({
+      where: { id: targetMongo },
+      include: { user: { include: { profile: true } } }
+    });
+  }
+  if (!ticket) {
+    ticket = await prisma.supportTicket.findFirst({
+      where: {
+        OR: [
+          { refNumber: cleanId },
+          { refNumber: `TKT-${strippedId}` },
+          { refNumber: strippedId },
+          { refNumber: { contains: strippedId, mode: 'insensitive' } },
+          { id: { contains: strippedId, mode: 'insensitive' } }
+        ]
+      },
+      include: { user: { include: { profile: true } } }
+    });
+  }
+
+  // Fallback 1: If not in supportTicket, check if it's a RefundRequest
+  if (!ticket) {
+    const refund = await prisma.refundRequest.findFirst({
+      where: {
+        OR: [
+          ...(isMongoId ? [{ id: cleanId }] : []),
+          { refNumber: cleanId },
+          { refNumber: { contains: strippedId, mode: 'insensitive' } }
+        ]
+      },
+      include: { application: true, user: { include: { profile: true } } }
+    });
+
+    if (refund) {
+      const refundRef = refund.refNumber || `REF-${refund.id.slice(-6)}`;
+      ticket = await prisma.supportTicket.findFirst({
+        where: {
+          OR: [
+            { refNumber: refundRef },
+            { refNumber: cleanId }
+          ]
+        },
+        include: { user: { include: { profile: true } } }
+      });
+
+      if (!ticket) {
+        const reporterName = refund.user?.profile?.fullName || (refund.user?.email ? refund.user.email.split('@')[0] : 'Citizen Applicant');
+        ticket = await prisma.supportTicket.create({
+          data: {
+            refNumber: refundRef,
+            userId: refund.userId,
+            title: `Refund Claim: ₹${refund.amount} - ${refund.serviceTitle || refund.application?.serviceTitle || 'Government Service Fee'}`,
+            description: `Citizen requested refund for Application #${refund.application?.refNumber || 'N/A'}.\nReason: ${refund.reason}${refund.details ? '\nDetails: ' + refund.details : ''}`,
+            category: 'Refund Request',
+            priority: 'High',
+            status: refund.status === 'APPROVED' || refund.status === 'REJECTED' ? 'RESOLVED' : 'IN_PROGRESS',
+            attachmentUrl: refund.proofUrl || null,
+            assignedTo: refund.adminNotes?.includes('Assigned to') ? refund.adminNotes : null,
+            messages: [
+              {
+                id: `msg-refund-${refund.id}`,
+                senderId: refund.userId || 'citizen',
+                senderName: reporterName,
+                role: 'CITIZEN',
+                text: `Refund Request of ₹${refund.amount} submitted for Application #${refund.application?.refNumber || 'N/A'}.\n\nReason: ${refund.reason}${refund.details ? '\n\nDetails: ' + refund.details : ''}`,
+                attachmentUrl: refund.proofUrl || null,
+                time: refund.createdAt ? new Date(refund.createdAt).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' }) : '10:00 AM',
+                timestamp: refund.createdAt ? new Date(refund.createdAt).toISOString() : new Date().toISOString()
+              }
+            ]
+          },
+          include: { user: { include: { profile: true } } }
+        });
+      }
+    }
+  }
+
+  // Fallback 2: If not in supportTicket or refund, check if it's Feedback
+  if (!ticket) {
+    const strippedFdb = cleanId.replace(/^FDB-/i, '').trim();
+    const fb = await prisma.feedback.findFirst({
+      where: {
+        OR: [
+          ...(isMongoId ? [{ id: cleanId }] : []),
+          { id: { contains: strippedFdb.toLowerCase(), mode: 'insensitive' } }
+        ]
+      },
+      include: { user: { include: { profile: true } } }
+    });
+
+    if (fb) {
+      const fbRef = `FDB-${fb.id.slice(-6).toUpperCase()}`;
+      ticket = await prisma.supportTicket.findFirst({
+        where: {
+          OR: [
+            { refNumber: fbRef },
+            { refNumber: cleanId }
+          ]
+        },
+        include: { user: { include: { profile: true } } }
+      });
+
+      if (!ticket) {
+        const reporterName = fb.user?.profile?.fullName || (fb.user?.email ? fb.user.email.split('@')[0] : 'Citizen User');
+        ticket = await prisma.supportTicket.create({
+          data: {
+            refNumber: fbRef,
+            userId: fb.userId,
+            title: `Citizen Feedback (${fb.rating}★): ${fb.improvementCategory || 'App Experience'}`,
+            description: `"${fb.feedbackText}"`,
+            category: 'Citizen Feedback',
+            priority: fb.rating <= 2 ? 'High' : (fb.rating === 3 ? 'Medium' : 'Low'),
+            status: fb.rating <= 2 ? 'IN_PROGRESS' : 'RESOLVED',
+            attachmentUrl: fb.imageUrl || null,
+            messages: [
+              {
+                id: `msg-fb-${fb.id}`,
+                senderId: fb.userId || 'citizen',
+                senderName: reporterName,
+                role: 'CITIZEN',
+                text: `Rating: ${'★'.repeat(fb.rating)}${'☆'.repeat(Math.max(0, 5 - fb.rating))} (${fb.rating}/5)\nCategory: ${fb.improvementCategory || 'App Experience'}\n\nFeedback:\n"${fb.feedbackText}"`,
+                attachmentUrl: fb.imageUrl || null,
+                time: fb.createdAt ? new Date(fb.createdAt).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' }) : '10:00 AM',
+                timestamp: fb.createdAt ? new Date(fb.createdAt).toISOString() : new Date().toISOString()
+              }
+            ]
+          },
+          include: { user: { include: { profile: true } } }
+        });
+      }
+    }
+  }
+
+  return ticket;
+}
+
 export async function formatSupportTicketThread(idOrRef: string) {
   if (!idOrRef) return null;
   const cleanId = String(idOrRef).trim();
@@ -78,14 +224,203 @@ export async function formatSupportTicketThread(idOrRef: string) {
           { refNumber: cleanId },
           { refNumber: `TKT-${strippedId}` },
           { refNumber: strippedId },
-          { refNumber: { contains: strippedId, mode: 'insensitive' } },
-          { id: { contains: strippedId.toLowerCase(), mode: 'insensitive' } }
+          { refNumber: { contains: strippedId, mode: 'insensitive' } }
         ]
       },
       include: { user: { include: { profile: true } } }
     });
   }
-  if (!ticket) return null;
+
+  // Fallback 1: If not in supportTicket, check if it's a RefundRequest
+  if (!ticket) {
+    const refund = await prisma.refundRequest.findFirst({
+      where: {
+        OR: [
+          ...(isMongoId ? [{ id: cleanId }] : []),
+          { refNumber: cleanId },
+          { refNumber: { contains: strippedId, mode: 'insensitive' } }
+        ]
+      },
+      include: { application: true, user: { include: { profile: true } } }
+    });
+
+    if (refund) {
+      const reporterName = refund.user?.profile?.fullName || (refund.user?.email ? refund.user.email.split('@')[0] : 'Citizen Applicant');
+      const reporterEmail = refund.user?.email || 'citizen@cybersave.gov.in';
+      const reporterId = refund.user?.id || refund.userId || 'cit-user';
+      const isApproved = refund.status === 'APPROVED';
+      const isRejected = refund.status === 'REJECTED';
+
+      return {
+        id: refund.refNumber,
+        rawId: refund.id,
+        refNumber: refund.refNumber,
+        title: `Refund Claim: ₹${refund.amount} - ${refund.serviceTitle || refund.application?.serviceTitle || 'Government Service Fee'}`,
+        description: `Citizen requested refund for Application #${refund.application?.refNumber || 'N/A'}.\nReason: ${refund.reason}${refund.details ? '\nDetails: ' + refund.details : ''}`,
+        category: 'Refund Request',
+        priority: 'High',
+        status: isApproved ? 'RESOLVED' : (isRejected ? 'RESOLVED' : 'OPEN'),
+        createdOn: refund.createdAt ? new Date(refund.createdAt).toLocaleDateString('en-IN') : 'Today',
+        lastUpdated: refund.updatedAt ? new Date(refund.updatedAt).toLocaleDateString('en-IN') : 'Today',
+        createdAt: refund.createdAt,
+        updatedAt: refund.updatedAt,
+        attachmentUrl: refund.proofUrl || null,
+        assignedTo: '',
+        assignedOfficer: null,
+        reporter: { id: reporterId, name: reporterName, email: reporterEmail, phone: refund.user?.phone || refund.user?.profile?.phone || '' },
+        user: refund.user,
+        refundAmount: refund.amount,
+        refundStatus: refund.status,
+        refundId: refund.id,
+        applicationId: refund.applicationId,
+        applicationRef: refund.application?.refNumber,
+        serviceTitle: refund.serviceTitle || refund.application?.serviceTitle,
+        messages: [
+          {
+            id: `msg-refund-${refund.id}`,
+            senderId: reporterId,
+            senderName: reporterName,
+            role: 'CITIZEN',
+            text: `Refund Request of ₹${refund.amount} submitted for Application #${refund.application?.refNumber || 'N/A'}.\n\nReason: ${refund.reason}${refund.details ? '\n\nDetails: ' + refund.details : ''}`,
+            attachmentUrl: refund.proofUrl || null,
+            time: refund.createdAt ? new Date(refund.createdAt).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' }) : '10:00 AM',
+            timestamp: refund.createdAt ? new Date(refund.createdAt).toISOString() : new Date().toISOString()
+          },
+          ...(isApproved ? [{
+            id: `msg-appr-${refund.id}`,
+            senderId: 'support-desk',
+            senderName: 'Support Officer (SDM)',
+            role: 'AGENT',
+            text: `Refund Claim Approved! ₹${refund.amount} has been officially re-credited to citizen digital wallet. ✓`,
+            time: refund.updatedAt ? new Date(refund.updatedAt).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' }) : 'Recent',
+            timestamp: refund.updatedAt ? new Date(refund.updatedAt).toISOString() : new Date().toISOString(),
+            isResolution: true
+          }] : []),
+          ...(isRejected ? [{
+            id: `msg-decl-${refund.id}`,
+            senderId: 'support-desk',
+            senderName: 'Support Officer (SDM)',
+            role: 'AGENT',
+            text: `Refund Claim Declined: ${refund.adminNotes || 'Declined by Administrator'}`,
+            time: refund.updatedAt ? new Date(refund.updatedAt).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' }) : 'Recent',
+            timestamp: refund.updatedAt ? new Date(refund.updatedAt).toISOString() : new Date().toISOString(),
+            isResolution: true
+          }] : [])
+        ],
+        notes: [
+          {
+            title: 'Refund Claim Ingested',
+            author: 'Financial Settlement Cell',
+            content: `Claim for ₹${refund.amount} on Application #${refund.application?.refNumber || 'N/A'}. Reason: ${refund.reason}`,
+            time: refund.createdAt ? new Date(refund.createdAt).toLocaleDateString('en-IN') : 'Recent'
+          }
+        ]
+      };
+    }
+
+    // Fallback 2: If not in supportTicket, check if it's Feedback
+    const strippedFdb = cleanId.replace(/^FDB-/i, '').trim();
+    const fb = await prisma.feedback.findFirst({
+      where: {
+        OR: [
+          ...(isMongoId ? [{ id: cleanId }] : []),
+          { id: { contains: strippedFdb.toLowerCase(), mode: 'insensitive' } }
+        ]
+      },
+      include: { user: { include: { profile: true } } }
+    });
+
+    if (fb) {
+      const reporterName = fb.user?.profile?.fullName || (fb.user?.email ? fb.user.email.split('@')[0] : 'Citizen User');
+      const reporterEmail = fb.user?.email || 'citizen@cybersave.gov.in';
+      const reporterId = fb.user?.id || fb.userId || 'cit-user';
+      return {
+        id: `FDB-${fb.id.slice(-6).toUpperCase()}`,
+        rawId: fb.id,
+        refNumber: `FDB-${fb.id.slice(-6).toUpperCase()}`,
+        title: `Citizen Feedback (${fb.rating}★): ${fb.improvementCategory || 'App Experience'}`,
+        description: `"${fb.feedbackText}"`,
+        category: 'Citizen Feedback',
+        priority: fb.rating <= 2 ? 'High' : (fb.rating === 3 ? 'Medium' : 'Low'),
+        status: fb.rating <= 2 ? 'OPEN' : 'RESOLVED',
+        createdOn: fb.createdAt ? new Date(fb.createdAt).toLocaleDateString('en-IN') : 'Today',
+        lastUpdated: fb.updatedAt ? new Date(fb.updatedAt).toLocaleDateString('en-IN') : 'Today',
+        createdAt: fb.createdAt,
+        updatedAt: fb.updatedAt,
+        attachmentUrl: fb.imageUrl || null,
+        assignedTo: '',
+        assignedOfficer: null,
+        reporter: { id: reporterId, name: reporterName, email: reporterEmail, phone: fb.user?.phone || fb.user?.profile?.phone || '' },
+        user: fb.user,
+        rating: fb.rating,
+        feedbackCategory: fb.improvementCategory,
+        messages: [
+          {
+            id: `msg-fb-${fb.id}`,
+            senderId: reporterId,
+            senderName: reporterName,
+            role: 'CITIZEN',
+            text: `Rating: ${'★'.repeat(fb.rating)}${'☆'.repeat(Math.max(0, 5 - fb.rating))} (${fb.rating}/5)\nCategory: ${fb.improvementCategory || 'App Experience'}\n\nFeedback:\n"${fb.feedbackText}"`,
+            attachmentUrl: fb.imageUrl || null,
+            time: fb.createdAt ? new Date(fb.createdAt).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' }) : '10:00 AM',
+            timestamp: fb.createdAt ? new Date(fb.createdAt).toISOString() : new Date().toISOString()
+          }
+        ],
+        notes: [
+          {
+            title: 'Citizen Mobile Feedback Ingested',
+            author: 'Mobile App Gateway',
+            content: `Submitted ${fb.rating}-star review for category "${fb.improvementCategory || 'App Experience'}".`,
+            time: fb.createdAt ? new Date(fb.createdAt).toLocaleDateString('en-IN') : 'Recent'
+          }
+        ]
+      };
+    }
+
+    return null;
+  }
+
+  // If ticket exists, enrich with linked Refund or Feedback metadata if applicable
+  let extraRefundData: any = {};
+  if (ticket.category === 'Refund Request' || ticket.refNumber?.startsWith('REF-') || ticket.title?.includes('Refund')) {
+    const linkedRefund = await prisma.refundRequest.findFirst({
+      where: {
+        OR: [
+          { refNumber: ticket.refNumber },
+          { id: ticket.id },
+          { refNumber: { contains: strippedId, mode: 'insensitive' } }
+        ]
+      },
+      include: { application: true }
+    });
+    if (linkedRefund) {
+      extraRefundData = {
+        refundAmount: linkedRefund.amount,
+        refundStatus: linkedRefund.status,
+        refundId: linkedRefund.id,
+        applicationId: linkedRefund.applicationId,
+        applicationRef: linkedRefund.application?.refNumber,
+        serviceTitle: linkedRefund.serviceTitle || linkedRefund.application?.serviceTitle,
+        attachmentUrl: ticket.attachmentUrl || linkedRefund.proofUrl || null
+      };
+    }
+  } else if (ticket.category === 'Citizen Feedback' || ticket.refNumber?.startsWith('FDB-')) {
+    const linkedFb = await prisma.feedback.findFirst({
+      where: {
+        OR: [
+          { id: ticket.id },
+          { id: { contains: cleanId.replace(/^FDB-/i, '').toLowerCase(), mode: 'insensitive' } }
+        ]
+      }
+    });
+    if (linkedFb) {
+      extraRefundData = {
+        rating: linkedFb.rating,
+        feedbackCategory: linkedFb.improvementCategory,
+        attachmentUrl: ticket.attachmentUrl || linkedFb.imageUrl || null
+      };
+    }
+  }
 
   const reporterName = ticket.user?.profile?.fullName || (ticket.user?.email ? ticket.user.email.split('@')[0] : 'Citizen Applicant');
   const reporterEmail = ticket.user?.email || 'citizen@cybersave.gov.in';
@@ -99,7 +434,7 @@ export async function formatSupportTicketThread(idOrRef: string) {
     text: ticket.description || ticket.title || 'Citizen submitted grievance request regarding service application.',
     time: ticket.createdAt ? new Date(ticket.createdAt).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' }) : '10:30 AM',
     timestamp: ticket.createdAt ? new Date(ticket.createdAt).toISOString() : new Date().toISOString(),
-    attachmentUrl: ticket.attachmentUrl || null
+    attachmentUrl: ticket.attachmentUrl || extraRefundData.attachmentUrl || null
   };
 
   const rawMessages = Array.isArray(ticket.messages) ? ticket.messages : [];
@@ -122,14 +457,16 @@ export async function formatSupportTicketThread(idOrRef: string) {
 
   const notes = [
     {
-      title: 'Citizen Grievance Ingested',
+      title: ticket.category === 'Refund Request' ? 'Refund Claim Triaged' : 'Citizen Grievance Ingested',
       author: 'Portal Triaging Engine',
-      content: 'Ticket auto-routed to Sub-Divisional Magistrate (SDM) citizen grievance cell for fast resolution.',
+      content: ticket.category === 'Refund Request' 
+        ? `Refund claim for Application #${extraRefundData.applicationRef || 'N/A'} routed to administrative audit.`
+        : 'Ticket auto-routed to Sub-Divisional Magistrate (SDM) citizen grievance cell for fast resolution.',
       time: ticket.createdAt ? new Date(ticket.createdAt).toLocaleDateString('en-IN') : 'Recent'
     }
   ];
 
-  const assignedName = typeof ticket.assignedTo === 'string' ? ticket.assignedTo : 'Amit S. (Support Desk)';
+  const assignedName = typeof ticket.assignedTo === 'string' && ticket.assignedTo.trim() ? ticket.assignedTo : '';
 
   return {
     id: ticket.refNumber || `TKT-${ticket.id.substring(0, 8).toUpperCase()}`,
@@ -144,13 +481,14 @@ export async function formatSupportTicketThread(idOrRef: string) {
     lastUpdated: ticket.updatedAt ? new Date(ticket.updatedAt).toLocaleDateString('en-IN') : 'Today',
     createdAt: ticket.createdAt,
     updatedAt: ticket.updatedAt,
-    attachmentUrl: ticket.attachmentUrl || null,
+    attachmentUrl: ticket.attachmentUrl || extraRefundData.attachmentUrl || null,
     assignedTo: assignedName,
-    assignedOfficer: { id: 'agent-01', name: assignedName },
-    reporter: { id: reporterId, name: reporterName, email: reporterEmail },
+    assignedOfficer: assignedName ? { id: 'agent-01', name: assignedName } : null,
+    reporter: { id: reporterId, name: reporterName, email: reporterEmail, phone: ticket.user?.phone || ticket.user?.profile?.phone || '' },
     user: ticket.user,
     messages,
-    notes
+    notes,
+    ...extraRefundData
   };
 }
 
@@ -272,6 +610,20 @@ export async function dispatchNotificationToCitizen(params: {
   }
 
   return notificationPayload;
+}
+
+// In-memory caching for socket queries accessible across modules
+export const socketOperatorCache = new Map<string, { data: any; timestamp: number }>();
+export let socketOperatorsListCache: { data: any; timestamp: number } | null = null;
+export let socketAuditLogsCache: { data: any; timestamp: number } | null = null;
+
+export function invalidateSocketOperatorCache(id?: string) {
+  if (id) {
+    socketOperatorCache.delete(id);
+    socketOperatorCache.delete(`op-${id}`);
+  } else {
+    socketOperatorCache.clear();
+  }
 }
 
 export function setupSockets(io: Server) {
@@ -1403,11 +1755,7 @@ export function setupSockets(io: Server) {
       }
     });
 
-    // In-memory caching for socket queries
-    const socketOperatorCache = new Map<string, { data: any; timestamp: number }>();
-    let socketOperatorsListCache: { data: any; timestamp: number } | null = null;
-    let socketAuditLogsCache: { data: any; timestamp: number } | null = null;
-
+    // In-memory caching for socket queries uses module-scoped caches
     async function getSocketFastOperatorsList() {
       if (socketOperatorsListCache && Date.now() - socketOperatorsListCache.timestamp < 60000) {
         return socketOperatorsListCache.data;
@@ -1467,9 +1815,24 @@ export function setupSockets(io: Server) {
         return cached.data;
       }
 
+      const isMongoId = (s?: string) => typeof s === 'string' && /^[0-9a-fA-F]{24}$/.test(s);
+      let userWhere: any = { role: 'ADMIN' };
+      if (isMongoId(id)) {
+        userWhere = { id };
+      } else if (id && typeof id === 'string') {
+        const cleanId = id.trim().toLowerCase();
+        userWhere = {
+          OR: [
+            { email: { equals: cleanId, mode: 'insensitive' } },
+            { keycloakId: id },
+            { phone: id }
+          ]
+        };
+      }
+
       const [user, logs] = await Promise.all([
         prisma.user.findFirst({
-          where: (id && id.length === 24) ? { id } : { role: 'ADMIN' },
+          where: userWhere,
           select: {
             id: true,
             email: true,
@@ -1554,6 +1917,58 @@ export function setupSockets(io: Server) {
         details: l.details || '-'
       }));
 
+      // Real Database queries for documents & applications handled by this operator
+      const [userDocUploads, operatorApps] = await Promise.all([
+        prisma.documentUpload.findMany({
+          where: { userId: user.id },
+          orderBy: { uploadedAt: 'desc' }
+        }).catch(() => []),
+        prisma.application.findMany({
+          where: {
+            OR: [
+              { userId: user.id },
+              ...(profile?.fullName ? [{ officialOfficer: { contains: profile.fullName } }] : []),
+              ...(user.email ? [{ officialOfficer: { contains: user.email } }] : [])
+            ]
+          },
+          include: {
+            documentUploads: true
+          },
+          take: 100,
+          orderBy: { updatedAt: 'desc' }
+        }).catch(() => [])
+      ]);
+
+      const realDocuments: any[] = [];
+      const seenDocIds = new Set<string>();
+
+      // Strictly this operator's own uploaded identity and compliance credentials
+      for (const doc of (userDocUploads || [])) {
+        if (!seenDocIds.has(doc.id)) {
+          seenDocIds.add(doc.id);
+          const isImg = (doc.fileType?.toLowerCase().includes('image') || (doc.fileName && /\.(jpg|jpeg|png|webp|gif)$/i.test(doc.fileName)) || (doc.fileUrl && doc.fileUrl.startsWith('data:image')));
+          realDocuments.push({
+            id: doc.id,
+            refNum: `DOC-${doc.id.slice(-4).toUpperCase()}`,
+            fileName: doc.fileName || 'Uploaded_Document',
+            title: (doc.fileName || 'Uploaded Document').replace(/\.[^/.]+$/, '').replace(/_/g, ' '),
+            documentType: doc.fileType || (isImg ? 'Identity Proof' : 'Compliance Document'),
+            type: isImg ? 'IMAGE' : 'PDF',
+            status: 'Verified',
+            uploadedAt: doc.uploadedAt ? new Date(doc.uploadedAt).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' }) : 'Recent',
+            expires: 'N/A',
+            fileUrl: doc.fileUrl
+          });
+        }
+      }
+
+      const totalProcessed = (operatorApps || []).length;
+      const approvalsCount = (operatorApps || []).filter(a => ['APPROVED', 'COMPLETED'].includes(a.status)).length;
+      const rejectionsCount = (operatorApps || []).filter(a => a.status === 'REJECTED').length;
+      const pendingCount = (operatorApps || []).filter(a => ['SUBMITTED', 'UNDER_REVIEW', 'PENDING'].includes(a.status)).length;
+      const rejectionRateStr = totalProcessed > 0 ? `${((rejectionsCount / totalProcessed) * 100).toFixed(1)}%` : '0.0%';
+      const accuracyStr = totalProcessed > 0 ? `${(((totalProcessed - rejectionsCount) / totalProcessed) * 100).toFixed(1)}% Accuracy` : '100% Accuracy';
+
       const operatorData = {
         id: user.id,
         name: profile?.fullName || (user.email ? user.email.split('@')[0] : 'Admin Officer'),
@@ -1573,87 +1988,40 @@ export function setupSockets(io: Server) {
         dob: profile?.dob || '1992-06-15',
         gender: profile?.gender || 'Male',
         twoFactorEnabled: true,
+        metrics: {
+          tasksCompleted: totalProcessed,
+          tasksMom: totalProcessed > 0 ? '+12% MoM' : '0% MoM',
+          avgResponseTime: totalProcessed > 0 ? '12 min' : '—',
+          responseTier: totalProcessed > 0 ? 'Tier 1' : 'Standard',
+          satisfactionRating: totalProcessed > 0 ? 4.9 : 0,
+          documentsProcessed: realDocuments.length,
+          accuracyRate: accuracyStr,
+        },
         stats: {
-          applicationsProcessed: 148,
-          approvalsCompleted: 139,
-          rejectionRate: '3.2%',
-          averageProcessingTime: '12 min',
-          pendingApplications: 9,
-          satisfactionRating: 4.9,
-          documentsProcessed: 312,
-          accuracyRate: '98.5% Accuracy'
+          applicationsProcessed: totalProcessed,
+          approvalsCompleted: approvalsCount,
+          rejectionRate: rejectionRateStr,
+          averageProcessingTime: totalProcessed > 0 ? '12 min' : '0 min',
+          pendingApplications: pendingCount,
+          satisfactionRating: totalProcessed > 0 ? 4.9 : 0,
+          documentsProcessed: realDocuments.length,
+          accuracyRate: accuracyStr
         },
         reportingStructure: {
           supervisorName: 'Super Administrator',
           supervisorRole: 'District Collectorate / IT Mission',
           primaryShift: 'Day Shift (09:00 - 18:00 IST)',
         },
-        documents: [
-          {
-            id: 'DOC-1',
-            refNum: '•••• •••• 4820',
-            fileName: 'Government_ID_Aadhaar.pdf',
-            title: 'Government ID (Aadhaar)',
-            documentType: 'Identity Proof',
-            type: 'PDF',
-            status: 'Verified',
-            uploadedAt: 'Jan 12, 2024',
-            expires: 'N/A',
-            fileUrl: 'https://res.cloudinary.com/dzo4caeef/image/upload/v1787127810/cybersave/documents/ylzz2svaswahyccwj85c.jpg'
-          },
-          {
-            id: 'DOC-2',
-            refNum: 'DL-3820240982',
-            fileName: 'Driving_License.pdf',
-            title: 'Driving License',
-            documentType: 'Transport License',
-            type: 'PDF',
-            status: 'Valid',
-            uploadedAt: 'Jan 15, 2024',
-            expires: 'Jun 2028',
-            fileUrl: 'https://res.cloudinary.com/dzo4caeef/image/upload/v1787127810/cybersave/documents/ylzz2svaswahyccwj85c.jpg'
-          },
-          {
-            id: 'DOC-3',
-            refNum: 'BHIPK••••D',
-            fileName: 'PAN_Card.jpg',
-            title: 'PAN Card',
-            documentType: 'Taxation ID',
-            type: 'IMAGE',
-            status: 'Verified',
-            uploadedAt: 'Jan 12, 2024',
-            expires: 'N/A',
-            fileUrl: 'https://res.cloudinary.com/dzo4caeef/image/upload/v1787127810/cybersave/documents/ylzz2svaswahyccwj85c.jpg'
-          },
-          {
-            id: 'DOC-4',
-            refNum: 'Z8320492',
-            fileName: 'Passport_Documents.pdf',
-            title: 'Passport Documents',
-            documentType: 'Travel & Identity',
-            type: 'PDF',
-            status: 'Verified',
-            uploadedAt: 'Feb 02, 2024',
-            expires: 'Dec 2032',
-            fileUrl: 'https://res.cloudinary.com/dzo4caeef/image/upload/v1787127810/cybersave/documents/ylzz2svaswahyccwj85c.jpg'
-          }
-        ],
-        complianceActions: [
+        documents: realDocuments,
+        complianceActions: realDocuments.some(d => d.status === 'Expired') ? [
           {
             id: 'comp-1',
-            title: 'Hazmat Handling Expired',
+            title: 'Document Expiration Alert',
             status: 'Action Required',
             severity: 'danger',
-            description: 'Operator cannot be assigned to Tier-2 transit tasks involving chemical assets.'
-          },
-          {
-            id: 'comp-2',
-            title: 'Driving License Renew',
-            status: '4 Years Left',
-            severity: 'warning',
-            description: 'Regular permit audit recommended before the scheduled Q3 compliance checklist.'
+            description: 'One or more assigned/reviewed documents require compliance re-verification.'
           }
-        ],
+        ] : [],
         activityLogs,
       };
 
@@ -1758,6 +2126,51 @@ export function setupSockets(io: Server) {
         io.emit('response_operators_data', resData);
         io.emit('operators_updated');
       } catch (e) { console.error('Failed to update operator permissions:', e); }
+    });
+
+    socket.on('upload_operator_document', async (data: { id: string; fileName: string; fileUrl: string; fileType?: string; fileSize?: number }) => {
+      try {
+        if (!data?.id || !data?.fileUrl) return;
+        const isMongoId = (s?: string) => typeof s === 'string' && /^[0-9a-fA-F]{24}$/.test(s);
+        let opUser: any = null;
+        if (isMongoId(data.id)) {
+          opUser = await prisma.user.findUnique({ where: { id: data.id } });
+        }
+        if (!opUser && data.id && typeof data.id === 'string') {
+          const clean = data.id.trim().toLowerCase();
+          opUser = await prisma.user.findFirst({
+            where: {
+              OR: [
+                { email: { equals: clean, mode: 'insensitive' } },
+                { keycloakId: data.id },
+                { phone: data.id }
+              ]
+            }
+          });
+        }
+        if (!opUser) return;
+        const cleanFileName = data.fileName || 'Operator_Document.pdf';
+        const isPdf = cleanFileName.toLowerCase().endsWith('.pdf') || data.fileUrl.startsWith('data:application/pdf');
+        const isImg = !isPdf && (Boolean(cleanFileName.toLowerCase().match(/\.(jpg|jpeg|png|webp|gif)$/)) || data.fileUrl.startsWith('data:image'));
+        const cleanFileType = data.fileType || (isPdf ? 'application/pdf' : (isImg ? 'image/jpeg' : 'application/octet-stream'));
+
+        const newDoc = await prisma.documentUpload.create({
+          data: {
+            userId: opUser.id,
+            fileName: cleanFileName,
+            fileUrl: data.fileUrl,
+            fileType: cleanFileType,
+            fileSize: data.fileSize || Math.round(data.fileUrl.length * 0.75),
+          }
+        });
+        invalidateSocketOperatorCache(opUser.id);
+        const updatedData = await getSocketFastOperatorData(opUser.id);
+        io.emit('operator_detail_updated', updatedData);
+        io.emit('operators_updated');
+        socket.emit('upload_operator_document_success', { success: true, document: newDoc });
+      } catch (err) {
+        console.error('Socket upload_operator_document error:', err);
+      }
     });
 
     socket.on('add_new_operator', async (data: { name: string, email: string, password?: string, permissions?: string[] }) => {
@@ -2026,23 +2439,29 @@ export function setupSockets(io: Server) {
 
     socket.on('request_support_tickets', async () => {
       try {
-        const [total, open, inProgress, resolved, tickets] = await Promise.all([
-          prisma.supportTicket.count(),
-          prisma.supportTicket.count({ where: { status: 'OPEN' } }),
-          prisma.supportTicket.count({ where: { status: 'IN_PROGRESS' } }),
-          prisma.supportTicket.count({ where: { status: 'RESOLVED' } }),
+        const [tickets, refundRequests, feedbacks] = await Promise.all([
           prisma.supportTicket.findMany({
-            take: 50,
+            take: 100,
+            orderBy: { createdAt: 'desc' },
+            include: { user: { include: { profile: true } } }
+          }),
+          prisma.refundRequest.findMany({
+            take: 100,
+            orderBy: { createdAt: 'desc' },
+            include: { application: true, user: { include: { profile: true } } }
+          }),
+          prisma.feedback.findMany({
+            take: 100,
             orderBy: { createdAt: 'desc' },
             include: { user: { include: { profile: true } } }
           })
         ]);
 
-        const formatted = tickets.map(t => {
+        const formatted: any[] = tickets.map(t => {
           const reporterName = t.user?.profile?.fullName || (t.user?.email ? t.user.email.split('@')[0] : 'Citizen User');
           const reporterEmail = t.user?.email || '';
           const reporterId = t.user?.id || t.userId || 'citizen';
-          const assignedName = typeof t.assignedTo === 'string' ? t.assignedTo : 'Amit S. (Support Desk)';
+          const assignedName = typeof t.assignedTo === 'string' && t.assignedTo.trim() ? t.assignedTo : '';
 
           return {
             id: t.refNumber || `TKT-${t.id.substring(0, 8).toUpperCase()}`,
@@ -2052,13 +2471,13 @@ export function setupSockets(io: Server) {
             description: t.description,
             category: t.category,
             priority: t.priority,
-            createdOn: t.createdAt.toLocaleDateString('en-IN'),
-            lastUpdated: t.updatedAt.toLocaleDateString('en-IN'),
+            createdOn: t.createdAt ? t.createdAt.toLocaleDateString('en-IN') : 'Today',
+            lastUpdated: t.updatedAt ? t.updatedAt.toLocaleDateString('en-IN') : 'Today',
             createdAt: t.createdAt,
             updatedAt: t.updatedAt,
             assignedTo: assignedName,
-            assignedOfficer: { id: 'agent-01', name: assignedName },
-            reporter: { id: reporterId, name: reporterName, email: reporterEmail },
+            assignedOfficer: assignedName ? { id: 'agent-01', name: assignedName } : null,
+            reporter: { id: reporterId, name: reporterName, email: reporterEmail, phone: t.user?.phone || t.user?.profile?.phone || '' },
             user: t.user,
             status: t.status,
             attachmentUrl: t.attachmentUrl,
@@ -2066,11 +2485,228 @@ export function setupSockets(io: Server) {
           };
         });
 
+        const existingRefs = new Set(formatted.map(t => String(t.refNumber || t.id).toUpperCase()));
+
+        // Merge Refund Requests
+        for (const r of refundRequests) {
+          const rRef = String(r.refNumber || `REF-${r.id.slice(-6)}`).toUpperCase();
+          if (!existingRefs.has(rRef)) {
+            existingRefs.add(rRef);
+            const reporterName = r.user?.profile?.fullName || (r.user?.email ? r.user.email.split('@')[0] : 'Citizen Applicant');
+            const reporterEmail = r.user?.email || '';
+            const reporterPhone = r.user?.phone || r.user?.profile?.phone || '';
+            const isApproved = r.status === 'APPROVED';
+            const isRejected = r.status === 'REJECTED';
+
+            formatted.push({
+              id: r.refNumber,
+              rawId: r.id,
+              refNumber: r.refNumber,
+              title: `Refund Claim: ₹${r.amount} - ${r.serviceTitle || r.application?.serviceTitle || 'Government Service Fee'}`,
+              description: `Citizen requested refund for Application #${r.application?.refNumber || 'N/A'}.\nReason: ${r.reason}${r.details ? '\nDetails: ' + r.details : ''}`,
+              category: 'Refund Request',
+              priority: 'High',
+              status: isApproved ? 'RESOLVED' : (isRejected ? 'RESOLVED' : 'OPEN'),
+              createdOn: r.createdAt ? r.createdAt.toLocaleDateString('en-IN') : 'Today',
+              lastUpdated: r.updatedAt ? r.updatedAt.toLocaleDateString('en-IN') : 'Today',
+              createdAt: r.createdAt,
+              updatedAt: r.updatedAt,
+              attachmentUrl: r.proofUrl || null,
+              assignedTo: '',
+              assignedOfficer: null,
+              reporter: { id: r.user?.id || r.userId || 'cit-user', name: reporterName, email: reporterEmail, phone: reporterPhone },
+              user: r.user,
+              refundAmount: r.amount,
+              refundStatus: r.status,
+              refundId: r.id,
+              applicationId: r.applicationId,
+              applicationRef: r.application?.refNumber,
+              serviceTitle: r.serviceTitle || r.application?.serviceTitle,
+              messages: [
+                {
+                  id: `msg-refund-${r.id}`,
+                  senderId: r.user?.id || r.userId || 'citizen',
+                  senderName: reporterName,
+                  role: 'CITIZEN',
+                  text: `Refund Request of ₹${r.amount} submitted for Application #${r.application?.refNumber || 'N/A'}.\n\nReason: ${r.reason}${r.details ? '\n\nDetails: ' + r.details : ''}`,
+                  attachmentUrl: r.proofUrl || null,
+                  time: r.createdAt ? r.createdAt.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' }) : 'Recent',
+                  timestamp: r.createdAt ? r.createdAt.toISOString() : new Date().toISOString()
+                },
+                ...(isApproved ? [{
+                  id: `msg-appr-${r.id}`,
+                  senderId: 'support-desk',
+                  senderName: 'Support Officer (SDM)',
+                  role: 'AGENT',
+                  text: `Refund Claim Approved! ₹${r.amount} has been officially re-credited to citizen digital wallet. ✓`,
+                  time: r.updatedAt ? r.updatedAt.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' }) : 'Recent',
+                  timestamp: r.updatedAt ? r.updatedAt.toISOString() : new Date().toISOString(),
+                  isResolution: true
+                }] : []),
+                ...(isRejected ? [{
+                  id: `msg-decl-${r.id}`,
+                  senderId: 'support-desk',
+                  senderName: 'Support Officer (SDM)',
+                  role: 'AGENT',
+                  text: `Refund Claim Declined: ${r.adminNotes || 'Declined by Administrator'}`,
+                  time: r.updatedAt ? r.updatedAt.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' }) : 'Recent',
+                  timestamp: r.updatedAt ? r.updatedAt.toISOString() : new Date().toISOString(),
+                  isResolution: true
+                }] : [])
+              ]
+            });
+          }
+        }
+
+        // Merge Citizen Feedbacks
+        for (const f of feedbacks) {
+          const fbRef = `FDB-${f.id.slice(-6).toUpperCase()}`;
+          if (!existingRefs.has(fbRef) && !existingRefs.has(f.id.toUpperCase())) {
+            existingRefs.add(fbRef);
+            const reporterName = f.user?.profile?.fullName || (f.user?.email ? f.user.email.split('@')[0] : 'Citizen User');
+            const reporterEmail = f.user?.email || '';
+            const reporterPhone = f.user?.phone || f.user?.profile?.phone || '';
+
+            formatted.push({
+              id: fbRef,
+              rawId: f.id,
+              refNumber: fbRef,
+              title: `Citizen Feedback (${f.rating}★): ${f.improvementCategory || 'App Experience'}`,
+              description: `"${f.feedbackText}"`,
+              category: 'Citizen Feedback',
+              priority: f.rating <= 2 ? 'High' : (f.rating === 3 ? 'Medium' : 'Low'),
+              status: f.rating <= 2 ? 'OPEN' : 'RESOLVED',
+              createdOn: f.createdAt ? f.createdAt.toLocaleDateString('en-IN') : 'Today',
+              lastUpdated: f.updatedAt ? f.updatedAt.toLocaleDateString('en-IN') : 'Today',
+              createdAt: f.createdAt,
+              updatedAt: f.updatedAt,
+              attachmentUrl: f.imageUrl || null,
+              assignedTo: '',
+              assignedOfficer: null,
+              reporter: { id: f.user?.id || f.userId || 'cit-user', name: reporterName, email: reporterEmail, phone: reporterPhone },
+              user: f.user,
+              rating: f.rating,
+              feedbackCategory: f.improvementCategory,
+              messages: [
+                {
+                  id: `msg-fb-${f.id}`,
+                  senderId: f.user?.id || f.userId || 'citizen',
+                  senderName: reporterName,
+                  role: 'CITIZEN',
+                  text: `Rating: ${'★'.repeat(f.rating)}${'☆'.repeat(Math.max(0, 5 - f.rating))} (${f.rating}/5)\nCategory: ${f.improvementCategory || 'App Experience'}\n\nFeedback:\n"${f.feedbackText}"`,
+                  attachmentUrl: f.imageUrl || null,
+                  time: f.createdAt ? f.createdAt.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' }) : 'Recent',
+                  timestamp: f.createdAt ? f.createdAt.toISOString() : new Date().toISOString()
+                }
+              ]
+            });
+          }
+        }
+
+        formatted.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+
+        const totalTickets = formatted.length;
+        const openTickets = formatted.filter(t => t.status === 'OPEN').length;
+        const inProgress = formatted.filter(t => t.status === 'IN_PROGRESS').length;
+        const resolved = formatted.filter(t => t.status === 'RESOLVED').length;
+
         socket.emit('response_support_tickets', {
-          stats: { totalTickets: total, openTickets: open, inProgress: inProgress, resolved: resolved },
+          stats: { totalTickets, openTickets, inProgress, resolved },
           tickets: formatted
         });
       } catch (e) { console.error(e); }
+    });
+
+    socket.on('approve_refund', async (data: any) => {
+      try {
+        const targetId = String(data?.id || data?.refundId || data?.applicationId || '').trim();
+        if (!targetId) return;
+        const isMongo = /^[0-9a-fA-F]{24}$/.test(targetId);
+        let refund = await prisma.refundRequest.findFirst({
+          where: isMongo ? { OR: [{ id: targetId }, { refNumber: targetId }, { applicationId: targetId }] } : { refNumber: targetId }
+        });
+        if (!refund) return;
+
+        const updatedRefund = await prisma.refundRequest.update({
+          where: { id: refund.id },
+          data: { status: 'APPROVED', updatedAt: new Date(), adminNotes: data?.notes || 'Approved by Admin' }
+        });
+
+        if (refund.applicationId) {
+          await prisma.application.update({
+            where: { id: refund.applicationId },
+            data: { refundStatus: 'APPROVED', paymentStatus: 'Refunded', updatedAt: new Date() }
+          }).catch(() => null);
+        }
+
+        if (refund.userId) {
+          await prisma.wallet.upsert({
+            where: { userId: refund.userId },
+            update: { balance: { increment: refund.amount || 50 } },
+            create: { userId: refund.userId, balance: refund.amount || 50 }
+          }).catch(() => null);
+        }
+
+        await prisma.supportTicket.updateMany({
+          where: {
+            OR: [
+              { refNumber: refund.refNumber },
+              { id: refund.id },
+              { title: { contains: refund.refNumber } }
+            ]
+          },
+          data: { status: 'RESOLVED', updatedAt: new Date() }
+        }).catch(() => null);
+
+        io.emit('refund_approved', updatedRefund);
+        io.emit('refunds_updated', updatedRefund);
+        io.emit('support_tickets_updated');
+        io.emit('applications_updated');
+        io.emit('transactions_updated');
+      } catch (e) {
+        console.error('[Socket] approve_refund error:', e);
+      }
+    });
+
+    socket.on('reject_refund', async (data: any) => {
+      try {
+        const targetId = String(data?.id || data?.refundId || data?.applicationId || '').trim();
+        if (!targetId) return;
+        const isMongo = /^[0-9a-fA-F]{24}$/.test(targetId);
+        let refund = await prisma.refundRequest.findFirst({
+          where: isMongo ? { OR: [{ id: targetId }, { refNumber: targetId }, { applicationId: targetId }] } : { refNumber: targetId }
+        });
+        if (!refund) return;
+
+        const updatedRefund = await prisma.refundRequest.update({
+          where: { id: refund.id },
+          data: { status: 'REJECTED', updatedAt: new Date(), adminNotes: data?.reason || 'Declined by Administrator' }
+        });
+
+        if (refund.applicationId) {
+          await prisma.application.update({
+            where: { id: refund.applicationId },
+            data: { refundStatus: 'REJECTED', updatedAt: new Date() }
+          }).catch(() => null);
+        }
+
+        await prisma.supportTicket.updateMany({
+          where: {
+            OR: [
+              { refNumber: refund.refNumber },
+              { id: refund.id },
+              { title: { contains: refund.refNumber } }
+            ]
+          },
+          data: { status: 'RESOLVED', updatedAt: new Date() }
+        }).catch(() => null);
+
+        io.emit('refunds_updated', updatedRefund);
+        io.emit('support_tickets_updated');
+        io.emit('applications_updated');
+      } catch (e) {
+        console.error('[Socket] reject_refund error:', e);
+      }
     });
 
     socket.on('request_ticket_thread', async (data: { id: string }) => {
@@ -2095,27 +2731,9 @@ export function setupSockets(io: Server) {
 
     socket.on('send_ticket_reply', async (data: any) => {
       try {
-        const targetId = String(data?.id || '').trim();
+        const targetId = String(data?.id || data?.rawId || data?.refNumber || data?.ticketId || '').trim();
         if (!targetId || !data?.text) return;
-        const isMongoId = /^[0-9a-fA-F]{24}$/.test(targetId);
-        let ticket: any = null;
-        if (isMongoId) {
-          ticket = await prisma.supportTicket.findUnique({ where: { id: targetId }, include: { user: { include: { profile: true } } } });
-        }
-        if (!ticket) {
-          ticket = await prisma.supportTicket.findFirst({ where: { refNumber: targetId }, include: { user: { include: { profile: true } } } });
-        }
-        if (!ticket) {
-          ticket = await prisma.supportTicket.findFirst({
-            where: {
-              OR: [
-                { refNumber: { contains: targetId, mode: 'insensitive' } },
-                { id: { contains: targetId, mode: 'insensitive' } }
-              ]
-            },
-            include: { user: { include: { profile: true } } }
-          });
-        }
+        const ticket = await findSupportTicketOrLinked(targetId);
         if (ticket) {
           const targetUserId = await resolveTicketTargetUserId(ticket);
           const replyText = String(data.text || '').trim();
@@ -2452,7 +3070,7 @@ export function setupSockets(io: Server) {
             priority: data.priority || 'Medium',
             status: 'OPEN',
             attachmentUrl: data.attachmentUrl || null,
-            assignedTo: 'Amit S. (Support Desk)',
+            assignedTo: (data as any).assignedTo || null,
             userId: (await prisma.user.findFirst({ where: { role: 'ADMIN' } }))?.id || null,
           }
         });

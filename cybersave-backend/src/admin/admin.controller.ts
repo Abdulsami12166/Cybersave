@@ -105,7 +105,7 @@ export class AdminController {
           lastUpdated: t.updatedAt ? new Date(t.updatedAt).toLocaleDateString('en-IN') : new Date().toLocaleDateString('en-IN'),
           createdAt: t.createdAt,
           updatedAt: t.updatedAt,
-          assignedTo: t.assignedTo || 'Amit S. (Support Desk)',
+          assignedTo: t.assignedTo || '',
           status: t.status,
           attachmentUrl: t.attachmentUrl,
           reporter: {
@@ -194,6 +194,116 @@ export class AdminController {
     AdminGateway.broadcast('new_support_ticket', ticket);
 
     return { success: true, ticket };
+  }
+
+    @Get(['api/v1/support/tickets/:id', 'api/support/tickets/:id', 'support/tickets/:id', 'api/admin/support/tickets/:id', 'admin/support/tickets/:id'])
+  @ApiOperation({ summary: 'Get Support Ticket details by ID or Ref Number' })
+  async getSupportTicketByIdRest(@Param('id') id: string) {
+    const cleanId = String(id || '').trim();
+    const strippedId = cleanId.replace(/^(TKT|REF|FDB)-/i, '').trim();
+    const isMongoId = /^[0-9a-fA-F]{24}$/.test(cleanId) || /^[0-9a-fA-F]{24}$/.test(strippedId);
+    const targetMongo = /^[0-9a-fA-F]{24}$/.test(cleanId) ? cleanId : (/^[0-9a-fA-F]{24}$/.test(strippedId) ? strippedId : null);
+
+    let ticket: any = null;
+    if (targetMongo) {
+      ticket = await this.prisma.supportTicket.findUnique({
+        where: { id: targetMongo },
+        include: { user: { include: { profile: true } } },
+      });
+    }
+    if (!ticket) {
+      ticket = await this.prisma.supportTicket.findFirst({
+        where: {
+          OR: [
+            { refNumber: cleanId },
+            { refNumber: `TKT-${strippedId}` },
+            { refNumber: strippedId },
+            { refNumber: { contains: strippedId, mode: 'insensitive' } },
+            { id: { contains: strippedId, mode: 'insensitive' } },
+          ],
+        },
+        include: { user: { include: { profile: true } } },
+      });
+    }
+
+    if (!ticket) {
+      const refund = await this.prisma.refundRequest.findFirst({
+        where: {
+          OR: [
+            ...(isMongoId ? [{ id: cleanId }] : []),
+            { refNumber: cleanId },
+            { refNumber: { contains: strippedId, mode: 'insensitive' } },
+          ],
+        },
+        include: { application: true, user: { include: { profile: true } } },
+      });
+      if (refund) {
+        const u = refund.user;
+        return {
+          id: refund.refNumber,
+          rawId: refund.id,
+          refNumber: refund.refNumber,
+          title: `Refund Claim: ₹${refund.amount} - ${refund.serviceTitle || refund.application?.serviceTitle || 'Government Service Fee'}`,
+          description: `Citizen requested refund for Application #${refund.application?.refNumber || 'N/A'}.\nReason: ${refund.reason}`,
+          category: 'Refund Request',
+          priority: 'High',
+          status: refund.status === 'APPROVED' || refund.status === 'REJECTED' ? 'RESOLVED' : 'OPEN',
+          createdOn: refund.createdAt ? new Date(refund.createdAt).toLocaleDateString('en-IN') : 'Today',
+          lastUpdated: refund.updatedAt ? new Date(refund.updatedAt).toLocaleDateString('en-IN') : 'Today',
+          createdAt: refund.createdAt,
+          updatedAt: refund.updatedAt,
+          attachmentUrl: refund.proofUrl || null,
+          assignedTo: '',
+          assignedOfficer: null,
+          reporter: {
+            name: u?.profile?.fullName || (u?.email ? u.email.split('@')[0] : 'Citizen Applicant'),
+            email: u?.email || '',
+            phone: u?.phone || '',
+          },
+          messages: [
+            {
+              id: `msg-refund-${refund.id}`,
+              senderId: refund.userId || 'citizen',
+              senderName: u?.profile?.fullName || (u?.email ? u.email.split('@')[0] : 'Citizen Applicant'),
+              role: 'CITIZEN',
+              text: `Refund Request of ₹${refund.amount} submitted for Application #${refund.application?.refNumber || 'N/A'}.\nReason: ${refund.reason}`,
+              time: refund.createdAt ? new Date(refund.createdAt).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' }) : 'Recent',
+              timestamp: refund.createdAt ? new Date(refund.createdAt).toISOString() : new Date().toISOString(),
+            },
+          ],
+        };
+      }
+    }
+
+    if (!ticket) {
+      throw new NotFoundException(`Grievance / Ticket ${id} not found`);
+    }
+
+    const u = ticket.user;
+    const assignedName = typeof ticket.assignedTo === 'string' && ticket.assignedTo.trim() ? ticket.assignedTo : '';
+    return {
+      id: ticket.refNumber || `TKT-${ticket.id.substring(0, 8).toUpperCase()}`,
+      rawId: ticket.id,
+      refNumber: ticket.refNumber,
+      title: ticket.title,
+      description: ticket.description,
+      category: ticket.category,
+      priority: ticket.priority,
+      createdOn: ticket.createdAt ? new Date(ticket.createdAt).toLocaleDateString('en-IN') : 'Today',
+      lastUpdated: ticket.updatedAt ? new Date(ticket.updatedAt).toLocaleDateString('en-IN') : 'Today',
+      createdAt: ticket.createdAt,
+      updatedAt: ticket.updatedAt,
+      assignedTo: assignedName,
+      assignedOfficer: assignedName ? { id: 'agent-01', name: assignedName } : null,
+      status: ticket.status,
+      attachmentUrl: ticket.attachmentUrl,
+      reporter: {
+        name: u?.profile?.fullName || (u?.email ? u.email.split('@')[0] : 'Citizen User'),
+        email: u?.email || '',
+        phone: u?.phone || '',
+      },
+      messages: Array.isArray(ticket.messages) ? ticket.messages : [],
+    };
   }
 
   @Post(['api/v1/support/tickets/:id/reply', 'api/support/tickets/:id/reply', 'support/tickets/:id/reply'])
@@ -499,6 +609,38 @@ export class AdminController {
       });
     }
 
+    // Create corresponding SupportTicket for Support Ticket Management
+    try {
+      const fbTicketRef = `FDB-${feedback.id.slice(-6).toUpperCase()}`;
+      await (this.prisma as any).supportTicket.create({
+        data: {
+          refNumber: fbTicketRef,
+          userId: resolvedUserId,
+          title: `Citizen Feedback (${numericRating}★): ${improvementCategory || 'App Experience'}`,
+          description: `"${feedbackText || 'App experience feedback'}"`,
+          category: 'Citizen Feedback',
+          priority: numericRating <= 2 ? 'High' : (numericRating === 3 ? 'Medium' : 'Low'),
+          status: numericRating <= 2 ? 'OPEN' : 'RESOLVED',
+          assignedTo: 'Amit S. (Support Desk)',
+          attachmentUrl: finalImageUrl || null,
+          messages: [
+            {
+              id: `msg-${Date.now()}`,
+              senderId: resolvedUserId || 'citizen',
+              senderName: 'Mobile Citizen',
+              role: 'CITIZEN',
+              text: `Citizen Rating: ${'★'.repeat(numericRating)}${'☆'.repeat(Math.max(0, 5 - numericRating))} (${numericRating}/5)\nCategory: ${improvementCategory || 'App Experience'}\n\n"${feedbackText}"`,
+              attachmentUrl: finalImageUrl || null,
+              time: new Date().toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' }),
+              timestamp: new Date().toISOString()
+            }
+          ]
+        }
+      });
+    } catch (ticketErr: any) {
+      console.warn('Could not create supportTicket for feedback in admin.controller:', ticketErr?.message);
+    }
+
     // Broadcast live event to admin dashboard
     AdminGateway.broadcast('new_user_feedback', {
       userId: resolvedUserId,
@@ -511,6 +653,9 @@ export class AdminController {
         date: new Date().toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' }),
       },
     });
+
+    AdminGateway.broadcast('new_support_ticket');
+    AdminGateway.broadcast('support_tickets_updated');
 
     AdminGateway.broadcast('admin_notification', {
       type: 'FEEDBACK',
@@ -2493,7 +2638,7 @@ export class AdminController {
       });
     }
 
-    if (!o && id.startsWith('OPS-')) {
+    if (!o && typeof id === 'string' && id.startsWith('OPS-')) {
       const shortId = id.slice(-4).toUpperCase();
       const allOps = await this.prisma.user.findMany({
         where: { role: 'ADMIN' },
@@ -2502,10 +2647,15 @@ export class AdminController {
       o = allOps.find((x) => x.id.slice(-4).toUpperCase() === shortId) || null;
     }
 
-    if (!o) {
+    if (!o && typeof id === 'string') {
+      const cleanId = id.trim().toLowerCase();
       o = await this.prisma.user.findFirst({
         where: {
-          OR: [{ id }, { email: id }, { phone: id }, { role: 'ADMIN' }],
+          OR: [
+            { email: { equals: cleanId, mode: 'insensitive' } },
+            { keycloakId: id },
+            { phone: id }
+          ]
         },
         include: { profile: true, applications: true, auditLogs: { orderBy: { createdAt: 'desc' }, take: 10 } },
       });
@@ -2699,6 +2849,79 @@ export class AdminController {
     return { success: true, message: 'Document update request dispatched to operator successfully' };
   }
 
+  @Post(['api/v1/operators/:id/upload-document', 'api/admin/operators/:id/upload-document', 'admin/operators/:id/upload-document', 'operators/:id/upload-document'])
+  @ApiOperation({ summary: 'Upload real verified document for operator' })
+  async uploadOperatorDocument(
+    @Param('id') id: string,
+    @Body() body: { fileName?: string; fileUrl?: string; fileData?: string; fileType?: string; title?: string; fileSize?: number }
+  ) {
+    const isMongoId = (s?: string) => typeof s === 'string' && /^[0-9a-fA-F]{24}$/.test(s);
+    let opUser: any = null;
+    if (isMongoId(id)) {
+      opUser = await this.prisma.user.findUnique({ where: { id } });
+    }
+    if (!opUser && typeof id === 'string') {
+      const cleanId = id.trim().toLowerCase();
+      opUser = await this.prisma.user.findFirst({
+        where: {
+          OR: [
+            { email: { equals: cleanId, mode: 'insensitive' } },
+            { keycloakId: id },
+            { phone: id }
+          ]
+        }
+      });
+    }
+    if (!opUser) {
+      throw new NotFoundException(`Operator ${id} not found`);
+    }
+
+    const cleanFileUrl = body?.fileUrl || body?.fileData;
+    if (!cleanFileUrl) {
+      throw new BadRequestException('File data or URL is required');
+    }
+
+    const cleanFileName = body?.fileName || body?.title || 'Operator_Document.pdf';
+    const isPdf = cleanFileName.toLowerCase().endsWith('.pdf') || (typeof cleanFileUrl === 'string' && cleanFileUrl.startsWith('data:application/pdf'));
+    const isImg = !isPdf && (Boolean(cleanFileName.toLowerCase().match(/\.(jpg|jpeg|png|webp|gif)$/)) || (typeof cleanFileUrl === 'string' && cleanFileUrl.startsWith('data:image')));
+    const cleanFileType = body?.fileType || (isPdf ? 'application/pdf' : (isImg ? 'image/jpeg' : 'application/octet-stream'));
+
+    const newDoc = await this.prisma.documentUpload.create({
+      data: {
+        userId: opUser.id,
+        fileName: cleanFileName,
+        fileUrl: cleanFileUrl,
+        fileType: cleanFileType,
+        fileSize: body?.fileSize || (typeof cleanFileUrl === 'string' ? Math.round(cleanFileUrl.length * 0.75) : 1024 * 100),
+      }
+    });
+
+    await this.prisma.auditLog.create({
+      data: {
+        userId: opUser.id,
+        action: 'DOC_UPLOADED',
+        details: `Administrator uploaded verified document for operator: ${newDoc.fileName}`
+      }
+    }).catch(() => null);
+
+    AdminGateway.broadcast('operators_updated');
+    AdminGateway.broadcast('operator_detail_updated', { id: opUser.id });
+
+    return {
+      success: true,
+      document: {
+        id: newDoc.id,
+        fileName: newDoc.fileName,
+        refNum: `DOC-${newDoc.id.slice(-4).toUpperCase()}`,
+        type: isImg ? 'IMAGE' : 'PDF',
+        status: 'Verified',
+        uploadedAt: new Date(newDoc.uploadedAt).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' }),
+        expires: 'N/A',
+        fileUrl: newDoc.fileUrl
+      }
+    };
+  }
+
   private async formatOperatorDetail(o: any) {
     const profile = o.profile || {};
 
@@ -2734,23 +2957,30 @@ export class AdminController {
       ipAddress: log.ipAddress || '127.0.0.1',
     }));
 
-    // 4. Real documents uploaded by this operator
+    // 4. Real documents uploaded for this operator
     const rawDocs = await this.prisma.documentUpload.findMany({
       where: { userId: o.id },
       orderBy: { uploadedAt: 'desc' },
     }).catch(() => []);
 
-    const formattedDocs = rawDocs.map((d: any, idx: number) => ({
-      id: d.id,
-      fileName: d.fileName || `Document_${idx + 1}`,
-      refNum: `DOC-${d.id.slice(-4).toUpperCase()}`,
-      type: (d.fileType || 'PDF').toUpperCase().includes('IMAGE') || (d.fileType || '').includes('PNG') || (d.fileType || '').includes('JPG') ? 'IMAGE' : 'PDF',
-      status: 'Verified',
-      fileSize: d.fileSize ? `${(d.fileSize / 1024 / 1024).toFixed(1)}` : '1.0',
-      uploadedAt: new Date(d.uploadedAt || o.createdAt).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' }),
-      expires: 'N/A',
-      fileUrl: d.fileUrl || '',
-    }));
+    const formattedDocs = rawDocs.map((d: any, idx: number) => {
+      const isImg = (d.fileType || '').toUpperCase().includes('IMAGE') || 
+                    (d.fileType || '').includes('PNG') || 
+                    (d.fileType || '').includes('JPG') || 
+                    Boolean((d.fileName || '').match(/\.(jpg|jpeg|png|webp|gif)$/i)) || 
+                    (d.fileUrl && d.fileUrl.startsWith('data:image'));
+      return {
+        id: d.id,
+        fileName: d.fileName || `Document_${idx + 1}`,
+        refNum: `DOC-${d.id.slice(-4).toUpperCase()}`,
+        type: isImg ? 'IMAGE' : 'PDF',
+        status: 'Verified',
+        fileSize: d.fileSize ? `${(d.fileSize / 1024 / 1024).toFixed(1)}` : '1.0',
+        uploadedAt: new Date(d.uploadedAt || o.createdAt).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' }),
+        expires: 'N/A',
+        fileUrl: d.fileUrl || '',
+      };
+    });
 
     const settingsDoc = await this.prisma.systemSetting.findUnique({
       where: { key: 'admin_operational_settings' },
