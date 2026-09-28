@@ -718,6 +718,8 @@ export async function fetchRealTransactionsData() {
         amount: true,
         status: true,
         createdAt: true,
+        updatedAt: true,
+        processedAt: true,
         applicationId: true,
         userId: true
       }
@@ -790,9 +792,9 @@ export async function fetchRealTransactionsData() {
     .reduce((sum: number, t: any) => sum + (t.amount || 0), 0);
 
   // Total Realized (Net) = Gross inflow minus all refunds realized!
-  const totalRealizedNet = grossInflow - refundedAmount;
+  const totalRealizedNet = Math.max(0, grossInflow - refundedAmount);
 
-  // Calculate Today's exact Realized Revenue
+  // Calculate Today's exact Realized Revenue and Deductions
   const todayYMD = new Date().toISOString().slice(0, 10);
   const todayTransactions = transactions.filter((t: any) => (t.dateOnly || t.date || '').slice(0, 10) === todayYMD);
   
@@ -800,11 +802,37 @@ export async function fetchRealTransactionsData() {
     .filter((t: any) => t.status !== 'FAILED')
     .reduce((sum: number, t: any) => sum + (t.amount || 0), 0);
 
-  const todayRefunds = todayTransactions
-    .filter((t: any) => t.status === 'REFUNDED' || t.isRefunded)
-    .reduce((sum: number, t: any) => sum + (t.amount || 0), 0);
+  // Total approved refunds that were executed today OR attached to today's receipts
+  const todayRefundedIdSet = new Set<string>();
+  let todayRefundsTotal = 0;
 
-  const revenueToday = todayGross - todayRefunds;
+  // 1. Check all approved refunds executed today in database
+  refunds.forEach((r: any) => {
+    if ((r.status || '').toUpperCase() === 'APPROVED') {
+      const procDate = (r.processedAt || r.updatedAt || r.createdAt ? new Date(r.processedAt || r.updatedAt || r.createdAt).toISOString() : '').slice(0, 10);
+      if (procDate === todayYMD) {
+        const key = String(r.applicationId || r.refNumber || r.id);
+        if (!todayRefundedIdSet.has(key)) {
+          todayRefundedIdSet.add(key);
+          todayRefundsTotal += (Number(r.amount) || 0);
+        }
+      }
+    }
+  });
+
+  // 2. Check today's transactions marked as refunded
+  todayTransactions.forEach((t: any) => {
+    if (t.status === 'REFUNDED' || t.isRefunded) {
+      const key = String(t.refNumber || t.id);
+      if (!todayRefundedIdSet.has(key)) {
+        todayRefundedIdSet.add(key);
+        todayRefundsTotal += (Number(t.amount) || 0);
+      }
+    }
+  });
+
+  const todayRefunds = todayRefundsTotal;
+  const revenueToday = Math.max(0, todayGross - todayRefunds);
 
   // Daily summary map for all transaction dates
   const dailyBreakdown: Record<string, { date: string; label: string; count: number; gross: number; refunds: number; net: number }> = {};
@@ -824,8 +852,25 @@ export async function fetchRealTransactionsData() {
     if (t.status !== 'FAILED') {
       dailyBreakdown[day].gross += (t.amount || 0);
     }
-    dailyBreakdown[day].net = dailyBreakdown[day].gross - dailyBreakdown[day].refunds;
+    dailyBreakdown[day].net = Math.max(0, dailyBreakdown[day].gross - dailyBreakdown[day].refunds);
   });
+
+  // Ensure today's entry in dailyBreakdown reflects the accurate today refunds and revenue
+  if (!dailyBreakdown[todayYMD]) {
+    const dObj = new Date();
+    dailyBreakdown[todayYMD] = {
+      date: todayYMD,
+      label: dObj.toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' }),
+      count: todayTransactions.length,
+      gross: todayGross,
+      refunds: todayRefunds,
+      net: revenueToday,
+    };
+  } else {
+    dailyBreakdown[todayYMD].gross = todayGross;
+    dailyBreakdown[todayYMD].refunds = Math.max(dailyBreakdown[todayYMD].refunds, todayRefunds);
+    dailyBreakdown[todayYMD].net = Math.max(0, dailyBreakdown[todayYMD].gross - dailyBreakdown[todayYMD].refunds);
+  }
 
   const stats = {
     grossInflow,
@@ -833,6 +878,7 @@ export async function fetchRealTransactionsData() {
     refundedAmount,
     totalCount: transactions.length,
     revenueToday,
+    totalCollectionsToday: revenueToday,
     todayGross,
     todayRefunds,
     dailyBreakdown,

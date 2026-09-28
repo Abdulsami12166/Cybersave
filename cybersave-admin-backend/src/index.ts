@@ -222,6 +222,7 @@ export async function buildDashboardData(forceRefresh = false): Promise<any> {
   });
 
   const realGrossToday = Number(realTxnData.stats.todayGross || 0);
+  const realRefundsToday = Number(realTxnData.stats.todayRefunds || 0);
   const realNetToday = Number(realTxnData.stats.revenueToday || 0);
   const realGrossTotal = Number(realTxnData.stats.grossInflow || 0);
   const realNetTotal = Number(realTxnData.stats.totalAmount || 0);
@@ -252,8 +253,9 @@ export async function buildDashboardData(forceRefresh = false): Promise<any> {
     }
   }
 
-  const totalCollectionsToday = realGrossToday;
-  const onlinePaymentsToday = realOnlineToday;
+  // Deduct approved refunds from today's collections & online payments
+  const totalCollectionsToday = realNetToday;
+  const onlinePaymentsToday = Math.max(0, realOnlineToday - realRefundsToday);
   const cashCollectionsToday = realCashToday;
 
   const onlinePercentage = totalCollectionsToday > 0 
@@ -266,14 +268,17 @@ export async function buildDashboardData(forceRefresh = false): Promise<any> {
   const collections = {
     totalCollections: totalCollectionsToday,
     totalCollectionsToday: totalCollectionsToday,
-    totalLifetime: realGrossTotal,
+    grossToday: realGrossToday,
+    refundsToday: realRefundsToday,
+    totalLifetime: realNetTotal,
+    grossLifetime: realGrossTotal,
     netLifetime: realNetTotal,
     netToday: realNetToday,
     onlinePayments: onlinePaymentsToday,
     cashCollections: cashCollectionsToday,
     onlinePercentage,
     cashPercentage,
-    lifetimeOnline: realOnlineLifetime,
+    lifetimeOnline: Math.max(0, realOnlineLifetime - Number(realTxnData.stats.refundedAmount || 0)),
     lifetimeCash: realCashLifetime,
     lastUpdated: new Date().toISOString()
   };
@@ -372,8 +377,11 @@ export async function buildDashboardData(forceRefresh = false): Promise<any> {
     stats: {
       revenueToday: realNetToday,
       todayGross: realGrossToday,
+      todayRefunds: realRefundsToday,
+      totalCollectionsToday: realNetToday,
       totalRevenue: realNetTotal,
       grossInflow: realGrossTotal,
+      totalRefundsDeducted: realTxnData.stats.refundedAmount,
       appsToday,
       totalApps,
       pendingApps,
