@@ -2,7 +2,7 @@ import { Server, Socket } from 'socket.io';
 import { PrismaClient } from '@prisma/client';
 import { messaging } from './firebase';
 import bcrypt from 'bcrypt';
-import { findUserByIdOrCit, fetchCitizenFullDetails, fetchCitizensList, invalidateCitizensListCache, invalidateCitizenDetailsCache, fetchRealTransactionsData, performApplicationStatusUpdate } from './citizenService';
+import { findUserByIdOrCit, fetchCitizenFullDetails, fetchCitizensList, invalidateCitizensListCache, invalidateCitizenDetailsCache, fetchRealTransactionsData, performApplicationStatusUpdate, formatServiceResponse } from './citizenService';
 
 const prisma = new PrismaClient();
 
@@ -80,7 +80,7 @@ export async function findSupportTicketOrLinked(idOrRef: string) {
           { refNumber: `TKT-${strippedId}` },
           { refNumber: strippedId },
           { refNumber: { contains: strippedId, mode: 'insensitive' } },
-          { id: { contains: strippedId, mode: 'insensitive' } }
+          ...(isMongoId ? [{ id: cleanId }] : [])
         ]
       },
       include: { user: { include: { profile: true } } }
@@ -147,15 +147,31 @@ export async function findSupportTicketOrLinked(idOrRef: string) {
   // Fallback 2: If not in supportTicket or refund, check if it's Feedback
   if (!ticket) {
     const strippedFdb = cleanId.replace(/^FDB-/i, '').trim();
-    const fb = await prisma.feedback.findFirst({
-      where: {
-        OR: [
-          ...(isMongoId ? [{ id: cleanId }] : []),
-          { id: { contains: strippedFdb.toLowerCase(), mode: 'insensitive' } }
-        ]
-      },
-      include: { user: { include: { profile: true } } }
-    });
+    let fb: any = null;
+    if (isMongoId) {
+      fb = await prisma.feedback.findUnique({
+        where: { id: cleanId },
+        include: { user: { include: { profile: true } } }
+      });
+    }
+    if (!fb && /^[0-9a-fA-F]{24}$/.test(strippedFdb)) {
+      fb = await prisma.feedback.findUnique({
+        where: { id: strippedFdb },
+        include: { user: { include: { profile: true } } }
+      });
+    }
+    if (!fb) {
+      const recentFbs = await prisma.feedback.findMany({
+        take: 100,
+        orderBy: { createdAt: 'desc' },
+        include: { user: { include: { profile: true } } }
+      });
+      fb = recentFbs.find((f: any) =>
+        f.id.toUpperCase().endsWith(strippedFdb.toUpperCase()) ||
+        f.id.toUpperCase().includes(strippedFdb.toUpperCase()) ||
+        `FDB-${f.id.slice(-6).toUpperCase()}` === cleanId.toUpperCase()
+      );
+    }
 
     if (fb) {
       const fbRef = `FDB-${fb.id.slice(-6).toUpperCase()}`;
@@ -1670,7 +1686,7 @@ export function setupSockets(io: Server) {
             },
           });
         }
-        socket.emit('response_service_detail', s);
+        socket.emit('response_service_detail', formatServiceResponse(s));
       } catch (e) {
         console.error('[Socket] request_service_detail error:', e);
         socket.emit('response_service_detail', null);

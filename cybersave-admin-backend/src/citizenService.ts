@@ -1040,3 +1040,60 @@ export async function performApplicationStatusUpdate(params: {
   return { success: true, application: updated, payload, notification: notificationPayload };
 }
 
+export function formatServiceResponse(s: any): any {
+  if (!s) return s;
+  const formDataSchema = s.formDataSchema || {};
+  const config = (formDataSchema && typeof formDataSchema === 'object' && formDataSchema.configuration) 
+    ? formDataSchema.configuration 
+    : {};
+
+  const cleanDocs = Array.isArray(s.requiredDocs) 
+    ? s.requiredDocs.map((d: any, idx: number) => {
+        if (typeof d === 'string') {
+          return {
+            id: `doc-${idx + 1}`,
+            type: d,
+            subtitle: 'Standard identity verification payload',
+            formats: 'PDF, JPG, PNG',
+            size: '5 MB',
+            req: 'Required',
+            mandatory: true
+          };
+        }
+        return {
+          id: d.id || `doc-${idx + 1}`,
+          type: d.type || d.name || d.title || 'Supporting Document',
+          subtitle: d.subtitle || d.description || (d.mandatory ? 'Mandatory official document' : 'Supporting declaration document'),
+          formats: d.formats || 'PDF, JPG, PNG',
+          size: d.size || '5 MB',
+          req: (d.req === 'Optional' || d.mandatory === false) ? 'Optional' : 'Required',
+          mandatory: !(d.req === 'Optional' || d.mandatory === false)
+        };
+      })
+    : [];
+
+  return {
+    ...s,
+    name: s.title,
+    serviceCode: config.serviceCode || s.slug || `SRV-${(s.id || '').slice(-6).toUpperCase()}`,
+    serviceType: config.serviceType || 'Online',
+    processingSla: config.processingSla || s.processingTime || '24 Hours',
+    priorityLevel: config.priorityLevel || 'Medium',
+    autoApproval: config.autoApproval !== undefined ? config.autoApproval : true,
+    targetProcessingTime: config.targetProcessingTime || '18 Hours',
+    complianceTarget: config.complianceTarget || '95%',
+    reliabilityTarget: config.reliabilityTarget || '99.9%',
+    performanceMonitoring: config.performanceMonitoring !== undefined ? config.performanceMonitoring : true,
+    workflow: config.workflow || [
+      { id: 1, name: 'Citizen Submission', description: 'Online secure form portal for digital document payloads.', status: 'completed' },
+      { id: 2, name: 'Automated Verification', description: 'AI scans readability and cross-checks with identity registers.', status: 'completed' },
+      { id: 3, name: 'Officer Review', description: 'Back-office dashboard manual audit of edge-case documents.', status: 'in_progress' },
+      { id: 4, name: 'UIDAI API Sync', description: 'Tunnel and commit demographic payload directly to registry API.', status: 'pending' },
+      { id: 5, name: 'Confirmation & Output', description: 'Citizen notification loop via email/SMS and digital receipt generation.', status: 'pending' },
+    ],
+    isDraft: Boolean(config.isDraft || s.isActive === false),
+    status: config.isDraft ? 'Draft' : (s.isActive ? 'Active' : 'Inactive'),
+    documents: cleanDocs,
+    requiredDocs: cleanDocs
+  };
+}

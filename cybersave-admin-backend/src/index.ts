@@ -23,7 +23,7 @@ const io = new Server(server, {
 });
 setupSockets(io);
 
-import { findUserByIdOrCit, fetchCitizenFullDetails, fetchCitizensList, fetchRealTransactionsData, performApplicationStatusUpdate, invalidateCitizensListCache, invalidateCitizenDetailsCache } from './citizenService';
+import { findUserByIdOrCit, fetchCitizenFullDetails, fetchCitizensList, fetchRealTransactionsData, performApplicationStatusUpdate, invalidateCitizensListCache, invalidateCitizenDetailsCache, formatServiceResponse } from './citizenService';
 
 const prisma = new PrismaClient();
 const PORT = process.env.ADMIN_PORT || 3001;
@@ -1281,12 +1281,17 @@ app.get('/api/admin/services', async (req, res) => {
 app.get(['/api/v1/services', '/api/services'], async (req: any, res: any) => {
   try {
     const category = req.query.category;
-    let whereClause: any = { isActive: true };
+    const includeDrafts = req.query.includeDrafts === 'true' || req.query.all === 'true';
+    let whereClause: any = includeDrafts ? {} : { isActive: true };
     if (category && category !== 'All') {
       whereClause.category = category;
     }
-    const services = await prisma.service.findMany({ where: whereClause });
-    res.json(services);
+    const services = await prisma.service.findMany({ 
+      where: whereClause,
+      orderBy: { updatedAt: 'desc' }
+    });
+    const formatted = services.map(s => formatServiceResponse(s));
+    res.json(formatted);
   } catch (e) {
     res.status(500).json({ error: (e as any).message });
   }
@@ -1310,7 +1315,7 @@ app.get(['/api/v1/services/:id', '/api/services/:id'], async (req: any, res: any
     if (!s) {
       return res.status(404).json({ message: 'Service not found' });
     }
-    res.json(s);
+    res.json(formatServiceResponse(s));
   } catch (e) {
     res.status(500).json({ error: (e as any).message });
   }
@@ -1325,20 +1330,80 @@ app.post(['/api/v1/services', '/api/services'], async (req: any, res: any) => {
       ? data.fee
       : (typeof data.pricing?.fee === 'number' ? data.pricing.fee : (parseFloat(data.fee || '50.0') || 50.0));
 
+    const isDraft = Boolean(data.isDraft || data.status === 'Draft');
+    const serviceCode = data.serviceCode || data.serviceId || `SRV-${slug.toUpperCase()}`;
+
+    // Normalize documents with mandatory / optional flags
+    const rawDocs = Array.isArray(data.documents) ? data.documents : (Array.isArray(data.requiredDocs) ? data.requiredDocs : []);
+    const normalizedDocs = rawDocs.map((d: any, idx: number) => {
+      if (typeof d === 'string') {
+        return {
+          id: `doc-${idx + 1}`,
+          type: d,
+          subtitle: 'Required verification document',
+          formats: 'PDF, JPG, PNG',
+          size: '5 MB',
+          req: 'Required',
+          mandatory: true
+        };
+      }
+      const isMandatory = d.mandatory !== false && d.req !== 'Optional';
+      return {
+        id: d.id || `doc-${idx + 1}`,
+        type: d.type || d.name || d.title || 'Required Document',
+        subtitle: d.subtitle || d.description || (isMandatory ? 'Mandatory official document' : 'Supporting declaration document'),
+        formats: d.formats || 'PDF, JPG, PNG',
+        size: d.size || '5 MB',
+        req: isMandatory ? 'Required' : 'Optional',
+        mandatory: isMandatory
+      };
+    });
+
+    const workflowSteps = Array.isArray(data.workflow) && data.workflow.length > 0
+      ? data.workflow
+      : [
+          { id: 1, name: 'Citizen Submission', description: 'Online secure form portal for digital document payloads.', status: 'completed' },
+          { id: 2, name: 'Automated Verification', description: 'AI scans readability and cross-checks with identity registers.', status: 'completed' },
+          { id: 3, name: 'Officer Review', description: 'Back-office dashboard manual audit of edge-case documents.', status: 'in_progress' },
+          { id: 4, name: 'UIDAI API Sync', description: 'Tunnel and commit demographic payload directly to registry API.', status: 'pending' },
+          { id: 5, name: 'Confirmation & Output', description: 'Citizen notification loop via email/SMS and digital receipt generation.', status: 'pending' },
+        ];
+
+    const formElementsList = Array.isArray(data.formElements) 
+      ? data.formElements 
+      : (Array.isArray(data.formDataSchema?.formElements) ? data.formDataSchema.formElements : []);
+
+    const configurationPayload = {
+      serviceCode,
+      serviceType: data.serviceType || 'Online',
+      processingSla: data.processingSla || data.tat || '24 Hours',
+      priorityLevel: data.priorityLevel || 'Medium',
+      autoApproval: data.autoApproval !== undefined ? Boolean(data.autoApproval) : true,
+      targetProcessingTime: data.targetProcessingTime || '18 Hours',
+      complianceTarget: data.complianceTarget || '95%',
+      reliabilityTarget: data.reliabilityTarget || '99.9%',
+      performanceMonitoring: data.performanceMonitoring !== undefined ? Boolean(data.performanceMonitoring) : true,
+      workflow: workflowSteps,
+      isDraft,
+    };
+
     const updateData: any = {
       title: rawTitle,
       description: data.description || data.shortDescription || 'Government certified digital service workflow.',
       category: data.category || 'Government',
-      department: data.department || data.departmentRole || 'ID Processing & Verification (ID-V)',
+      department: data.department || data.departmentRole || 'General Administration',
       fee: feeVal,
-      processingTime: data.tat || data.processingTime || '5-7 working days',
+      processingTime: data.processingSla || data.tat || data.processingTime || '24 Hours',
       subServices: data.subServices || [],
-      formDataSchema: data.formElements || data.formDataSchema || [],
-      requiredDocs: data.documents || data.requiredDocs || [],
+      formDataSchema: {
+        formElements: formElementsList,
+        configuration: configurationPayload
+      },
+      requiredDocs: normalizedDocs,
       pricingConfig: data.pricing || data.pricingConfig || { fee: feeVal },
-      iconName: data.iconName || 'file-document-outline',
+      iconName: data.iconUrl || data.imageUrl || data.iconName || 'shield-account-outline',
       colorHex: data.colorHex || '#2563eb',
-      isActive: data.status === 'Active' || data.isActive === true || data.status === undefined,
+      isActive: !isDraft && (data.status === 'Active' || data.isActive === true || data.status === undefined),
     };
 
     const newService = await prisma.service.upsert({
@@ -1351,10 +1416,11 @@ app.post(['/api/v1/services', '/api/services'], async (req: any, res: any) => {
       }
     });
 
-    io.emit('services_updated', newService);
-    io.emit('service_created', newService);
-    io.emit('service_updated', newService);
-    res.status(201).json(newService);
+    const formatted = formatServiceResponse(newService);
+    io.emit('services_updated', formatted);
+    io.emit('service_created', formatted);
+    io.emit('service_updated', formatted);
+    res.status(201).json(formatted);
   } catch (e) {
     res.status(500).json({ error: (e as any).message });
   }
@@ -1377,6 +1443,43 @@ app.put(['/api/v1/services/:id', '/api/services/:id'], async (req: any, res: any
 
     const resolvedIcon = data.iconUrl || data.imageUrl || data.iconName || target.iconName || 'file-document-outline';
 
+    const existingConfig = ((target.formDataSchema as any)?.configuration) || {};
+    const updatedConfig = {
+      ...existingConfig,
+      ...(data.serviceCode ? { serviceCode: data.serviceCode } : {}),
+      ...(data.serviceType ? { serviceType: data.serviceType } : {}),
+      ...(data.processingSla ? { processingSla: data.processingSla } : {}),
+      ...(data.priorityLevel ? { priorityLevel: data.priorityLevel } : {}),
+      ...(data.autoApproval !== undefined ? { autoApproval: Boolean(data.autoApproval) } : {}),
+      ...(data.targetProcessingTime ? { targetProcessingTime: data.targetProcessingTime } : {}),
+      ...(data.complianceTarget ? { complianceTarget: data.complianceTarget } : {}),
+      ...(data.reliabilityTarget ? { reliabilityTarget: data.reliabilityTarget } : {}),
+      ...(data.performanceMonitoring !== undefined ? { performanceMonitoring: Boolean(data.performanceMonitoring) } : {}),
+      ...(data.workflow ? { workflow: data.workflow } : {}),
+      ...(data.isDraft !== undefined ? { isDraft: Boolean(data.isDraft) } : {}),
+    };
+
+    const formElementsList = Array.isArray(data.formElements)
+      ? data.formElements
+      : (Array.isArray(data.formDataSchema?.formElements) ? data.formDataSchema.formElements : (Array.isArray(target.formDataSchema) ? target.formDataSchema : (target.formDataSchema as any)?.formElements || []));
+
+    const rawDocs = data.documents !== undefined ? data.documents : (data.requiredDocs !== undefined ? data.requiredDocs : target.requiredDocs);
+    const normalizedDocs = Array.isArray(rawDocs) ? rawDocs.map((d: any, idx: number) => {
+      if (typeof d === 'string') {
+        return { id: `doc-${idx + 1}`, type: d, subtitle: 'Required verification document', formats: 'PDF, JPG, PNG', size: '5 MB', req: 'Required', mandatory: true };
+      }
+      const isMandatory = d.mandatory !== false && d.req !== 'Optional';
+      return {
+        id: d.id || `doc-${idx + 1}`,
+        type: d.type || d.name || d.title || 'Required Document',
+        subtitle: d.subtitle || d.description || (isMandatory ? 'Mandatory official document' : 'Supporting declaration document'),
+        formats: d.formats || 'PDF, JPG, PNG',
+        size: d.size || '5 MB',
+        req: isMandatory ? 'Required' : 'Optional',
+        mandatory: isMandatory
+      };
+    }) : [];
+
     const updated = await prisma.service.update({
       where: { id: target.id },
       data: {
@@ -1385,10 +1488,13 @@ app.put(['/api/v1/services/:id', '/api/services/:id'], async (req: any, res: any
         category: data.category || target.category,
         department: data.department || data.departmentRole || target.department,
         fee: feeVal,
-        processingTime: data.tat || data.processingTime || target.processingTime,
+        processingTime: data.processingSla || data.tat || data.processingTime || target.processingTime,
         subServices: data.subServices !== undefined ? data.subServices : target.subServices,
-        formDataSchema: data.formElements || data.formDataSchema || target.formDataSchema,
-        requiredDocs: data.documents || data.requiredDocs || target.requiredDocs,
+        formDataSchema: {
+          formElements: formElementsList,
+          configuration: updatedConfig
+        },
+        requiredDocs: normalizedDocs,
         pricingConfig: data.pricing || data.pricingConfig || { ...((target.pricingConfig as any) || {}), fee: feeVal, iconUrl: data.iconUrl || data.imageUrl },
         iconName: resolvedIcon,
         colorHex: data.colorHex || target.colorHex,
@@ -1396,13 +1502,15 @@ app.put(['/api/v1/services/:id', '/api/services/:id'], async (req: any, res: any
       }
     });
 
-    io.emit('services_updated', updated);
-    io.emit('service_updated', updated);
-    res.json(updated);
+    const formatted = formatServiceResponse(updated);
+    io.emit('services_updated', formatted);
+    io.emit('service_updated', formatted);
+    res.json(formatted);
   } catch (e: any) {
     res.status(500).json({ error: e.message });
   }
 });
+
 
 app.patch(['/api/v1/services/:id', '/api/services/:id'], async (req: any, res: any) => {
   try {
@@ -3978,11 +4086,11 @@ app.post(['/api/admin/campaigns', '/api/v1/campaigns'], async (req: any, res: an
   }
 });
 
-// ─── Direct Citizen Push Notification Endpoint ─────────────────────────────────
+// ─── Direct Citizen Notification Endpoint (Push & Email) ─────────────────────────────────
 app.post(['/api/admin/users/:userId/notify', '/api/v1/users/:userId/notify', '/api/users/:userId/notify'], async (req: any, res: any) => {
   try {
     const rawTargetId = String(req.params.userId).trim();
-    const { title, body, type = 'INFO', subject } = req.body;
+    const { title, body, type = 'INFO', subject, channel, notificationType } = req.body;
     const notifTitle = (title || subject || '📢 Cybersave Notification').trim();
     const notifBody = (body || '').trim();
 
@@ -3994,7 +4102,6 @@ app.post(['/api/admin/users/:userId/notify', '/api/v1/users/:userId/notify', '/a
     let targetUser: any = await findUserByIdOrCit(rawTargetId, { profile: true }).catch(() => null);
 
     if (!targetUser) {
-      // Fallback: search by partial ID or pick first citizen record so notification always dispatches
       targetUser = await prisma.user.findFirst({
         where: {
           OR: [
@@ -4008,14 +4115,70 @@ app.post(['/api/admin/users/:userId/notify', '/api/v1/users/:userId/notify', '/a
     }
 
     if (!targetUser) {
-      // Pick any citizen user for test/demo fallback
       targetUser = await prisma.user.findFirst({
         where: { role: 'USER' },
         include: { profile: true }
       }).catch(() => null);
     }
 
+    const isEmail = channel === 'Email Notification' || notificationType === 'Email Notification' || channel === 'EMAIL' || notificationType === 'EMAIL' || type === 'Email Notification';
+
+    if (isEmail) {
+      if (!targetUser?.email || !targetUser.email.includes('@')) {
+        return res.status(400).json({ 
+          error: `Recipient "${targetUser?.profile?.fullName || rawTargetId}" does not have a valid registered email address.` 
+        });
+      }
+
+      const resendApiKey = process.env.RESEND_API_KEY;
+      if (!resendApiKey) {
+        return res.status(503).json({ 
+          error: 'Email service is not configured on the server (RESEND_API_KEY is missing). Please configure Resend API credentials.' 
+        });
+      }
+
+      try {
+        const emailRes = await fetch('https://api.resend.com/emails', {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${resendApiKey}`,
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({
+            from: process.env.EMAIL_FROM || 'CyberSave <onboarding@resend.dev>',
+            to: [targetUser.email],
+            subject: notifTitle,
+            html: `<div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 24px; border: 1px solid #e2e8f0; border-radius: 12px; background: #ffffff;">
+              <div style="background: #2563eb; color: #ffffff; padding: 16px 20px; border-radius: 8px 8px 0 0;">
+                <h2 style="margin: 0; font-size: 18px; font-weight: 700;">CyberSave Official Notification</h2>
+              </div>
+              <div style="padding: 24px 12px; color: #1e293b;">
+                <h3 style="margin-top: 0; color: #0f172a; font-size: 16px;">${notifTitle}</h3>
+                <p style="font-size: 14px; line-height: 1.6; color: #334155; white-space: pre-wrap;">${notifBody}</p>
+                <p style="font-size: 13px; color: #64748b; margin-top: 24px;">Recipient: <strong>${targetUser.profile?.fullName || 'Citizen'}</strong> (${targetUser.email})</p>
+              </div>
+              <div style="border-top: 1px solid #e2e8f0; padding-top: 16px; font-size: 11px; color: #94a3b8; text-align: center;">
+                © 2026 CyberSave Digital Services • Official Government Services Portal
+              </div>
+            </div>`
+          })
+        });
+
+        const emailJson = await emailRes.json().catch(() => ({}));
+        if (!emailRes.ok) {
+          return res.status(502).json({
+            error: emailJson?.message || 'Email delivery failed through service provider.'
+          });
+        }
+      } catch (emailErr: any) {
+        return res.status(502).json({
+          error: `Failed to contact email delivery provider: ${emailErr?.message || emailErr}`
+        });
+      }
+    }
+
     const cleanNotifType = (() => {
+      if (isEmail) return 'EMAIL';
       if (!type) return 'INFO';
       const t = String(type).toUpperCase().replace(/\s+/g, '_');
       if (t.includes('APPLICATION') || t.includes('UPDATE')) return 'APPLICATION_UPDATE';
@@ -4037,7 +4200,7 @@ app.post(['/api/admin/users/:userId/notify', '/api/v1/users/:userId/notify', '/a
           userId: targetUser.id,
           title: notifTitle,
           body: notifBody,
-          type: cleanNotifType as any,
+          type: (isEmail ? 'INFO' : cleanNotifType) as any,
           status: 'SENT'
         }
       }).catch((err: any) => {
@@ -4056,7 +4219,7 @@ app.post(['/api/admin/users/:userId/notify', '/api/v1/users/:userId/notify', '/a
       body: notifBody,
       message: notifBody,
       content: notifBody,
-      type: cleanNotifType,
+      type: isEmail ? 'Email Notification' : 'Mobile Push Notification',
       status: 'SENT',
       isBroadcast: true,
       broadcast: true,
@@ -4073,8 +4236,8 @@ app.post(['/api/admin/users/:userId/notify', '/api/v1/users/:userId/notify', '/a
     io.emit('campaign_broadcast', notifPayload);
     io.emit('notifications_updated');
 
-    // Send direct FCM push if device has fcmToken
-    if (messaging && targetUser?.fcmToken && targetUser.fcmToken.length > 10) {
+    // Send direct FCM push if not an email-only dispatch and device has fcmToken
+    if (!isEmail && messaging && targetUser?.fcmToken && targetUser.fcmToken.length > 10) {
       messaging.send({
         token: targetUser.fcmToken,
         notification: {
@@ -4109,8 +4272,8 @@ app.post(['/api/admin/users/:userId/notify', '/api/v1/users/:userId/notify', '/a
       await prisma.auditLog.create({
         data: {
           userId: targetUser.id,
-          action: 'NOTIFICATION_SENT',
-          details: `Direct notification sent to citizen ${targetUser.profile?.fullName || targetUser.phone || targetUser.id}: "${notifTitle}"`,
+          action: isEmail ? 'EMAIL_NOTIFICATION_SENT' : 'NOTIFICATION_SENT',
+          details: `${isEmail ? 'Email' : 'Direct push'} notification sent to citizen ${targetUser.profile?.fullName || targetUser.phone || targetUser.id} (${targetUser.email || 'no email'}): "${notifTitle}"`,
           ipAddress: req.ip || '127.0.0.1'
         }
       }).catch(() => null);
@@ -4121,7 +4284,9 @@ app.post(['/api/admin/users/:userId/notify', '/api/v1/users/:userId/notify', '/a
 
     res.json({
       success: true,
-      message: `Notification dispatched successfully to citizen`,
+      message: isEmail 
+        ? `Email notification dispatched successfully to ${targetUser?.email}` 
+        : `Push notification dispatched successfully to citizen`,
       notification: notifPayload
     });
   } catch (err: any) {
@@ -4129,6 +4294,156 @@ app.post(['/api/admin/users/:userId/notify', '/api/v1/users/:userId/notify', '/a
     res.status(500).json({ error: err?.message || 'Failed to dispatch citizen notification' });
   }
 });
+
+// ─── Unified Notification Send Endpoint matching Modal UI ─────────────────────────────────
+app.post(['/api/admin/notifications/send', '/api/v1/notifications/send'], async (req: any, res: any) => {
+  try {
+    const { recipientId, userId, notificationType, channel, subject, title, body, message } = req.body;
+    const targetUserId = recipientId || userId || 'all';
+    const notifTitle = (subject || title || '').trim();
+    const notifBody = (message || body || '').trim();
+    const isEmail = notificationType === 'Email Notification' || channel === 'Email Notification' || notificationType === 'EMAIL' || channel === 'EMAIL';
+
+    if (!notifTitle || !notifBody) {
+      return res.status(400).json({ error: 'Subject line and message body are required' });
+    }
+
+    if (targetUserId && targetUserId !== 'all') {
+      // Forward to single user notify handler
+      req.params = { userId: targetUserId };
+      req.body = {
+        title: notifTitle,
+        subject: notifTitle,
+        body: notifBody,
+        message: notifBody,
+        channel: isEmail ? 'EMAIL' : 'PUSH',
+        notificationType: isEmail ? 'Email Notification' : 'Mobile Push Notification',
+        type: isEmail ? 'Email Notification' : 'Mobile Push Notification'
+      };
+      // Internal redirection
+      const user = await findUserByIdOrCit(targetUserId, { profile: true });
+      if (!user) {
+        return res.status(404).json({ error: 'Selected recipient could not be found' });
+      }
+
+      if (isEmail) {
+        if (!user.email || !user.email.includes('@')) {
+          return res.status(400).json({ error: `Selected recipient (${user.profile?.fullName || user.id}) does not have a registered email address.` });
+        }
+        const resendApiKey = process.env.RESEND_API_KEY;
+        if (!resendApiKey) {
+          return res.status(503).json({ error: 'Email service is not configured (RESEND_API_KEY is not set). Please configure email service credentials.' });
+        }
+        const emailRes = await fetch('https://api.resend.com/emails', {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${resendApiKey}`,
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({
+            from: process.env.EMAIL_FROM || 'CyberSave <onboarding@resend.dev>',
+            to: [user.email],
+            subject: notifTitle,
+            html: `<div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 24px; border: 1px solid #e2e8f0; border-radius: 12px; background: #ffffff;">
+              <div style="background: #2563eb; color: #ffffff; padding: 16px 20px; border-radius: 8px 8px 0 0;">
+                <h2 style="margin: 0; font-size: 18px; font-weight: 700;">CyberSave Official Notification</h2>
+              </div>
+              <div style="padding: 24px 12px; color: #1e293b;">
+                <h3 style="margin-top: 0; color: #0f172a; font-size: 16px;">${notifTitle}</h3>
+                <p style="font-size: 14px; line-height: 1.6; color: #334155; white-space: pre-wrap;">${notifBody}</p>
+                <p style="font-size: 13px; color: #64748b; margin-top: 24px;">Recipient: <strong>${user.profile?.fullName || 'Citizen'}</strong> (${user.email})</p>
+              </div>
+              <div style="border-top: 1px solid #e2e8f0; padding-top: 16px; font-size: 11px; color: #94a3b8; text-align: center;">
+                © 2026 CyberSave Digital Services • Official Government Services Portal
+              </div>
+            </div>`
+          })
+        });
+        const emailJson = await emailRes.json().catch(() => ({}));
+        if (!emailRes.ok) {
+          return res.status(502).json({ error: emailJson?.message || 'Email delivery failed through service provider.' });
+        }
+      }
+
+      // Record in DB and emit socket
+      const notif = await prisma.notification.create({
+        data: {
+          userId: user.id,
+          title: notifTitle,
+          body: notifBody,
+          type: 'INFO',
+          status: 'SENT'
+        }
+      }).catch(() => null);
+
+      const payload = {
+        id: notif?.id || `notif_${Date.now()}`,
+        userId: user.id,
+        userEmail: user.email,
+        userName: user.profile?.fullName || 'Citizen',
+        title: notifTitle,
+        body: notifBody,
+        type: isEmail ? 'Email Notification' : 'Mobile Push Notification',
+        status: 'SENT',
+        createdAt: new Date().toISOString()
+      };
+
+      io.emit('user_push_notification', payload);
+      io.emit('new_notification', payload);
+      io.emit('notifications_updated');
+
+      if (!isEmail && messaging && user.fcmToken && user.fcmToken.length > 10) {
+        messaging.send({
+          token: user.fcmToken,
+          notification: { title: notifTitle, body: notifBody },
+          android: {
+            priority: 'high',
+            notification: { channelId: 'cybersave_alerts_channel', priority: 'max' }
+          },
+          data: { title: notifTitle, body: notifBody, userId: user.id }
+        }).catch(() => null);
+      }
+
+      return res.json({
+        success: true,
+        message: isEmail ? `Email sent successfully to ${user.email}` : `Push notification dispatched successfully`,
+        notification: payload
+      });
+    }
+
+    // Broadcast branch
+    const pushPayload = {
+      id: `NOTIF-${Date.now().toString(36).toUpperCase()}`,
+      title: notifTitle,
+      body: notifBody,
+      type: isEmail ? 'Email Notification' : 'Mobile Push Notification',
+      status: 'SENT',
+      createdAt: new Date().toISOString()
+    };
+    io.emit('broadcast_notification', pushPayload);
+    io.emit('receive_global_push', pushPayload);
+    io.emit('new_notification', pushPayload);
+    io.emit('notifications_updated');
+
+    if (!isEmail && messaging) {
+      messaging.send({
+        topic: 'all',
+        notification: { title: notifTitle, body: notifBody },
+        android: { priority: 'high', notification: { channelId: 'cybersave_alerts_channel', priority: 'max' } },
+        data: { title: notifTitle, body: notifBody }
+      }).catch(() => null);
+    }
+
+    return res.json({
+      success: true,
+      message: `Notification broadcast dispatched successfully`,
+      notification: pushPayload
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err?.message || 'Failed to dispatch notification' });
+  }
+});
+
 
 app.get(['/api/admin/campaigns', '/api/v1/campaigns'], async (req: any, res: any) => {
   try {
