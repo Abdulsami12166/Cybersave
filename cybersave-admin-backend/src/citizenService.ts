@@ -1097,3 +1097,477 @@ export function formatServiceResponse(s: any): any {
     requiredDocs: cleanDocs
   };
 }
+
+export async function getOrCreateUserWallet(userId: string) {
+  if (!userId) return null;
+  let wallet = await prisma.wallet.findUnique({
+    where: { userId }
+  });
+  if (!wallet) {
+    wallet = await prisma.wallet.create({
+      data: {
+        userId,
+        balance: 0.0
+      }
+    });
+  }
+  return wallet;
+}
+
+export async function createRefundAndSupportTicket(params: {
+  applicationId: string;
+  reason: string;
+  details?: string;
+  proofUrl?: string;
+  userId?: string;
+  io?: any;
+}) {
+  const { applicationId, reason, details, proofUrl, userId, io } = params;
+  const isMongoId = /^[0-9a-fA-F]{24}$/.test(applicationId);
+
+  // 1. Find Application
+  const application = await prisma.application.findFirst({
+    where: isMongoId
+      ? { OR: [{ id: applicationId }, { refNumber: applicationId }] }
+      : { refNumber: applicationId },
+    include: { user: { include: { profile: true } } }
+  });
+
+  if (!application) {
+    throw new Error('Application not found');
+  }
+
+  // 2. Check if a pending refund already exists
+  const existingPending = await prisma.refundRequest.findFirst({
+    where: {
+      applicationId: application.id,
+      status: 'PENDING'
+    },
+    include: { user: { include: { profile: true } }, application: true }
+  });
+
+  if (existingPending) {
+    return {
+      success: true,
+      refund: existingPending,
+      alreadyPending: true,
+      message: 'A refund request is already pending review for this application.'
+    };
+  }
+
+  const resolvedUserId = String(application.userId || userId || 'system');
+  const randomNum = Math.floor(100000 + Math.random() * 900000);
+  const refundRefNumber = `REF-${randomNum}`;
+  const refundAmount = Number(application.feePaid) || 50.0;
+  const citizenName = application.user?.profile?.fullName || (application.user?.email ? application.user.email.split('@')[0] : 'Citizen Applicant');
+
+  // 3. Create RefundRequest in Database
+  const refund = await prisma.refundRequest.create({
+    data: {
+      refNumber: refundRefNumber,
+      applicationId: application.id,
+      userId: resolvedUserId,
+      serviceTitle: application.serviceTitle,
+      amount: refundAmount,
+      reason: reason || 'Citizen requested fee refund',
+      details: details || null,
+      proofUrl: proofUrl || null,
+      status: 'PENDING'
+    },
+    include: {
+      user: { include: { profile: true } },
+      application: true
+    }
+  });
+
+  // 4. Update Application refund status to PENDING
+  await prisma.application.update({
+    where: { id: application.id },
+    data: { refundStatus: 'PENDING' }
+  });
+
+  // 5. Create Support Ticket with Category 'Refund Request'
+  const ticket = await prisma.supportTicket.create({
+    data: {
+      refNumber: refundRefNumber,
+      userId: resolvedUserId,
+      title: `Refund Claim: ₹${refundAmount.toFixed(2)} - ${application.serviceTitle}`,
+      description: `Citizen requested fee refund for Application #${application.refNumber}.\nReason: ${reason || 'Application fee refund'}${details ? '\nDetails: ' + details : ''}`,
+      category: 'Refund Request',
+      priority: 'High',
+      status: 'OPEN',
+      attachmentUrl: proofUrl || null,
+      messages: [
+        {
+          id: `msg-refund-${refund.id}`,
+          senderId: resolvedUserId,
+          senderName: citizenName,
+          role: 'CITIZEN',
+          text: `Refund Request of ₹${refundAmount.toFixed(2)} submitted for Application #${application.refNumber}.\n\nReason: ${reason}${details ? '\n\nDetails: ' + details : ''}`,
+          attachmentUrl: proofUrl || null,
+          time: new Date().toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' }),
+          timestamp: new Date().toISOString()
+        }
+      ]
+    },
+    include: { user: { include: { profile: true } } }
+  });
+
+  // 6. Invalidate Caches & Broadcast Real-Time Events
+  invalidateCitizenDetailsCache(resolvedUserId);
+  invalidateCitizensListCache();
+
+  if (io) {
+    io.emit('new_support_ticket', {
+      id: ticket.refNumber,
+      rawId: ticket.id,
+      refNumber: ticket.refNumber,
+      title: ticket.title,
+      description: ticket.description,
+      category: 'Refund Request',
+      priority: 'High',
+      status: 'OPEN',
+      refundAmount,
+      refundStatus: 'PENDING',
+      refundId: refund.id,
+      applicationId: application.id,
+      applicationRef: application.refNumber,
+      serviceTitle: application.serviceTitle,
+      createdOn: 'Today',
+      lastUpdated: 'Today',
+      createdAt: ticket.createdAt,
+      updatedAt: ticket.updatedAt,
+      reporter: { id: resolvedUserId, name: citizenName, email: application.user?.email || '', phone: application.user?.phone || '' },
+      messages: ticket.messages
+    });
+    io.emit('support_tickets_updated');
+    io.emit('new_refund_requested', refund);
+    io.emit('refunds_updated', refund);
+    io.emit('application_status_changed', {
+      id: application.id,
+      refNumber: application.refNumber,
+      refundStatus: 'PENDING',
+      serviceTitle: application.serviceTitle
+    });
+    io.emit('applications_updated');
+  }
+
+  return {
+    success: true,
+    refund,
+    ticket,
+    message: 'Refund request submitted and logged in Support Tickets.'
+  };
+}
+
+export async function processRefundApprovalOrRejection(params: {
+  refundIdOrRef: string;
+  action: 'APPROVE' | 'REJECT';
+  adminId?: string;
+  adminName?: string;
+  adminNotes?: string;
+  io?: any;
+}) {
+  const { refundIdOrRef, action, adminId, adminName, adminNotes, io } = params;
+  const cleanId = String(refundIdOrRef || '').trim();
+  const strippedId = cleanId.replace(/^(REF-|TKT-)/i, '').trim();
+  const isMongoId = /^[0-9a-fA-F]{24}$/.test(cleanId);
+
+  // 1. Locate RefundRequest or Application
+  let refund = await prisma.refundRequest.findFirst({
+    where: {
+      OR: [
+        ...(isMongoId ? [{ id: cleanId }] : []),
+        { refNumber: cleanId },
+        { refNumber: `REF-${strippedId}` },
+        { refNumber: { contains: strippedId, mode: 'insensitive' } },
+        { applicationId: cleanId }
+      ]
+    },
+    include: { user: { include: { profile: true } }, application: true }
+  });
+
+  // If no refund request was found directly, check if target was an Application with refundStatus
+  if (!refund) {
+    const app = await prisma.application.findFirst({
+      where: {
+        OR: [
+          ...(isMongoId ? [{ id: cleanId }] : []),
+          { refNumber: cleanId },
+          { refNumber: { contains: strippedId, mode: 'insensitive' } }
+        ]
+      },
+      include: { user: { include: { profile: true } }, refundRequests: true }
+    });
+
+    if (app && app.refundRequests && app.refundRequests.length > 0 && app.refundRequests[0]) {
+      refund = await prisma.refundRequest.findUnique({
+        where: { id: app.refundRequests[0].id },
+        include: { user: { include: { profile: true } }, application: true }
+      });
+    } else if (app) {
+      // Create missing RefundRequest so we can approve it cleanly
+      const refundRefNumber = `REF-${Math.floor(100000 + Math.random() * 900000)}`;
+      refund = await prisma.refundRequest.create({
+        data: {
+          refNumber: refundRefNumber,
+          applicationId: app.id,
+          userId: app.userId,
+          serviceTitle: app.serviceTitle,
+          amount: Number(app.feePaid) || 50.0,
+          reason: 'Administrative Refund Approval',
+          status: 'PENDING'
+        },
+        include: { user: { include: { profile: true } }, application: true }
+      });
+    }
+  }
+
+  if (!refund) {
+    throw new Error(`Refund record not found for "${refundIdOrRef}"`);
+  }
+
+  const now = new Date();
+  const refundAmount = Number(refund.amount) || 50.0;
+  const officialAdmin = adminName || 'Principal Verification Officer (SDM)';
+
+  if (action === 'APPROVE') {
+    // 2. Update RefundRequest
+    const updatedRefund = await prisma.refundRequest.update({
+      where: { id: refund.id },
+      data: {
+        status: 'APPROVED',
+        adminNotes: adminNotes || `Refund approved by ${officialAdmin}`,
+        processedBy: officialAdmin,
+        processedAt: now,
+        journey: [
+          { title: 'Refund Initiated', desc: 'Citizen requested fee refund', time: refund.createdAt ? new Date(refund.createdAt).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' }) : 'Initiated', state: 'done' },
+          { title: 'Processing by Authority', desc: `Verified and authorized by ${officialAdmin}`, time: now.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' }), state: 'done' },
+          { title: 'Credited to Wallet', desc: `₹${refundAmount.toFixed(2)} credited directly into citizen wallet`, time: now.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' }), state: 'done' }
+        ]
+      },
+      include: { user: { include: { profile: true } }, application: true }
+    });
+
+    // 3. Update Application: refundStatus = 'APPROVED', paymentStatus = 'Refunded'
+    if (refund.applicationId) {
+      await prisma.application.update({
+        where: { id: refund.applicationId },
+        data: {
+          refundStatus: 'APPROVED',
+          paymentStatus: 'Refunded'
+        }
+      }).catch(() => null);
+    }
+
+    // 4. Update corresponding SupportTicket
+    const ticketMatch = await prisma.supportTicket.findFirst({
+      where: {
+        OR: [
+          { refNumber: refund.refNumber },
+          { refNumber: `TKT-${refund.refNumber}` },
+          { refNumber: cleanId },
+          { description: { contains: refund.refNumber } }
+        ]
+      }
+    });
+
+    if (ticketMatch) {
+      const existingMsgs = Array.isArray(ticketMatch.messages) ? ticketMatch.messages : [];
+      const resolutionMsg = {
+        id: `msg-refund-approved-${Date.now()}`,
+        senderId: adminId || 'admin-desk',
+        senderName: `${officialAdmin} (Official Resolution)`,
+        role: 'AGENT',
+        text: `✅ Refund Claim Approved! ₹${refundAmount.toFixed(2)} has been credited directly to your CyberSave mobile wallet balance. Application #${refund.application?.refNumber || 'N/A'} is marked as Refunded.`,
+        time: now.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' }),
+        timestamp: now.toISOString(),
+        isResolution: true
+      };
+      await prisma.supportTicket.update({
+        where: { id: ticketMatch.id },
+        data: {
+          status: 'RESOLVED',
+          messages: [...existingMsgs, resolutionMsg],
+          updatedAt: now
+        }
+      }).catch(() => null);
+    }
+
+    // 5. CREDIT WALLET FOR CITIZEN
+    let wallet = await prisma.wallet.findUnique({
+      where: { userId: refund.userId }
+    });
+    if (!wallet) {
+      wallet = await prisma.wallet.create({
+        data: {
+          userId: refund.userId,
+          balance: 0.0
+        }
+      });
+    }
+
+    const newBalance = Number((wallet.balance + refundAmount).toFixed(2));
+    await prisma.wallet.update({
+      where: { id: wallet.id },
+      data: { balance: newBalance }
+    });
+
+    // 6. Create WalletTransaction
+    const walletTxn = await prisma.walletTransaction.create({
+      data: {
+        walletId: wallet.id,
+        userId: refund.userId,
+        type: 'CREDIT',
+        title: `Refund: ${refund.serviceTitle || refund.application?.serviceTitle || 'Government Service Fee'}`,
+        subtitle: `Application #${refund.application?.refNumber || 'N/A'}`,
+        amount: refundAmount,
+        refId: refund.refNumber,
+        status: 'SUCCESS'
+      }
+    });
+
+    // 7. Create in-app Notification for Citizen
+    const notifTitle = 'Refund Credited to Wallet';
+    const notifBody = `₹${refundAmount.toFixed(2)} for application #${refund.application?.refNumber || 'N/A'} (${refund.serviceTitle || 'Government Service'}) has been refunded directly to your CyberSave wallet balance.`;
+
+    const notification = await prisma.notification.create({
+      data: {
+        userId: refund.userId,
+        title: notifTitle,
+        body: notifBody,
+        type: 'PAYMENT',
+        status: 'SENT',
+        sentAt: now
+      }
+    }).catch(() => null);
+
+    // 8. Invalidate Caches
+    invalidateCitizenDetailsCache(refund.userId);
+    invalidateCitizensListCache();
+    if ((global as any).__invalidateDashboardCache) {
+      (global as any).__invalidateDashboardCache();
+    }
+
+    // 9. Real-time WebSockets Broadcast
+    if (io) {
+      io.emit('refund_approved', {
+        refund: updatedRefund,
+        refundId: updatedRefund.id,
+        refNumber: updatedRefund.refNumber,
+        applicationId: updatedRefund.applicationId,
+        amount: refundAmount,
+        userId: refund.userId,
+        newBalance,
+        notification
+      });
+      io.emit('wallet_updated', {
+        userId: refund.userId,
+        balance: newBalance,
+        transaction: walletTxn
+      });
+      io.emit('wallet_transactions_updated');
+      io.emit('refunds_updated', updatedRefund);
+      io.emit('application_status_changed', {
+        id: refund.applicationId,
+        refNumber: refund.application?.refNumber,
+        refundStatus: 'APPROVED',
+        paymentStatus: 'Refunded'
+      });
+      io.emit('applications_updated');
+      io.emit('transactions_updated');
+      io.emit('dashboard_updated');
+      io.emit('analytics_updated');
+      io.emit('support_tickets_updated');
+    }
+
+    return {
+      success: true,
+      action: 'APPROVE',
+      refund: updatedRefund,
+      newBalance,
+      walletTransaction: walletTxn,
+      message: `Refund of ₹${refundAmount.toFixed(2)} approved and credited to citizen wallet.`
+    };
+  } else {
+    // REJECT action
+    const updatedRefund = await prisma.refundRequest.update({
+      where: { id: refund.id },
+      data: {
+        status: 'REJECTED',
+        adminNotes: adminNotes || 'Declined by Administrator',
+        processedBy: officialAdmin,
+        processedAt: now
+      },
+      include: { user: { include: { profile: true } }, application: true }
+    });
+
+    if (refund.applicationId) {
+      await prisma.application.update({
+        where: { id: refund.applicationId },
+        data: { refundStatus: 'REJECTED' }
+      }).catch(() => null);
+    }
+
+    const ticketMatch = await prisma.supportTicket.findFirst({
+      where: {
+        OR: [
+          { refNumber: refund.refNumber },
+          { refNumber: `TKT-${refund.refNumber}` },
+          { refNumber: cleanId },
+          { description: { contains: refund.refNumber } }
+        ]
+      }
+    });
+
+    if (ticketMatch) {
+      const existingMsgs = Array.isArray(ticketMatch.messages) ? ticketMatch.messages : [];
+      const resolutionMsg = {
+        id: `msg-refund-rejected-${Date.now()}`,
+        senderId: adminId || 'admin-desk',
+        senderName: `${officialAdmin} (Official Decision)`,
+        role: 'AGENT',
+        text: `⚠️ Refund Claim Declined: ${adminNotes || 'Declined by Administrator upon documentation review.'}`,
+        time: now.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' }),
+        timestamp: now.toISOString(),
+        isResolution: true
+      };
+      await prisma.supportTicket.update({
+        where: { id: ticketMatch.id },
+        data: {
+          status: 'RESOLVED',
+          messages: [...existingMsgs, resolutionMsg],
+          updatedAt: now
+        }
+      }).catch(() => null);
+    }
+
+    invalidateCitizenDetailsCache(refund.userId);
+    invalidateCitizensListCache();
+
+    if (io) {
+      io.emit('refund_rejected', {
+        refund: updatedRefund,
+        refundId: updatedRefund.id,
+        refNumber: updatedRefund.refNumber,
+        applicationId: updatedRefund.applicationId,
+        adminNotes
+      });
+      io.emit('refunds_updated', updatedRefund);
+      io.emit('application_status_changed', {
+        id: refund.applicationId,
+        refNumber: refund.application?.refNumber,
+        refundStatus: 'REJECTED'
+      });
+      io.emit('applications_updated');
+      io.emit('support_tickets_updated');
+    }
+
+    return {
+      success: true,
+      action: 'REJECT',
+      refund: updatedRefund,
+      message: 'Refund request declined.'
+    };
+  }
+}

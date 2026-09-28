@@ -23,7 +23,7 @@ const io = new Server(server, {
 });
 setupSockets(io);
 
-import { findUserByIdOrCit, fetchCitizenFullDetails, fetchCitizensList, fetchRealTransactionsData, performApplicationStatusUpdate, invalidateCitizensListCache, invalidateCitizenDetailsCache, formatServiceResponse } from './citizenService';
+import { findUserByIdOrCit, fetchCitizenFullDetails, fetchCitizensList, fetchRealTransactionsData, performApplicationStatusUpdate, invalidateCitizensListCache, invalidateCitizenDetailsCache, formatServiceResponse, getOrCreateUserWallet, createRefundAndSupportTicket, processRefundApprovalOrRejection } from './citizenService';
 
 const prisma = new PrismaClient();
 const PORT = process.env.ADMIN_PORT || 3001;
@@ -3531,6 +3531,39 @@ app.post(['/api/admin/support/tickets/:id/resolve', '/api/v1/support/tickets/:id
     const ticket = await findSupportTicketOrLinked(targetId);
     if (!ticket) return res.status(404).json({ error: 'Ticket not found' });
 
+    const isRefundRelated = 
+      ticket.category === 'Refund Request' ||
+      String(ticket.refNumber || '').toUpperCase().startsWith('REF-') ||
+      String(ticket.title || '').toLowerCase().includes('refund claim') ||
+      String(ticket.title || '').toLowerCase().includes('refund request') ||
+      targetId.toUpperCase().startsWith('REF-');
+
+    if (isRefundRelated) {
+      const isReject = req.body?.isReject === true || req.body?.action === 'REJECT' || req.body?.resolutionCategory === 'Rejected';
+      const resolutionSummary = req.body?.resolutionSummary || (isReject ? 'Declined by Administrator' : 'Refund approved and credited to wallet');
+      const refundResult = await processRefundApprovalOrRejection({
+        refundIdOrRef: ticket.refNumber || targetId,
+        action: isReject ? 'REJECT' : 'APPROVE',
+        adminId: req.body?.adminId,
+        adminName: req.body?.adminName,
+        adminNotes: resolutionSummary,
+        io
+      }).catch(err => {
+        console.warn('[Resolve Ticket] processRefundApprovalOrRejection error:', err);
+        return null;
+      });
+
+      const formatted = await formatSupportTicketThread(ticket.id);
+      return res.json({
+        success: true,
+        ticket: formatted,
+        refund: refundResult?.refund,
+        walletCredited: !isReject,
+        newBalance: refundResult?.newBalance,
+        message: isReject ? 'Refund claim declined.' : 'Refund approved and amount credited to citizen wallet.'
+      });
+    }
+
     const targetUserId = await resolveTicketTargetUserId(ticket);
     const resolutionSummary = req.body?.resolutionSummary || 'Grievance verification completed. Issue marked as resolved.';
 
@@ -4514,6 +4547,169 @@ app.post(['/api/admin/system-settings', '/api/v1/system-settings'], async (req: 
     io.emit('audit_logs_updated');
     io.emit('system_settings_updated', req.body);
     res.json({ success: true, message: 'System settings successfully updated' });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ─── Refunds & Wallet Endpoints ─────────────────────────────────────────────
+app.get(['/api/admin/refunds', '/api/v1/refunds', '/refunds'], async (req: any, res: any) => {
+  try {
+    const status = req.query.status as string;
+    const where: any = {};
+    if (status && status !== 'ALL') {
+      where.status = status;
+    }
+    const refunds = await prisma.refundRequest.findMany({
+      where,
+      orderBy: { createdAt: 'desc' },
+      include: {
+        user: { include: { profile: true } },
+        application: { include: { service: true } }
+      }
+    });
+    res.json({ success: true, count: refunds.length, refunds });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.get(['/api/admin/refunds/:id', '/api/v1/refunds/:id', '/refunds/:id'], async (req: any, res: any) => {
+  try {
+    const id = req.params.id;
+    const refund = await prisma.refundRequest.findFirst({
+      where: {
+        OR: [
+          { id },
+          { refNumber: id },
+          { applicationId: id }
+        ]
+      },
+      include: {
+        user: { include: { profile: true } },
+        application: { include: { service: true } }
+      }
+    });
+    if (!refund) return res.status(404).json({ error: 'Refund request not found' });
+    res.json({ success: true, refund });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.post(['/api/admin/refunds', '/api/v1/refunds', '/refunds'], async (req: any, res: any) => {
+  try {
+    const { applicationId, reason, details, proofUrl, userId } = req.body;
+    if (!applicationId || !reason) {
+      return res.status(400).json({ error: 'applicationId and reason are required' });
+    }
+    const result = await createRefundAndSupportTicket({
+      applicationId,
+      reason,
+      details,
+      proofUrl,
+      userId,
+      io
+    });
+    res.status(201).json({ ...result });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.post(['/api/admin/refunds/:id/approve', '/api/v1/refunds/:id/approve', '/refunds/:id/approve'], async (req: any, res: any) => {
+  try {
+    const targetId = req.params.id || req.body?.id;
+    const result = await processRefundApprovalOrRejection({
+      refundIdOrRef: targetId,
+      action: 'APPROVE',
+      adminId: req.body?.adminId,
+      adminName: req.body?.adminName,
+      adminNotes: req.body?.adminNotes || 'Refund approved and credited to citizen wallet',
+      io
+    });
+    res.json({ ...result });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.post(['/api/admin/refunds/:id/reject', '/api/v1/refunds/:id/reject', '/refunds/:id/reject'], async (req: any, res: any) => {
+  try {
+    const targetId = req.params.id || req.body?.id;
+    const result = await processRefundApprovalOrRejection({
+      refundIdOrRef: targetId,
+      action: 'REJECT',
+      adminId: req.body?.adminId,
+      adminName: req.body?.adminName,
+      adminNotes: req.body?.adminNotes || req.body?.reason || 'Refund rejected by administrator',
+      io
+    });
+    res.json({ ...result });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Citizen Wallet Endpoint
+app.get(['/api/admin/wallet', '/api/v1/wallet', '/wallet'], async (req: any, res: any) => {
+  try {
+    const targetUserId = req.query.userId as string || req.query.id as string;
+    if (!targetUserId) return res.status(400).json({ error: 'userId is required' });
+    const user = await findUserByIdOrCit(targetUserId);
+    if (!user) return res.status(404).json({ error: 'Citizen not found' });
+    const wallet = await getOrCreateUserWallet(user.id);
+    if (!wallet) return res.status(500).json({ error: 'Failed to access citizen wallet' });
+    const transactions = await prisma.walletTransaction.findMany({
+      where: { walletId: wallet.id },
+      orderBy: { createdAt: 'desc' },
+      take: 50
+    });
+    res.json({
+      success: true,
+      wallet: {
+        id: wallet.id,
+        balance: wallet.balance,
+        currency: 'INR',
+        updatedAt: wallet.updatedAt
+      },
+      transactions
+    });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.post(['/api/admin/wallet/add-money', '/api/v1/wallet/add-money', '/wallet/add-money'], async (req: any, res: any) => {
+  try {
+    const { userId, amount, description } = req.body;
+    const numAmount = parseFloat(amount);
+    if (!userId || isNaN(numAmount) || numAmount <= 0) {
+      return res.status(400).json({ error: 'Valid userId and positive amount are required' });
+    }
+    const user = await findUserByIdOrCit(userId);
+    if (!user) return res.status(404).json({ error: 'Citizen not found' });
+    const wallet = await getOrCreateUserWallet(user.id);
+    if (!wallet) return res.status(500).json({ error: 'Failed to access citizen wallet' });
+    const newBalance = wallet.balance + numAmount;
+    const updatedWallet = await prisma.wallet.update({
+      where: { id: wallet.id },
+      data: { balance: newBalance }
+    });
+    const txn = await prisma.walletTransaction.create({
+      data: {
+        walletId: wallet.id,
+        userId: user.id,
+        type: 'CREDIT',
+        amount: numAmount,
+        title: 'Wallet Top-up',
+        subtitle: description || 'Balance loaded into citizen wallet',
+        status: 'SUCCESS'
+      }
+    });
+    io.emit('wallet_updated', { userId: user.id, walletId: wallet.id, newBalance });
+    io.emit('wallet_transactions_updated', { userId: user.id, transaction: txn });
+    res.json({ success: true, wallet: updatedWallet, transaction: txn });
   } catch (e: any) {
     res.status(500).json({ error: e.message });
   }

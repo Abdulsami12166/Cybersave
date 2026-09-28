@@ -2,7 +2,7 @@ import { Server, Socket } from 'socket.io';
 import { PrismaClient } from '@prisma/client';
 import { messaging } from './firebase';
 import bcrypt from 'bcrypt';
-import { findUserByIdOrCit, fetchCitizenFullDetails, fetchCitizensList, invalidateCitizensListCache, invalidateCitizenDetailsCache, fetchRealTransactionsData, performApplicationStatusUpdate, formatServiceResponse } from './citizenService';
+import { findUserByIdOrCit, fetchCitizenFullDetails, fetchCitizensList, invalidateCitizensListCache, invalidateCitizenDetailsCache, fetchRealTransactionsData, performApplicationStatusUpdate, formatServiceResponse, processRefundApprovalOrRejection, createRefundAndSupportTicket, getOrCreateUserWallet } from './citizenService';
 
 const prisma = new PrismaClient();
 
@@ -2984,6 +2984,34 @@ export function setupSockets(io: Server) {
           });
         }
         if (ticket) {
+          const isRefundRelated = 
+            ticket.category === 'Refund Request' ||
+            String(ticket.refNumber || '').toUpperCase().startsWith('REF-') ||
+            String(ticket.title || '').toLowerCase().includes('refund claim') ||
+            String(ticket.title || '').toLowerCase().includes('refund request') ||
+            targetId.toUpperCase().startsWith('REF-');
+
+          if (isRefundRelated) {
+            const isReject = data.isReject === true || data.action === 'REJECT' || data.resolutionCategory === 'Rejected';
+            await processRefundApprovalOrRejection({
+              refundIdOrRef: ticket.refNumber || targetId,
+              action: isReject ? 'REJECT' : 'APPROVE',
+              adminId: data.adminId,
+              adminName: data.adminName,
+              adminNotes: data.resolutionSummary || (isReject ? 'Declined by Administrator' : 'Refund approved and credited to wallet'),
+              io
+            }).catch(err => {
+              console.warn('[Socket resolve_support_ticket] processRefundApprovalOrRejection error:', err);
+            });
+
+            const formatted = await formatSupportTicketThread(ticket.id);
+            socket.emit('resolve_ticket_success', formatted);
+            io.emit('support_tickets_updated');
+            io.emit('response_ticket_thread', formatted);
+            io.emit('response_ticket_detail', formatted);
+            return;
+          }
+
           const targetUserId = await resolveTicketTargetUserId(ticket);
           const resolutionSummary = data.resolutionSummary || 'Grievance verification completed. Issue marked as resolved.';
 
@@ -3070,6 +3098,57 @@ export function setupSockets(io: Server) {
         }
       } catch (e) {
         console.error('[Socket] resolve_support_ticket error:', e);
+      }
+    });
+
+    socket.on('create_refund_request', async (payload: any) => {
+      try {
+        const result = await createRefundAndSupportTicket({
+          applicationId: payload.applicationId,
+          reason: payload.reason,
+          details: payload.details,
+          proofUrl: payload.proofUrl,
+          userId: payload.userId,
+          io
+        });
+        socket.emit('create_refund_request_success', result);
+      } catch (e: any) {
+        console.error('[Socket] create_refund_request error:', e);
+        socket.emit('create_refund_request_error', { error: e.message });
+      }
+    });
+
+    socket.on('approve_refund', async (payload: any) => {
+      try {
+        const result = await processRefundApprovalOrRejection({
+          refundIdOrRef: payload.id || payload.refundId || payload.refNumber,
+          action: 'APPROVE',
+          adminId: payload.adminId,
+          adminName: payload.adminName,
+          adminNotes: payload.adminNotes,
+          io
+        });
+        socket.emit('approve_refund_success', result);
+      } catch (e: any) {
+        console.error('[Socket] approve_refund error:', e);
+        socket.emit('approve_refund_error', { error: e.message });
+      }
+    });
+
+    socket.on('reject_refund', async (payload: any) => {
+      try {
+        const result = await processRefundApprovalOrRejection({
+          refundIdOrRef: payload.id || payload.refundId || payload.refNumber,
+          action: 'REJECT',
+          adminId: payload.adminId,
+          adminName: payload.adminName,
+          adminNotes: payload.adminNotes,
+          io
+        });
+        socket.emit('reject_refund_success', result);
+      } catch (e: any) {
+        console.error('[Socket] reject_refund error:', e);
+        socket.emit('reject_refund_error', { error: e.message });
       }
     });
 
