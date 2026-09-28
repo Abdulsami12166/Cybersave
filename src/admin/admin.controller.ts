@@ -1179,7 +1179,8 @@ export class AdminController {
       throw new NotFoundException(`Citizen ${id} not found`);
     }
 
-    const nextStatus = body?.status || (u.status === 'BLOCKED' ? 'Verified' : 'BLOCKED');
+    const rawStatus = body?.status ? String(body.status).toUpperCase() : null;
+    const nextStatus = rawStatus ? (rawStatus === 'BLOCKED' ? 'BLOCKED' : 'VERIFIED') : (u.status === 'BLOCKED' ? 'VERIFIED' : 'BLOCKED');
     await this.prisma.user.update({
       where: { id: u.id },
       data: { status: nextStatus },

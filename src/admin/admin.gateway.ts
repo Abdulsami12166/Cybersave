@@ -798,7 +798,8 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
         return;
       }
 
-      const nextStatus = data.status || (u.status === 'BLOCKED' ? 'Verified' : 'BLOCKED');
+      const rawStatus = data.status ? String(data.status).toUpperCase() : null;
+      const nextStatus = rawStatus ? (rawStatus === 'BLOCKED' ? 'BLOCKED' : 'VERIFIED') : (u.status === 'BLOCKED' ? 'VERIFIED' : 'BLOCKED');
 
       await this.prisma.user.update({
         where: { id: u.id },
