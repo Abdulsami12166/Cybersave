@@ -2242,41 +2242,6 @@ export function setupSockets(io: Server) {
       }
     });
 
-    socket.on('bulk_block_citizens', async (data: { userIds: string[], status?: string }) => {
-      try {
-        const { userIds = [], status = 'BLOCKED' } = data;
-        const isMongo = (idStr?: any) => typeof idStr === 'string' && /^[0-9a-fA-F]{24}$/.test(idStr.trim());
-        const mongoIds = userIds.filter(isMongo);
-        const nonMongo = userIds.filter(id => !isMongo(id));
-
-        const orConditions: any[] = [];
-        if (mongoIds.length > 0) orConditions.push({ id: { in: mongoIds } });
-        if (nonMongo.length > 0) orConditions.push({ email: { in: nonMongo } });
-
-        const updated = await prisma.user.updateMany({
-          where: { OR: orConditions },
-          data: { status }
-        });
-
-        await prisma.auditLog.create({
-          data: {
-            userId: 'admin_action',
-            action: status === 'BLOCKED' ? 'USERS_BULK_BLOCKED' : 'USERS_BULK_STATUS_CHANGED',
-            details: `Batch changed status to ${status} for ${updated.count} citizen(s)`,
-            ipAddress: '127.0.0.1',
-            userAgent: 'Admin Console WebSocket'
-          }
-        }).catch(() => null);
-
-        io.emit('users_updated');
-        io.emit('citizens_bulk_updated', { userIds, status });
-        io.emit('audit_logs_updated');
-        socket.emit('bulk_block_citizens_success', { count: updated.count, status });
-      } catch (e) {
-        console.error('[Socket] bulk_block_citizens error:', e);
-      }
-    });
-
     socket.on('bulk_verify_citizens', async (data: { userIds: string[] }) => {
       try {
         const { userIds = [] } = data;

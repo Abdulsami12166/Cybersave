@@ -1,7 +1,9 @@
-import { Controller, Post, Body, HttpCode, HttpStatus, BadRequestException } from '@nestjs/common';
+import { Controller, Post, Body, HttpCode, HttpStatus, BadRequestException, UseGuards } from '@nestjs/common';
 import { PaymentService } from './payment.service';
+import { BlockedUserGuard } from '../common/guards/blocked-user.guard';
 
 @Controller(['api/v1/payment', 'v1/payment'])
+@UseGuards(BlockedUserGuard)
 export class PaymentController {
   constructor(private readonly paymentService: PaymentService) {}
 

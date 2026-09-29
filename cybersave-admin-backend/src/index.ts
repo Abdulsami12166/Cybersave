@@ -1055,64 +1055,131 @@ app.put(['/api/admin/users/:id', '/api/v1/users/:id'], async (req: any, res: any
   }
 });
 
+// ─── Canonical Citizen Block / Unblock (single authoritative implementation) ───
+// Source of truth: prisma User.status ∈ { BLOCKED, SUSPENDED, ACTIVE, VERIFIED, PENDING, UNVERIFIED }
+// Blocked means: status === 'BLOCKED' || status === 'SUSPENDED'. Nothing else.
+const BLOCKED_STATUSES = ['BLOCKED', 'SUSPENDED'];
+
+const isUserBlocked = (u: any): boolean =>
+  BLOCKED_STATUSES.includes(String(u?.status || '').toUpperCase());
+
+// Idempotent single-citizen enforcement shared by REST, socket and bulk paths.
+async function applyCitizenBlockState(userId: string, targetStatus: 'BLOCKED' | 'VERIFIED', meta: { ip?: string; userAgent?: string }) {
+  if (targetStatus === 'BLOCKED') {
+    await dispatchNotificationToCitizen({
+      userId,
+      title: 'Account Blocked by Administrator ⚠️',
+      body: 'Your Cybersave citizen account has been blocked by the administrative authority. Please contact support.',
+      type: 'WARNING',
+      io
+    }).catch(() => null);
+
+    io.emit('force_logout', { userId, reason: 'Your account has been suspended/blocked by an Administrator. Please contact support.' });
+    io.emit('user_blocked', { userId });
+  }
+
+  invalidateCitizenDetailsCache(userId);
+
+  await prisma.auditLog.create({
+    data: {
+      userId,
+      action: targetStatus === 'BLOCKED' ? 'USER_BLOCKED' : 'USER_UNBLOCKED',
+      details: `Administrator ${targetStatus === 'BLOCKED' ? 'BLOCKED' : 'UNBLOCKED'} citizen. Enforcement applied.`,
+      ipAddress: meta.ip || '127.0.0.1',
+      userAgent: meta.userAgent || 'Admin Console'
+    }
+  }).catch(() => null);
+}
+
+// Block: POST /api/admin/users/:id/block   body { status: 'BLOCKED' } (explicit, idempotent)
 app.post(['/api/admin/users/:id/block', '/api/v1/users/:id/block'], async (req: any, res: any) => {
   try {
     const id = req.params.id;
-    const { status } = req.body;
-    let u = await findUserByIdOrCit(id);
-    if (!u) return res.status(404).json({ error: 'Citizen not found' });
-
-    const nextStatus = status ? (String(status).toUpperCase() === 'BLOCKED' ? 'BLOCKED' : 'VERIFIED') : (u.status === 'BLOCKED' ? 'VERIFIED' : 'BLOCKED');
-    const updatedUser = await prisma.user.update({ where: { id: u.id }, data: { status: nextStatus } });
-
-    invalidateCitizensListCache();
-    invalidateCitizenDetailsCache(u.id);
-
-    if (nextStatus === 'BLOCKED') {
-      await dispatchNotificationToCitizen({
-        userId: u.id,
-        title: 'Account Blocked by Administrator ⚠️',
-        body: 'Your Cybersave citizen account has been blocked by the administrative authority. Please contact support.',
-        type: 'WARNING',
-        io
-      }).catch(() => null);
-
-      io.emit('force_logout', { userId: u.id, reason: 'Your account has been suspended/blocked by an Administrator. Please contact support.' });
-      io.emit('user_blocked', { userId: u.id });
+    const requested = String(req.body?.status || 'BLOCKED').toUpperCase();
+    if (requested !== 'BLOCKED') {
+      return res.status(400).json({ error: "Invalid status. This endpoint only sets BLOCKED. Use /unblock to restore access." });
     }
 
-    await prisma.auditLog.create({
-      data: {
-        userId: u.id,
-        action: nextStatus === 'BLOCKED' ? 'USER_BLOCKED' : 'USER_UNBLOCKED',
-        details: `Administrator ${nextStatus === 'BLOCKED' ? 'BLOCKED' : 'UNBLOCKED'} citizen ${u.email || u.id}. Immediate enforcement applied.`,
-        ipAddress: req.ip || '127.0.0.1',
-        userAgent: req.headers['user-agent'] || 'Admin Console'
-      }
-    }).catch(() => null);
+    const u = await findUserByIdOrCit(id);
+    if (!u) return res.status(404).json({ error: 'Citizen not found' });
 
-    auditLogsCache = null;
-    io.emit('audit_logs_updated');
+    // Idempotent: if already blocked, skip re-enforcement but still confirm persisted state.
+    if (!isUserBlocked(u)) {
+      await prisma.user.update({ where: { id: u.id }, data: { status: 'BLOCKED' } });
+      await applyCitizenBlockState(u.id, 'BLOCKED', { ip: req.ip, userAgent: req.headers['user-agent'] });
+      auditLogsCache = null;
+      io.emit('audit_logs_updated');
+    }
+
+    // Re-read from DB: response always reflects persisted truth, never the request intent.
+    const persisted = await prisma.user.findUnique({ where: { id: u.id }, select: { id: true, email: true, phone: true, status: true } });
+    if (!persisted || !isUserBlocked(persisted)) {
+      // Database failed to confirm the block — fail loudly, never report success.
+      return res.status(500).json({ error: 'Failed to block citizen: database did not persist the change' });
+    }
+
+    invalidateCitizensListCache();
     io.emit('users_updated');
-    io.emit('citizen_status_updated', { id: u.id, status: nextStatus });
+    io.emit('citizen_status_updated', { id: u.id, status: persisted.status });
     const freshUsers = await fetchCitizensList();
     io.emit('response_users_data', freshUsers);
-    res.json({ success: true, status: nextStatus, user: updatedUser });
+
+    res.json({
+      success: true,
+      message: 'Citizen blocked successfully',
+      data: { id: persisted.id, isBlocked: true, status: persisted.status, user: persisted }
+    });
   } catch (e: any) {
-    res.status(500).json({ error: e.message });
+    res.status(500).json({ error: e.message || 'Failed to block citizen' });
   }
 });
 
+// Unblock: POST /api/admin/users/:id/unblock   body {} (explicit, idempotent)
+app.post(['/api/admin/users/:id/unblock', '/api/v1/users/:id/unblock'], async (req: any, res: any) => {
+  try {
+    const id = req.params.id;
+    const u = await findUserByIdOrCit(id);
+    if (!u) return res.status(404).json({ error: 'Citizen not found' });
+
+    if (isUserBlocked(u)) {
+      await prisma.user.update({ where: { id: u.id }, data: { status: 'VERIFIED' } });
+      await applyCitizenBlockState(u.id, 'VERIFIED', { ip: req.ip, userAgent: req.headers['user-agent'] });
+      auditLogsCache = null;
+      io.emit('audit_logs_updated');
+    }
+
+    const persisted = await prisma.user.findUnique({ where: { id: u.id }, select: { id: true, email: true, phone: true, status: true } });
+    if (!persisted || isUserBlocked(persisted)) {
+      return res.status(500).json({ error: 'Failed to unblock citizen: database did not persist the change' });
+    }
+
+    invalidateCitizensListCache();
+    io.emit('users_updated');
+    io.emit('citizen_status_updated', { id: u.id, status: persisted.status });
+    const freshUsers = await fetchCitizensList();
+    io.emit('response_users_data', freshUsers);
+
+    res.json({
+      success: true,
+      message: 'Citizen unblocked successfully',
+      data: { id: persisted.id, isBlocked: false, status: persisted.status, user: persisted }
+    });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message || 'Failed to unblock citizen' });
+  }
+});
+
+// Bulk block: POST /api/admin/users/bulk-block   body { userIds: [...] }
 app.post(['/api/admin/users/bulk-block', '/api/v1/users/bulk-block'], async (req: any, res: any) => {
   try {
-    const { userIds = [], status = 'BLOCKED' } = req.body;
+    const { userIds = [] } = req.body;
     if (!Array.isArray(userIds) || userIds.length === 0) {
       return res.status(400).json({ error: 'No user IDs provided' });
     }
 
     const isMongo = (idStr?: any) => typeof idStr === 'string' && /^[0-9a-fA-F]{24}$/.test(idStr.trim());
     const mongoIds = userIds.filter(isMongo);
-    const nonMongo = userIds.filter(id => !isMongo(id));
+    const nonMongo = userIds.filter((id: any) => !isMongo(id));
 
     const orConditions: any[] = [];
     if (mongoIds.length > 0) orConditions.push({ id: { in: mongoIds } });
@@ -1120,29 +1187,18 @@ app.post(['/api/admin/users/bulk-block', '/api/v1/users/bulk-block'], async (req
 
     const updated = await prisma.user.updateMany({
       where: { OR: orConditions },
-      data: { status }
+      data: { status: 'BLOCKED' }
     });
 
-    if (status === 'BLOCKED') {
-      for (const uid of mongoIds) {
-        dispatchNotificationToCitizen({
-          userId: uid,
-          title: 'Account Blocked by Administrator ⚠️',
-          body: 'Your Cybersave citizen account has been blocked by the administrative authority. Please contact support.',
-          type: 'WARNING',
-          io
-        }).catch(() => null);
-        io.emit('force_logout', { userId: uid, reason: 'Your account has been suspended/blocked by an Administrator. Please contact support.' });
-        io.emit('user_blocked', { userId: uid });
-        invalidateCitizenDetailsCache(uid);
-      }
+    for (const uid of mongoIds) {
+      await applyCitizenBlockState(uid, 'BLOCKED', { ip: req.ip, userAgent: req.headers['user-agent'] });
     }
 
     await prisma.auditLog.create({
       data: {
         userId: 'admin_action',
-        action: status === 'BLOCKED' ? 'USERS_BULK_BLOCKED' : 'USERS_BULK_STATUS_CHANGED',
-        details: `Batch changed status to ${status} for ${updated.count} citizen(s)`,
+        action: 'USERS_BULK_BLOCKED',
+        details: `Batch BLOCKED ${updated.count} citizen(s). Immediate enforcement applied.`,
         ipAddress: req.ip || '127.0.0.1',
         userAgent: req.headers['user-agent'] || 'Admin Console'
       }
@@ -1152,12 +1208,56 @@ app.post(['/api/admin/users/bulk-block', '/api/v1/users/bulk-block'], async (req
     auditLogsCache = null;
     io.emit('audit_logs_updated');
     io.emit('users_updated');
-    io.emit('citizens_bulk_updated', { userIds, status });
+    io.emit('citizens_bulk_updated', { userIds, status: 'BLOCKED' });
     const freshUsers = await fetchCitizensList();
     io.emit('response_users_data', freshUsers);
-    res.json({ success: true, count: updated.count, status });
+    res.json({ success: true, message: 'Citizens blocked successfully', count: updated.count, status: 'BLOCKED' });
   } catch (e: any) {
-    res.status(500).json({ error: e.message });
+    res.status(500).json({ error: e.message || 'Failed to block citizens' });
+  }
+});
+
+// Bulk unblock: POST /api/admin/users/bulk-unblock   body { userIds: [...] }
+app.post(['/api/admin/users/bulk-unblock', '/api/v1/users/bulk-unblock'], async (req: any, res: any) => {
+  try {
+    const { userIds = [] } = req.body;
+    if (!Array.isArray(userIds) || userIds.length === 0) {
+      return res.status(400).json({ error: 'No user IDs provided' });
+    }
+
+    const isMongo = (idStr?: any) => typeof idStr === 'string' && /^[0-9a-fA-F]{24}$/.test(idStr.trim());
+    const mongoIds = userIds.filter(isMongo);
+    const nonMongo = userIds.filter((id: any) => !isMongo(id));
+
+    const orConditions: any[] = [];
+    if (mongoIds.length > 0) orConditions.push({ id: { in: mongoIds } });
+    if (nonMongo.length > 0) orConditions.push({ email: { in: nonMongo } });
+
+    const updated = await prisma.user.updateMany({
+      where: { OR: orConditions },
+      data: { status: 'VERIFIED' }
+    });
+
+    await prisma.auditLog.create({
+      data: {
+        userId: 'admin_action',
+        action: 'USERS_BULK_UNBLOCKED',
+        details: `Batch UNBLOCKED ${updated.count} citizen(s).`,
+        ipAddress: req.ip || '127.0.0.1',
+        userAgent: req.headers['user-agent'] || 'Admin Console'
+      }
+    }).catch(() => null);
+
+    invalidateCitizensListCache();
+    auditLogsCache = null;
+    io.emit('audit_logs_updated');
+    io.emit('users_updated');
+    io.emit('citizens_bulk_updated', { userIds, status: 'VERIFIED' });
+    const freshUsers = await fetchCitizensList();
+    io.emit('response_users_data', freshUsers);
+    res.json({ success: true, message: 'Citizens unblocked successfully', count: updated.count, status: 'VERIFIED' });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message || 'Failed to unblock citizens' });
   }
 });
 

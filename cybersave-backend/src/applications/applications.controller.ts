@@ -1,10 +1,12 @@
-import { Body, Controller, Get, Param, Patch, Post, Put, Query, Res } from '@nestjs/common';
+import { Body, Controller, Get, Param, Patch, Post, Put, Query, Res, UseGuards } from '@nestjs/common';
 import {
   ApplicationsService,
   CreateApplicationDto,
 } from './applications.service';
+import { BlockedUserGuard } from '../common/guards/blocked-user.guard';
 
 @Controller(['api/v1/applications', 'applications'])
+@UseGuards(BlockedUserGuard)
 export class ApplicationsController {
   constructor(private readonly applicationsService: ApplicationsService) {}
 

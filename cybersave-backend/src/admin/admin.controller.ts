@@ -1164,7 +1164,7 @@ export class AdminController {
   }
 
   @Post(['api/admin/users/:id/block', 'admin/users/:id/block'])
-  @ApiOperation({ summary: 'Toggle citizen block status' })
+  @ApiOperation({ summary: 'Block citizen (persists status=BLOCKED and returns persisted user)' })
   async toggleBlockCitizen(@Param('id') id: string, @Body() body: any) {
     const isMongoId = (s?: string) => typeof s === 'string' && /^[0-9a-fA-F]{24}$/.test(s);
     let u: any = null;
@@ -1185,22 +1185,121 @@ export class AdminController {
       throw new NotFoundException(`Citizen ${id} not found`);
     }
 
-    const rawStatus = body?.status ? String(body.status).toUpperCase() : null;
-    const nextStatus = rawStatus ? (rawStatus === 'BLOCKED' ? 'BLOCKED' : 'VERIFIED') : (u.status === 'BLOCKED' ? 'VERIFIED' : 'BLOCKED');
-    await this.prisma.user.update({
+    // Block endpoint only ever sets BLOCKED — explicit and idempotent.
+    if (u.status !== 'BLOCKED') {
+      await this.prisma.user.update({
+        where: { id: u.id },
+        data: { status: 'BLOCKED' },
+      });
+
+      await this.prisma.auditLog.create({
+        data: {
+          userId: u.id,
+          action: 'USER_BLOCKED',
+          details: 'Administrator blocked citizen',
+        },
+      }).catch(() => null);
+    }
+
+    // Confirm persisted state before reporting success.
+    const persisted = await this.prisma.user.findUnique({
       where: { id: u.id },
-      data: { status: nextStatus },
+      select: { id: true, email: true, phone: true, status: true },
+    });
+    if (!persisted || persisted.status !== 'BLOCKED') {
+      throw new Error('Failed to block citizen: database did not persist the change');
+    }
+
+    return {
+      success: true,
+      message: 'Citizen blocked successfully',
+      data: { id: persisted.id, isBlocked: true, status: persisted.status, user: persisted },
+    };
+  }
+
+  @Post(['api/admin/users/:id/unblock', 'admin/users/:id/unblock', 'api/v1/users/:id/unblock'])
+  @ApiOperation({ summary: 'Unblock citizen (persists status=VERIFIED and returns persisted user)' })
+  async unblockCitizen(@Param('id') id: string) {
+    const isMongoId = (s?: string) => typeof s === 'string' && /^[0-9a-fA-F]{24}$/.test(s);
+    let u: any = null;
+
+    if (isMongoId(id)) {
+      u = await this.prisma.user.findUnique({ where: { id } });
+    }
+    if (!u && id.startsWith('CIT-')) {
+      const shortId = id.replace('CIT-', '').toUpperCase();
+      const allUsers = await this.prisma.user.findMany({ where: { role: 'USER' } });
+      u = allUsers.find((x) => x.id.substring(0, 5).toUpperCase() === shortId) || null;
+    }
+    if (!u) {
+      u = await this.prisma.user.findFirst({ where: { OR: [{ email: id }, { phone: id }] } });
+    }
+
+    if (!u) {
+      throw new NotFoundException(`Citizen ${id} not found`);
+    }
+
+    const isBlocked = u.status === 'BLOCKED' || u.status === 'SUSPENDED';
+    if (isBlocked) {
+      await this.prisma.user.update({
+        where: { id: u.id },
+        data: { status: 'VERIFIED' },
+      });
+
+      await this.prisma.auditLog.create({
+        data: {
+          userId: u.id,
+          action: 'USER_UNBLOCKED',
+          details: `Administrator unblocked citizen (was ${u.status})`,
+        },
+      }).catch(() => null);
+    }
+
+    const persisted = await this.prisma.user.findUnique({
+      where: { id: u.id },
+      select: { id: true, email: true, phone: true, status: true },
+    });
+    if (!persisted || persisted.status === 'BLOCKED' || persisted.status === 'SUSPENDED') {
+      throw new Error('Failed to unblock citizen: database did not persist the change');
+    }
+
+    return {
+      success: true,
+      message: 'Citizen unblocked successfully',
+      data: { id: persisted.id, isBlocked: false, status: persisted.status, user: persisted },
+    };
+  }
+
+  @Post(['api/admin/users/bulk-unblock', 'api/v1/users/bulk-unblock', 'admin/users/bulk-unblock'])
+  @ApiOperation({ summary: 'Bulk unblock citizens (restores VERIFIED status)' })
+  async bulkUnblockCitizens(@Body() body: any) {
+    const userIds: string[] = Array.isArray(body?.userIds) ? body.userIds : [];
+    if (userIds.length === 0) {
+      throw new BadRequestException('No user IDs provided');
+    }
+
+    const isMongo = (idStr?: any) => typeof idStr === 'string' && /^[0-9a-fA-F]{24}$/.test(idStr.trim());
+    const mongoIds = userIds.filter(isMongo);
+    const nonMongo = userIds.filter((id: any) => !isMongo(id));
+
+    const orConditions: any[] = [];
+    if (mongoIds.length > 0) orConditions.push({ id: { in: mongoIds } });
+    if (nonMongo.length > 0) orConditions.push({ email: { in: nonMongo } });
+
+    const updated = await this.prisma.user.updateMany({
+      where: { OR: orConditions },
+      data: { status: 'VERIFIED' },
     });
 
     await this.prisma.auditLog.create({
       data: {
-        userId: u.id,
-        action: nextStatus === 'BLOCKED' ? 'USER_BLOCKED' : 'USER_UNBLOCKED',
-        details: `Administrator toggled citizen status to ${nextStatus}`,
+        userId: 'admin_action',
+        action: 'USERS_BULK_UNBLOCKED',
+        details: `Batch UNBLOCKED ${updated.count} citizen(s).`,
       },
     }).catch(() => null);
 
-    return { success: true, status: nextStatus === 'BLOCKED' ? 'Blocked' : 'Verified' };
+    return { success: true, message: 'Citizens unblocked successfully', count: updated.count, status: 'VERIFIED' };
   }
 
   @Post([
