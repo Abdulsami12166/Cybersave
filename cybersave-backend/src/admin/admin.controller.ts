@@ -1163,23 +1163,10 @@ export class AdminController {
     };
   }
 
-  @Post(['api/admin/users/:id/block', 'admin/users/:id/block'])
+  @Post(['api/admin/users/:id/block', 'api/v1/users/:id/block', 'admin/users/:id/block'])
   @ApiOperation({ summary: 'Block citizen (persists status=BLOCKED and returns persisted user)' })
   async toggleBlockCitizen(@Param('id') id: string, @Body() body: any) {
-    const isMongoId = (s?: string) => typeof s === 'string' && /^[0-9a-fA-F]{24}$/.test(s);
-    let u: any = null;
-
-    if (isMongoId(id)) {
-      u = await this.prisma.user.findUnique({ where: { id } });
-    }
-    if (!u && id.startsWith('CIT-')) {
-      const shortId = id.replace('CIT-', '').toUpperCase();
-      const allUsers = await this.prisma.user.findMany({ where: { role: 'USER' } });
-      u = allUsers.find((x) => x.id.substring(0, 5).toUpperCase() === shortId) || null;
-    }
-    if (!u) {
-      u = await this.prisma.user.findFirst({ where: { OR: [{ email: id }, { phone: id }] } });
-    }
+    const u = await this.resolveCitizen(id);
 
     if (!u) {
       throw new NotFoundException(`Citizen ${id} not found`);
@@ -1217,23 +1204,10 @@ export class AdminController {
     };
   }
 
-  @Post(['api/admin/users/:id/unblock', 'admin/users/:id/unblock', 'api/v1/users/:id/unblock'])
+  @Post(['api/admin/users/:id/unblock', 'api/v1/users/:id/unblock', 'admin/users/:id/unblock'])
   @ApiOperation({ summary: 'Unblock citizen (persists status=VERIFIED and returns persisted user)' })
   async unblockCitizen(@Param('id') id: string) {
-    const isMongoId = (s?: string) => typeof s === 'string' && /^[0-9a-fA-F]{24}$/.test(s);
-    let u: any = null;
-
-    if (isMongoId(id)) {
-      u = await this.prisma.user.findUnique({ where: { id } });
-    }
-    if (!u && id.startsWith('CIT-')) {
-      const shortId = id.replace('CIT-', '').toUpperCase();
-      const allUsers = await this.prisma.user.findMany({ where: { role: 'USER' } });
-      u = allUsers.find((x) => x.id.substring(0, 5).toUpperCase() === shortId) || null;
-    }
-    if (!u) {
-      u = await this.prisma.user.findFirst({ where: { OR: [{ email: id }, { phone: id }] } });
-    }
+    const u = await this.resolveCitizen(id);
 
     if (!u) {
       throw new NotFoundException(`Citizen ${id} not found`);
@@ -1300,6 +1274,106 @@ export class AdminController {
     }).catch(() => null);
 
     return { success: true, message: 'Citizens unblocked successfully', count: updated.count, status: 'VERIFIED' };
+  }
+
+  // Shared resolution of a citizen id (Mongo ObjectId, CIT-XXXXX / CIT-XXXXXX
+  // display id, email, or phone) to the canonical User row.
+  private async resolveCitizen(id: string): Promise<any | null> {
+    const clean = String(id || '').trim();
+    if (!clean) return null;
+
+    const isMongoId = (s: string) => /^[0-9a-fA-F]{24}$/.test(s);
+    if (isMongoId(clean)) {
+      const direct = await this.prisma.user.findUnique({ where: { id: clean } });
+      if (direct) return direct;
+    }
+
+    // CIT- display id: match either 5-char (list format CIT-XXXXX) or
+    // 6-char (detail format CIT-XXXXXX) suffixes of the ObjectId.
+    if (clean.toUpperCase().startsWith('CIT-')) {
+      const short = clean.replace(/^CIT-/i, '').toUpperCase();
+      const candidates = await this.prisma.user.findMany({
+        where: { role: 'USER' },
+        select: { id: true },
+      });
+      const match = candidates.find(
+        (x) =>
+          x.id.slice(-5).toUpperCase() === short ||
+          x.id.slice(-6).toUpperCase() === short ||
+          x.id.substring(0, 5).toUpperCase() === short ||
+          x.id.toUpperCase().includes(short),
+      );
+      if (match) {
+        return this.prisma.user.findUnique({ where: { id: match.id } });
+      }
+    }
+
+    const orConds: any[] = [{ id: clean }];
+    if (clean.includes('@')) orConds.push({ email: clean.toLowerCase() });
+    const digits = clean.replace(/\D/g, '');
+    if (digits.length >= 10) {
+      const last10 = digits.slice(-10);
+      orConds.push({ phone: clean });
+      orConds.push({ phone: `+91${last10}` });
+      orConds.push({ phone: `+91 ${last10}` });
+      orConds.push({ phone: last10 });
+    } else {
+      orConds.push({ phone: clean });
+    }
+    return this.prisma.user.findFirst({ where: { OR: orConds } }).catch(() => null);
+  }
+
+  @Post(['api/admin/users/bulk-block', 'api/v1/users/bulk-block', 'admin/users/bulk-block'])
+  @ApiOperation({ summary: 'Bulk block citizens (persists status=BLOCKED with immediate enforcement)' })
+  async bulkBlockCitizens(@Body() body: any) {
+    const userIds: string[] = Array.isArray(body?.userIds) ? body.userIds : [];
+    if (userIds.length === 0) {
+      throw new BadRequestException('No user IDs provided');
+    }
+
+    const isMongo = (idStr?: any) => typeof idStr === 'string' && /^[0-9a-fA-F]{24}$/.test(idStr.trim());
+
+    // Resolve every id (ObjectId or CIT- display id) to a real user first.
+    const resolved: any[] = [];
+    for (const rawId of userIds) {
+      const u = await this.resolveCitizen(rawId);
+      if (u) resolved.push(u);
+    }
+    const ids = Array.from(new Set(resolved.map((u) => u.id)));
+
+    const updated = ids.length
+      ? await this.prisma.user.updateMany({
+          where: { id: { in: ids } },
+          data: { status: 'BLOCKED' },
+        })
+      : { count: 0 };
+
+    // Immediate enforcement for every newly blocked citizen.
+    for (const u of resolved) {
+      if (u.status !== 'BLOCKED') {
+        AdminGateway.broadcast('force_logout', {
+          userId: u.id,
+          reason: 'Your account has been suspended/blocked by an Administrator. Please contact support.',
+        });
+        AdminGateway.broadcast('user_blocked', { userId: u.id });
+      }
+    }
+
+    await this.prisma.auditLog.create({
+      data: {
+        userId: 'admin_action',
+        action: 'USERS_BULK_BLOCKED',
+        details: `Batch BLOCKED ${updated.count} citizen(s). Immediate enforcement applied.`,
+      },
+    }).catch(() => null);
+
+    return {
+      success: true,
+      message: 'Citizens blocked successfully',
+      count: updated.count,
+      status: 'BLOCKED',
+      resolvedCount: ids.length,
+    };
   }
 
   @Post([
