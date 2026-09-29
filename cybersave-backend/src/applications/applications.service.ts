@@ -187,40 +187,42 @@ export class ApplicationsService {
       },
     });
 
-    // Also persist uploaded document proofs to DocumentUpload vault
-    if (sanitizedDocs.length > 0) {
-      for (const doc of sanitizedDocs) {
-        if (doc.fileUrl) {
-          await this.prisma.documentUpload.create({
-            data: {
-              userId: validUserId,
-              applicationId: application.id,
-              fileName: doc.fileName || doc.label,
-              fileUrl: doc.fileUrl,
-              fileType: doc.type || 'document',
-            },
-          }).catch(() => null);
-        }
-      }
+    // PERF: persist all document-proof vault records in ONE round-trip
+    // (createMany) instead of one sequential insert per document.
+    const vaultDocs = sanitizedDocs.filter((d: any) => d.fileUrl);
+    if (vaultDocs.length > 0) {
+      this.prisma.documentUpload
+        .createMany({
+          data: vaultDocs.map((doc: any) => ({
+            userId: validUserId,
+            applicationId: application.id,
+            fileName: doc.fileName || doc.label,
+            fileUrl: doc.fileUrl,
+            fileType: doc.type || 'document',
+          })),
+        })
+        .catch((e: any) =>
+          this.logger.warn(`DocumentUpload vault write skipped: ${e?.message}`),
+        );
     }
 
-    try {
-      const user = await this.prisma.user.findUnique({
-        where: { id: validUserId },
-        include: { profile: true },
-      });
-
-      const phone = user?.phone || user?.profile?.phone;
-      if (phone) {
-        await this.twilioService.sendSms(
+    // PERF: SMS notification and audit log are NON-CRITICAL side effects.
+    // The application row is already durably persisted above, so we do not
+    // block the citizen's response on the Twilio round-trip or the audit
+    // write. Both run fire-and-forget with logging (no false success: the
+    // authoritative application object below is only returned after the
+    // prisma.application.create transaction has completed).
+    const userFromCreate = (application as any).user;
+    const phone = userFromCreate?.phone || userFromCreate?.profile?.phone;
+    if (phone) {
+      this.twilioService
+        .sendSms(
           phone,
           `Cybersave: Your application for ${dto.serviceTitle} (#${refNumber}) has been submitted successfully. Track status in app.`,
+        )
+        .catch((err: any) =>
+          this.logger.warn(`SMS notification warning: ${err?.message}`),
         );
-      }
-    } catch (err) {
-      this.logger.warn(
-        `Notification warning on application creation: ${err.message}`,
-      );
     }
 
     try {
@@ -234,11 +236,14 @@ export class ApplicationsService {
         serviceTitle: application.serviceTitle,
       });
 
-      await AdminGateway.logActivity(this.prisma, {
+      // Audit log no longer awaited (was blocking response by one write RTT).
+      AdminGateway.logActivity(this.prisma, {
         userId: application.userId,
         action: 'APPLICATION_SUBMITTED',
         details: `New citizen application #${refNumber} created & submitted for "${dto.serviceTitle}"`,
-      });
+      }).catch((e: any) =>
+        this.logger.warn(`Audit log write warning: ${e?.message}`),
+      );
     } catch (wsErr) {
       this.logger.warn(`WS broadcast error: ${wsErr.message}`);
     }
@@ -276,14 +281,17 @@ export class ApplicationsService {
     };
 
     // If userId is omitted or 'all' or 'admin', return all applications (for Admin Web Panel)
+    // PERF: bounded page size + lean select — the mobile/admin list only needs
+    // summary fields, not the full formData blob for every row.
     if (!userId || userId === 'all' || userId === 'admin' || userId === 'default-user-id') {
       const apps = await this.prisma.application.findMany({
         where: whereClause,
         orderBy: { submittedAt: 'desc' },
+        take: 100,
         include: {
-          service: true,
-          user: { include: { profile: true } },
-          refundRequests: true,
+          service: { select: { id: true, title: true, category: true, fee: true } },
+          user: { select: { id: true, email: true, phone: true, profile: { select: { fullName: true, phone: true, district: true } } } },
+          refundRequests: { select: { id: true, status: true, refNumber: true } },
         },
       });
       return sanitizeApps(apps);
@@ -320,10 +328,11 @@ export class ApplicationsService {
           userId: { in: targetIds },
         },
         orderBy: { submittedAt: 'desc' },
+        take: 100,
         include: {
-          service: true,
-          user: { include: { profile: true } },
-          refundRequests: true,
+          service: { select: { id: true, title: true, category: true, fee: true } },
+          user: { select: { id: true, email: true, phone: true, profile: { select: { fullName: true, phone: true, district: true } } } },
+          refundRequests: { select: { id: true, status: true, refNumber: true } },
         },
       });
       return sanitizeApps(apps);

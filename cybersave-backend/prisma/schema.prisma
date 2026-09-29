@@ -147,8 +147,9 @@ model Application {
   refundRequests       RefundRequest[]
   documentUploads      DocumentUpload[]
 
-  @@index([userId])
+  @@index([userId, submittedAt(sort: Desc)])
   @@index([status])
+  @@index([razorpayOrderId])
 }
 
 model Wallet {
