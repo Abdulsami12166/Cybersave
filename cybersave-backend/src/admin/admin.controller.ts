@@ -1172,6 +1172,14 @@ export class AdminController {
       throw new NotFoundException(`Citizen ${id} not found`);
     }
 
+    // Legacy clients (and the stale production build of this controller)
+    // may send { status: 'VERIFIED' } to restore access through this same
+    // route. Honor it explicitly: only BLOCKED / VERIFIED are accepted.
+    const requested = String(body?.status || '').toUpperCase();
+    if (requested === 'VERIFIED') {
+      return this.unblockCitizen(id);
+    }
+
     // Block endpoint only ever sets BLOCKED — explicit and idempotent.
     if (u.status !== 'BLOCKED') {
       await this.prisma.user.update({
