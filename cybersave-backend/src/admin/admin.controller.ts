@@ -20,6 +20,7 @@ import { PrismaService } from '../database/prisma.service';
 import { JwtService } from '@nestjs/jwt';
 import { CloudinaryService } from '../common/services/cloudinary.service';
 import { AdminGateway } from './admin.gateway';
+import { RefundsService } from '../refunds/refunds.service';
 import { messaging, sendFCMBroadcast, sendFCMToTokens } from './firebase';
 import * as bcrypt from 'bcrypt';
 
@@ -30,6 +31,7 @@ export class AdminController {
     private readonly prisma: PrismaService,
     private readonly jwtService: JwtService,
     private readonly cloudinaryService: CloudinaryService,
+    private readonly refundsService: RefundsService,
   ) {}
 
   @Post(['api/admin/upload', 'admin/upload', 'api/upload', 'api/v1/upload', 'api/v1/services/upload', 'api/services/upload', 'services/upload'])
@@ -86,6 +88,21 @@ export class AdminController {
         : [];
       const userMap = new Map(users.map((u: any) => [u.id, u]));
 
+      // PERF: one batched query enriches refund tickets with live claim state
+      // (amount, status, application ref) so the Support Ticket Management UI
+      // can show refund badges and route resolve actions correctly.
+      const refundTicketRefs = (tickets || [])
+        .filter((t: any) => t.category === 'Refund Request' || String(t.refNumber || '').toUpperCase().startsWith('REF-'))
+        .map((t: any) => t.refNumber)
+        .filter(Boolean);
+      const refundClaims = refundTicketRefs.length > 0
+        ? await this.prisma.refundRequest.findMany({
+            where: { refNumber: { in: refundTicketRefs } },
+            select: { id: true, refNumber: true, amount: true, status: true, serviceTitle: true, applicationId: true },
+          }).catch(() => [])
+        : [];
+      const refundMap = new Map(refundClaims.map((r: any) => [r.refNumber, r]));
+
       const total = tickets.length;
       const open = tickets.filter((t) => t.status === 'OPEN').length;
       const inProgress = tickets.filter((t) => t.status === 'IN_PROGRESS').length;
@@ -93,6 +110,7 @@ export class AdminController {
 
       const formatted = (tickets || []).map((t: any) => {
         const u: any = userMap.get(t.userId);
+        const claim: any = refundMap.get(t.refNumber);
         return {
           id: t.refNumber || t.id,
           rawId: t.id,
@@ -108,6 +126,11 @@ export class AdminController {
           assignedTo: t.assignedTo || '',
           status: t.status,
           attachmentUrl: t.attachmentUrl,
+          // Refund-linked fields (only present on Refund Request tickets)
+          refundId: claim?.id || null,
+          refundAmount: claim ? Number(claim.amount) : undefined,
+          refundStatus: claim?.status || undefined,
+          applicationRef: claim ? `APP-${String(claim.applicationId || '').slice(-6).toUpperCase()}` : undefined,
           reporter: {
             name: u?.profile?.fullName || (u?.email ? u.email.split('@')[0] : 'Citizen User'),
             email: u?.email || '',
@@ -303,6 +326,167 @@ export class AdminController {
         phone: u?.phone || '',
       },
       messages: Array.isArray(ticket.messages) ? ticket.messages : [],
+    };
+  }
+
+  /**
+   * Resolve a support ticket by ID or ref number.
+   * REFUND TICKETS: resolving APPROVES the underlying refund claim —
+   * RefundsService.approveRefund() marks the refund APPROVED, credits the
+   * citizen's CyberSave wallet, records the wallet transaction + notification,
+   * and flips the application to paymentStatus 'Refunded'. The ticket is then
+   * marked RESOLVED with the official resolution message appended.
+   * Non-refund tickets resolve exactly as before (status + citizen notification).
+   */
+  @Post(['api/v1/support/tickets/:id/resolve', 'api/support/tickets/:id/resolve', 'support/tickets/:id/resolve', 'api/admin/support/tickets/:id/resolve', 'admin/support/tickets/:id/resolve'])
+  @ApiOperation({ summary: 'Resolve Support Ticket (refund tickets auto-credit citizen wallet)' })
+  async resolveSupportTicketRest(@Param('id') id: string, @Body() body: any) {
+    const cleanId = String(id || '').trim();
+    const strippedId = cleanId.replace(/^(TKT|REF|FDB)-/i, '').trim();
+    const targetMongo = /^[0-9a-fA-F]{24}$/.test(cleanId)
+      ? cleanId
+      : /^[0-9a-fA-F]{24}$/.test(strippedId)
+        ? strippedId
+        : null;
+
+    let ticket: any = null;
+    if (targetMongo) {
+      ticket = await this.prisma.supportTicket.findUnique({ where: { id: targetMongo } });
+    }
+    if (!ticket) {
+      ticket = await this.prisma.supportTicket.findFirst({
+        where: {
+          OR: [
+            { refNumber: cleanId },
+            { refNumber: `TKT-${strippedId}` },
+            { refNumber: { contains: strippedId, mode: 'insensitive' } },
+            { id: { contains: strippedId, mode: 'insensitive' } },
+          ],
+        },
+      });
+    }
+
+    if (!ticket) {
+      throw new NotFoundException(`Grievance / Ticket ${id} not found`);
+    }
+
+    const adminName = body?.adminName || 'Support Desk Officer';
+    const resolutionSummary = String(body?.resolutionSummary || body?.summary || '').trim();
+    const isReject = body?.isReject === true || body?.action === 'REJECT' || body?.resolutionCategory === 'Rejected';
+
+    const isRefundTicket =
+      ticket.category === 'Refund Request' ||
+      String(ticket.refNumber || '').toUpperCase().startsWith('REF-') ||
+      /refund (claim|request)/i.test(String(ticket.title || ''));
+
+    if (isRefundTicket) {
+      // Resolve the linked refund claim. Ticket refNumber === refund refNumber
+      // (created together in RefundsService.createRefundRequest).
+      try {
+        if (isReject) {
+          await this.refundsService.rejectRefund(
+            ticket.refNumber,
+            resolutionSummary || body?.rejectionReason || 'Refund request declined after administrative review.',
+            adminName,
+          );
+        } else {
+          await this.refundsService.approveRefund(ticket.refNumber, adminName);
+        }
+      } catch (refundErr: any) {
+        // Already-approved / already-rejected claims must not block resolving
+        // the ticket itself — the wallet side-effect is simply idempotent-skipped.
+        if (!(refundErr instanceof BadRequestException)) {
+          throw refundErr;
+        }
+      }
+    }
+
+    // Mark the ticket RESOLVED with an official resolution message.
+    const existingMsgs = Array.isArray(ticket.messages) ? ticket.messages : [];
+    const resolutionMsg = {
+      id: `msg-resolve-${Date.now()}`,
+      senderId: body?.adminId || 'admin-01',
+      senderName: `${adminName} (Official Resolution)`,
+      role: 'AGENT',
+      text: isRefundTicket
+        ? isReject
+          ? `Refund claim #${ticket.refNumber} reviewed and declined by the administrator.\nReason: ${resolutionSummary || 'Policy criteria not met.'}`
+          : `✅ Refund claim #${ticket.refNumber} APPROVED. The amount has been credited to the citizen's CyberSave wallet.`
+        : `✅ Grievance Ticket #${ticket.refNumber || ticket.id} has been marked as RESOLVED by the administrative verification officer.\nResolution: ${resolutionSummary || 'Grievance verification completed. Issue marked as resolved.'}`,
+      time: new Date().toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' }),
+      timestamp: new Date().toISOString(),
+      isResolution: true,
+    };
+
+    const updatedTicket = await this.prisma.supportTicket.update({
+      where: { id: ticket.id },
+      data: {
+        status: 'RESOLVED',
+        messages: [...existingMsgs, resolutionMsg] as any,
+        updatedAt: new Date(),
+      },
+    });
+
+    // Notify the citizen in-app.
+    if (ticket.userId) {
+      const notifTitle = isRefundTicket
+        ? (isReject ? 'Refund Request Declined' : 'Refund Credited to Wallet')
+        : 'Support Ticket Resolved ✅';
+      const notifBody = isRefundTicket
+        ? (isReject
+          ? `Refund claim #${ticket.refNumber} was declined: ${resolutionSummary || 'Policy criteria not met.'}`
+          : `Your refund claim #${ticket.refNumber} has been approved and the amount credited to your CyberSave wallet.`)
+        : `Admin has resolved your grievance ticket #${ticket.refNumber || ticket.id}: "${resolutionSummary || 'Resolved'}"`;
+
+      await this.prisma.notification.create({
+        data: {
+          userId: ticket.userId,
+          title: notifTitle,
+          body: notifBody,
+          type: isRefundTicket ? 'PAYMENT' : 'SUCCESS',
+          status: 'SENT',
+          sentAt: new Date(),
+        },
+      }).catch(() => null);
+
+      AdminGateway.emitToUser(ticket.userId, 'user_grievance_reply', {
+        userId: ticket.userId,
+        ticketId: ticket.refNumber,
+        ticketTitle: ticket.title,
+        message: resolutionMsg,
+      });
+      AdminGateway.emitToUser(ticket.userId, 'notification_received', {
+        title: notifTitle,
+        body: notifBody,
+      });
+    }
+
+    AdminGateway.broadcast('support_tickets_updated');
+    AdminGateway.broadcast('support_ticket_resolved', {
+      id: ticket.refNumber || ticket.id,
+      rawId: ticket.id,
+      status: 'RESOLVED',
+      resolutionSummary,
+    });
+
+    await AdminGateway.logActivity(this.prisma, {
+      userId: body?.adminId && /^[0-9a-fA-F]{24}$/.test(String(body.adminId)) ? String(body.adminId) : (ticket.userId || undefined),
+      action: 'SUPPORT_TICKET_RESOLVED',
+      details: isRefundTicket
+        ? `Refund ticket #${ticket.refNumber} resolved (${isReject ? 'declined' : 'approved & wallet credited'}) by "${adminName}"`
+        : `Ticket #${ticket.refNumber} marked as resolved: ${resolutionSummary || 'no summary provided'}`,
+    }).catch(() => null);
+
+    return {
+      success: true,
+      ticket: {
+        id: ticket.refNumber || ticket.id,
+        rawId: updatedTicket.id,
+        refNumber: updatedTicket.refNumber,
+        status: updatedTicket.status,
+      },
+      refundProcessed: isRefundTicket,
+      refundAction: isRefundTicket ? (isReject ? 'REJECTED' : 'APPROVED') : null,
     };
   }
 

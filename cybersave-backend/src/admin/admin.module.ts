@@ -3,10 +3,12 @@ import { AdminController } from './admin.controller';
 import { AdminGateway } from './admin.gateway';
 import { DatabaseModule } from '../database/database.module';
 import { JwtModule } from '@nestjs/jwt';
+import { RefundsModule } from '../refunds/refunds.module';
 
 @Module({
   imports: [
     DatabaseModule,
+    RefundsModule,
     JwtModule.register({
       secret:
         process.env.JWT_SECRET ||
