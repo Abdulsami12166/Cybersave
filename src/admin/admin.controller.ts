@@ -69,32 +69,54 @@ export class AdminController {
   @ApiOperation({ summary: 'Get all Support Tickets & Grievances with Statistics' })
   async getAllSupportTicketsRest() {
     try {
-      const tickets = await Promise.race([
+      const [tickets, refundRequests, feedbacks] = await Promise.all([
         this.prisma.supportTicket.findMany({
+          take: 100,
+          orderBy: { createdAt: 'desc' },
+          include: { user: { include: { profile: true } } },
+        }).catch(() => []),
+        this.prisma.refundRequest.findMany({
           take: 50,
           orderBy: { createdAt: 'desc' },
-        }),
-        new Promise<any[]>((resolve) => setTimeout(() => resolve([]), 3500)),
+          include: { user: { include: { profile: true } }, application: true },
+        }).catch(() => []),
+        (this.prisma as any).feedback.findMany({
+          take: 50,
+          orderBy: { createdAt: 'desc' },
+          include: { user: { include: { profile: true } } },
+        }).catch(() => []),
       ]);
 
-      const userIds = Array.from(new Set((tickets || []).map((t: any) => t.userId).filter(Boolean)));
-      const users = userIds.length > 0
-        ? await this.prisma.user.findMany({
-            where: { id: { in: userIds } },
-            select: { id: true, email: true, phone: true, profile: { select: { fullName: true } } },
-          }).catch(() => [])
-        : [];
-      const userMap = new Map(users.map((u: any) => [u.id, u]));
+      const refundMap = new Map<string, any>();
+      for (const r of refundRequests) {
+        refundMap.set(r.refNumber, r);
+        refundMap.set(`REF-${r.refNumber}`, r);
+        refundMap.set(r.id, r);
+        if (r.applicationId) refundMap.set(r.applicationId, r);
+      }
 
-      const total = tickets.length;
-      const open = tickets.filter((t) => t.status === 'OPEN').length;
-      const inProgress = tickets.filter((t) => t.status === 'IN_PROGRESS').length;
-      const resolved = tickets.filter((t) => t.status === 'RESOLVED').length;
+      const feedbackMap = new Map<string, any>();
+      for (const f of feedbacks) {
+        feedbackMap.set(f.id, f);
+        feedbackMap.set(`FDB-${f.id.slice(-6).toUpperCase()}`, f);
+      }
 
-      const formatted = (tickets || []).map((t: any) => {
-        const u: any = userMap.get(t.userId);
-        return {
-          id: t.refNumber || t.id,
+      const formatted: any[] = [];
+      const processedRefs = new Set<string>();
+
+      for (const t of tickets) {
+        const u = t.user;
+        const refNum = t.refNumber || t.id;
+        processedRefs.add(refNum);
+
+        const isRefund = t.category === 'Refund Request' || refNum.startsWith('REF-') || refundMap.has(refNum) || refundMap.has(t.id);
+        const isFeedback = t.category === 'Citizen Feedback' || t.category === 'Feedback' || refNum.startsWith('FDB-') || feedbackMap.has(refNum);
+
+        const linkedRefund = refundMap.get(refNum) || refundMap.get(t.id) || (t.description ? refundRequests.find((r: any) => t.description?.includes(r.refNumber)) : null);
+        const linkedFeedback = feedbackMap.get(refNum) || (t.userId ? feedbacks.find((f: any) => f.userId === t.userId) : null);
+
+        formatted.push({
+          id: refNum,
           rawId: t.id,
           refNumber: t.refNumber,
           title: t.title,
@@ -107,17 +129,125 @@ export class AdminController {
           updatedAt: t.updatedAt,
           assignedTo: t.assignedTo || null,
           status: t.status,
-          attachmentUrl: t.attachmentUrl,
+          attachmentUrl: t.attachmentUrl || linkedRefund?.proofUrl || linkedFeedback?.imageUrl || null,
           reporter: {
+            id: t.userId || linkedRefund?.userId || linkedFeedback?.userId || '',
             name: u?.profile?.fullName || (u?.email ? u.email.split('@')[0] : 'Citizen User'),
             email: u?.email || '',
+            phone: u?.phone || '',
           },
           messages: Array.isArray(t.messages) ? t.messages : [],
-        };
-      });
+          refundAmount: linkedRefund?.amount || (isRefund ? 50 : undefined),
+          refundStatus: linkedRefund?.status || (isRefund ? (t.status === 'RESOLVED' ? 'APPROVED' : 'PENDING') : undefined),
+          refundId: linkedRefund?.id || (isRefund ? t.id : undefined),
+          applicationId: linkedRefund?.applicationId || undefined,
+          applicationRef: linkedRefund?.application?.refNumber || undefined,
+          serviceTitle: linkedRefund?.serviceTitle || linkedRefund?.application?.serviceTitle || undefined,
+          rating: linkedFeedback?.rating || (isFeedback ? 5 : undefined),
+          feedbackCategory: linkedFeedback?.improvementCategory || (isFeedback ? 'App Experience' : undefined),
+          feedbackText: linkedFeedback?.feedbackText || undefined,
+        });
+      }
+
+      // Merge unlinked refund requests
+      for (const r of refundRequests) {
+        if (!processedRefs.has(r.refNumber) && !processedRefs.has(`REF-${r.refNumber}`) && !processedRefs.has(r.id)) {
+          const u = r.user;
+          formatted.push({
+            id: r.refNumber,
+            rawId: r.id,
+            refNumber: r.refNumber,
+            title: `Refund Claim: ₹${Number(r.amount || 50).toFixed(2)} - ${r.serviceTitle || r.application?.serviceTitle || 'Government Service'}`,
+            description: `Citizen requested fee refund for Application #${r.application?.refNumber || 'N/A'}.\nReason: ${r.reason || 'Application fee refund'}${r.details ? '\nDetails: ' + r.details : ''}`,
+            category: 'Refund Request',
+            priority: 'High',
+            status: r.status === 'APPROVED' ? 'RESOLVED' : r.status === 'REJECTED' ? 'RESOLVED' : 'OPEN',
+            createdOn: r.createdAt ? new Date(r.createdAt).toLocaleDateString('en-IN') : new Date().toLocaleDateString('en-IN'),
+            lastUpdated: r.updatedAt ? new Date(r.updatedAt).toLocaleDateString('en-IN') : new Date().toLocaleDateString('en-IN'),
+            createdAt: r.createdAt,
+            updatedAt: r.updatedAt,
+            assignedTo: r.processedBy || null,
+            attachmentUrl: r.proofUrl || null,
+            reporter: {
+              id: r.userId,
+              name: u?.profile?.fullName || (u?.email ? u.email.split('@')[0] : 'Citizen User'),
+              email: u?.email || '',
+              phone: u?.phone || '',
+            },
+            messages: [
+              {
+                id: `msg-refund-${r.id}`,
+                senderId: r.userId,
+                senderName: u?.profile?.fullName || 'Citizen User',
+                role: 'CITIZEN',
+                text: `Refund Request of ₹${Number(r.amount || 50).toFixed(2)} submitted for Application #${r.application?.refNumber || 'N/A'}.\n\nReason: ${r.reason || 'Fee Refund'}${r.details ? '\n\nDetails: ' + r.details : ''}`,
+                attachmentUrl: r.proofUrl || null,
+                time: r.createdAt ? new Date(r.createdAt).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' }) : 'Recent',
+              },
+            ],
+            refundAmount: r.amount,
+            refundStatus: r.status,
+            refundId: r.id,
+            applicationId: r.applicationId,
+            applicationRef: r.application?.refNumber,
+            serviceTitle: r.serviceTitle || r.application?.serviceTitle,
+          });
+        }
+      }
+
+      // Merge unlinked citizen feedbacks
+      for (const f of feedbacks) {
+        const fbRef = `FDB-${f.id.slice(-6).toUpperCase()}`;
+        if (!processedRefs.has(fbRef) && !processedRefs.has(f.id)) {
+          const u = f.user;
+          formatted.push({
+            id: fbRef,
+            rawId: f.id,
+            refNumber: fbRef,
+            title: `Citizen Feedback (${f.rating}★): ${f.improvementCategory || 'App Experience'}`,
+            description: `"${f.feedbackText || ''}"`,
+            category: 'Citizen Feedback',
+            priority: f.rating <= 2 ? 'High' : (f.rating === 3 ? 'Medium' : 'Low'),
+            status: 'OPEN',
+            createdOn: f.createdAt ? new Date(f.createdAt).toLocaleDateString('en-IN') : new Date().toLocaleDateString('en-IN'),
+            lastUpdated: f.updatedAt ? new Date(f.updatedAt).toLocaleDateString('en-IN') : new Date().toLocaleDateString('en-IN'),
+            createdAt: f.createdAt,
+            updatedAt: f.updatedAt,
+            assignedTo: null,
+            attachmentUrl: f.imageUrl || null,
+            reporter: {
+              id: f.userId || '',
+              name: u?.profile?.fullName || (u?.email ? u.email.split('@')[0] : 'Citizen User'),
+              email: u?.email || '',
+              phone: u?.phone || '',
+            },
+            messages: [
+              {
+                id: `msg-fb-${f.id}`,
+                senderId: f.userId || 'citizen',
+                senderName: u?.profile?.fullName || 'Citizen User',
+                role: 'CITIZEN',
+                text: `Rating: ${'★'.repeat(f.rating)}${'☆'.repeat(Math.max(0, 5 - f.rating))} (${f.rating}/5)\nCategory: ${f.improvementCategory || 'App Experience'}\n\nFeedback:\n"${f.feedbackText || ''}"`,
+                attachmentUrl: f.imageUrl || null,
+                time: f.createdAt ? new Date(f.createdAt).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' }) : 'Recent',
+              },
+            ],
+            rating: f.rating,
+            feedbackCategory: f.improvementCategory,
+            feedbackText: f.feedbackText,
+          });
+        }
+      }
+
+      formatted.sort((a, b) => new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime());
+
+      const total = formatted.length;
+      const open = formatted.filter((t) => t.status === 'OPEN').length;
+      const inProgress = formatted.filter((t) => t.status === 'IN_PROGRESS').length;
+      const resolved = formatted.filter((t) => t.status === 'RESOLVED').length;
 
       return {
-        stats: { totalTickets: total, openTickets: open, inProgress: inProgress, resolved: resolved },
+        stats: { totalTickets: total, openTickets: open, inProgress, resolved },
         tickets: formatted,
       };
     } catch (e) {
@@ -131,7 +261,8 @@ export class AdminController {
   @Post(['api/v1/support/tickets', 'api/support/tickets', 'support/tickets'])
   @ApiOperation({ summary: 'Create Support Ticket / Grievance from Mobile or Web' })
   async createSupportTicketRest(@Body() body: any) {
-    const { category, subject, description, priority, userId, attachmentUrl } = body;
+    const { category, subject, title, description, priority, userId, attachmentUrl } = body;
+    const finalTitle = subject || title || 'Support Inquiry';
 
     let resolvedUserId = userId;
     const isMongoId = (s?: string) => typeof s === 'string' && /^[0-9a-fA-F]{24}$/.test(s);
@@ -169,19 +300,20 @@ export class AdminController {
         senderId: resolvedUserId || 'citizen',
         senderName: citizenName,
         role: 'USER',
-        text: description || subject || 'Citizen reported an operational issue.',
+        text: description || finalTitle || 'Citizen reported an inquiry.',
         attachmentUrl: attachmentUrl || null,
         time: nowTimeStr,
+        timestamp: new Date().toISOString(),
       },
     ];
 
     const ticket = await this.prisma.supportTicket.create({
       data: {
         refNumber: `TKT-${Math.floor(100000 + Math.random() * 900000)}`,
-        title: subject || 'Support Ticket',
+        title: finalTitle,
         description: description || '',
         attachmentUrl: attachmentUrl || null,
-        category: category || 'Technical Support',
+        category: category || 'General Support',
         priority: priority || 'Medium',
         status: 'OPEN',
         userId: resolvedUserId,
@@ -231,6 +363,7 @@ export class AdminController {
       role: 'AGENT',
       text: text.trim(),
       time: nowTimeStr,
+      timestamp: new Date().toISOString(),
     };
 
     const updatedMsgs = [...existingMsgs, replyMsg];
@@ -265,6 +398,13 @@ export class AdminController {
         ticketId: ticket.refNumber,
         ticketTitle: ticket.title,
         message: replyMsg,
+      });
+
+      AdminGateway.broadcast('new_ticket_message', {
+        ticketId: ticket.refNumber,
+        id: ticket.id,
+        message: replyMsg,
+        ticket: updatedTicket,
       });
     }
 
@@ -310,15 +450,79 @@ export class AdminController {
   @ApiOperation({ summary: 'Get Single Support Ticket by ID or refNumber' })
   async getSupportTicketByIdRest(@Param('id') id: string) {
     const isMongoId = (s?: string) => typeof s === 'string' && /^[0-9a-fA-F]{24}$/.test(s);
-    const orConditions: any[] = [{ refNumber: id }, { refNumber: `TKT-${id}` }];
-    if (isMongoId(id)) {
-      orConditions.push({ id });
+    const cleanId = String(id || '').trim();
+    const strippedId = cleanId.replace(/^(REF-|TKT-)/i, '').trim();
+
+    const orConditions: any[] = [
+      { refNumber: cleanId },
+      { refNumber: `TKT-${cleanId}` },
+      { refNumber: `REF-${strippedId}` },
+      { refNumber: { contains: strippedId, mode: 'insensitive' } },
+    ];
+    if (isMongoId(cleanId)) {
+      orConditions.push({ id: cleanId });
     }
 
-    const ticket = await this.prisma.supportTicket.findFirst({
+    let ticket = await this.prisma.supportTicket.findFirst({
       where: { OR: orConditions },
       include: { user: { include: { profile: true } } },
     });
+
+    // Also look up linked RefundRequest or Feedback if applicable
+    const linkedRefund = await this.prisma.refundRequest.findFirst({
+      where: {
+        OR: [
+          ...(isMongoId(cleanId) ? [{ id: cleanId }] : []),
+          { refNumber: cleanId },
+          { refNumber: `REF-${strippedId}` },
+          { refNumber: { contains: strippedId, mode: 'insensitive' } },
+          ...(ticket ? [{ refNumber: ticket.refNumber }] : []),
+        ],
+      },
+      include: { user: { include: { profile: true } }, application: true },
+    }).catch(() => null);
+
+    if (!ticket && linkedRefund) {
+      const u = linkedRefund.user;
+      return {
+        id: linkedRefund.refNumber,
+        rawId: linkedRefund.id,
+        refNumber: linkedRefund.refNumber,
+        title: `Refund Claim: ₹${Number(linkedRefund.amount || 50).toFixed(2)} - ${linkedRefund.serviceTitle || linkedRefund.application?.serviceTitle || 'Government Service'}`,
+        description: `Citizen requested fee refund for Application #${linkedRefund.application?.refNumber || 'N/A'}.\nReason: ${linkedRefund.reason || 'Application fee refund'}${linkedRefund.details ? '\nDetails: ' + linkedRefund.details : ''}`,
+        category: 'Refund Request',
+        priority: 'High',
+        createdOn: linkedRefund.createdAt ? new Date(linkedRefund.createdAt).toLocaleDateString('en-IN') : new Date().toLocaleDateString('en-IN'),
+        lastUpdated: linkedRefund.updatedAt ? new Date(linkedRefund.updatedAt).toLocaleDateString('en-IN') : new Date().toLocaleDateString('en-IN'),
+        createdAt: linkedRefund.createdAt,
+        updatedAt: linkedRefund.updatedAt,
+        assignedTo: linkedRefund.processedBy || null,
+        status: linkedRefund.status === 'APPROVED' ? 'RESOLVED' : linkedRefund.status === 'REJECTED' ? 'RESOLVED' : 'OPEN',
+        attachmentUrl: linkedRefund.proofUrl || null,
+        reporter: {
+          id: linkedRefund.userId || '',
+          name: u?.profile?.fullName || (u?.email ? u.email.split('@')[0] : 'Citizen User'),
+          email: u?.email || '',
+        },
+        messages: [
+          {
+            id: `msg-refund-${linkedRefund.id}`,
+            senderId: linkedRefund.userId,
+            senderName: u?.profile?.fullName || 'Citizen User',
+            role: 'CITIZEN',
+            text: `Refund Request of ₹${Number(linkedRefund.amount || 50).toFixed(2)} submitted for Application #${linkedRefund.application?.refNumber || 'N/A'}.\n\nReason: ${linkedRefund.reason || 'Fee Refund'}${linkedRefund.details ? '\n\nDetails: ' + linkedRefund.details : ''}`,
+            attachmentUrl: linkedRefund.proofUrl || null,
+            time: linkedRefund.createdAt ? new Date(linkedRefund.createdAt).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' }) : 'Recent',
+          },
+        ],
+        refundAmount: linkedRefund.amount,
+        refundStatus: linkedRefund.status,
+        refundId: linkedRefund.id,
+        applicationId: linkedRefund.applicationId,
+        applicationRef: linkedRefund.application?.refNumber,
+        serviceTitle: linkedRefund.serviceTitle || linkedRefund.application?.serviceTitle,
+      };
+    }
 
     if (!ticket) {
       throw new NotFoundException(`Grievance / Ticket ${id} not found`);
@@ -339,13 +543,19 @@ export class AdminController {
       updatedAt: ticket.updatedAt,
       assignedTo: ticket.assignedTo || null,
       status: ticket.status,
-      attachmentUrl: ticket.attachmentUrl,
+      attachmentUrl: ticket.attachmentUrl || linkedRefund?.proofUrl || null,
       reporter: {
-        id: ticket.userId || '',
+        id: ticket.userId || linkedRefund?.userId || '',
         name: u?.profile?.fullName || (u?.email ? u.email.split('@')[0] : 'Citizen User'),
         email: u?.email || '',
       },
       messages: Array.isArray(ticket.messages) ? ticket.messages : [],
+      refundAmount: linkedRefund?.amount || (ticket.category === 'Refund Request' ? 50 : undefined),
+      refundStatus: linkedRefund?.status || (ticket.category === 'Refund Request' ? (ticket.status === 'RESOLVED' ? 'APPROVED' : 'PENDING') : undefined),
+      refundId: linkedRefund?.id || undefined,
+      applicationId: linkedRefund?.applicationId || undefined,
+      applicationRef: linkedRefund?.application?.refNumber || undefined,
+      serviceTitle: linkedRefund?.serviceTitle || linkedRefund?.application?.serviceTitle || undefined,
       resolutionSummary: (ticket as any).resolutionSummary || null,
       resolutionCategory: (ticket as any).resolutionCategory || null,
       rootCause: (ticket as any).rootCause || null,
@@ -353,27 +563,146 @@ export class AdminController {
   }
 
   @Post(['api/v1/support/tickets/:id/resolve', 'api/support/tickets/:id/resolve', 'support/tickets/:id/resolve'])
-  @ApiOperation({ summary: 'Resolve a Support Ticket / Grievance' })
+  @ApiOperation({ summary: 'Resolve a Support Ticket / Grievance & Credit Refund Wallet if Applicable' })
   async resolveSupportTicketRest(@Param('id') id: string, @Body() body: any) {
     const { resolutionSummary, resolutionCategory, rootCause, timeToResolution, internalTags, adminId, adminName, notifyCitizen, csatSurvey } = body;
 
+    const cleanId = String(id || '').trim();
+    const strippedId = cleanId.replace(/^(REF-|TKT-)/i, '').trim();
     const isMongoId = (s?: string) => typeof s === 'string' && /^[0-9a-fA-F]{24}$/.test(s);
-    const orConditions: any[] = [{ refNumber: id }, { refNumber: `TKT-${id}` }];
-    if (isMongoId(id)) {
-      orConditions.push({ id });
+
+    const orConditions: any[] = [
+      { refNumber: cleanId },
+      { refNumber: `TKT-${cleanId}` },
+      { refNumber: `REF-${strippedId}` },
+      { refNumber: { contains: strippedId, mode: 'insensitive' } },
+    ];
+    if (isMongoId(cleanId)) {
+      orConditions.push({ id: cleanId });
     }
 
-    const ticket = await this.prisma.supportTicket.findFirst({
+    let ticket = await this.prisma.supportTicket.findFirst({
       where: { OR: orConditions },
       include: { user: { include: { profile: true } } },
     });
 
-    if (!ticket) {
-      throw new NotFoundException(`Grievance / Ticket ${id} not found`);
+    const actingName = adminName || 'Principal Verification Officer (SDM)';
+    const nowTimeStr = new Date().toLocaleString('en-IN', { dateStyle: 'medium', timeStyle: 'short' });
+    const now = new Date();
+
+    // Check if this ticket is a Refund Request or references a refund
+    const isRefundTicket =
+      ticket?.category === 'Refund Request' ||
+      cleanId.startsWith('REF-') ||
+      ticket?.refNumber?.startsWith('REF-') ||
+      ticket?.title?.toLowerCase().includes('refund claim') ||
+      ticket?.title?.toLowerCase().includes('refund request');
+
+    let processedRefundObj: any = null;
+
+    if (isRefundTicket) {
+      // Find linked refund request
+      const refund = await this.prisma.refundRequest.findFirst({
+        where: {
+          OR: [
+            ...(isMongoId(cleanId) ? [{ id: cleanId }] : []),
+            { refNumber: cleanId },
+            { refNumber: `REF-${strippedId}` },
+            { refNumber: { contains: strippedId, mode: 'insensitive' } },
+            ...(ticket ? [{ refNumber: ticket.refNumber }] : []),
+          ],
+        },
+        include: { user: { include: { profile: true } }, application: true },
+      });
+
+      if (refund) {
+        const refundAmount = Number(refund.amount) || 50.0;
+
+        // Idempotent wallet credit: only credit if status is still PENDING
+        if (refund.status === 'PENDING') {
+          // 1. Update refund request
+          const updatedRefund = await this.prisma.refundRequest.update({
+            where: { id: refund.id },
+            data: {
+              status: 'APPROVED',
+              processedBy: actingName,
+              processedAt: now,
+              adminNotes: resolutionSummary || `Refund approved by ${actingName}`,
+              journey: [
+                { title: 'Refund Initiated', desc: 'Citizen requested fee refund', time: refund.createdAt ? new Date(refund.createdAt).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' }) : 'Initiated', state: 'done' },
+                { title: 'Processing by Authority', desc: `Verified and authorized by ${actingName}`, time: now.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' }), state: 'done' },
+                { title: 'Credited to Wallet', desc: `₹${refundAmount.toFixed(2)} credited directly into citizen wallet`, time: now.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' }), state: 'done' },
+              ] as any,
+            },
+            include: { user: { include: { profile: true } }, application: true },
+          });
+          processedRefundObj = updatedRefund;
+
+          // 2. Update application
+          if (refund.applicationId) {
+            await this.prisma.application.update({
+              where: { id: refund.applicationId },
+              data: { refundStatus: 'APPROVED', paymentStatus: 'Refunded' },
+            }).catch(() => null);
+          }
+
+          // 3. Credit user's wallet
+          let wallet = await this.prisma.wallet.findUnique({ where: { userId: refund.userId } });
+          if (!wallet) {
+            wallet = await this.prisma.wallet.create({ data: { userId: refund.userId, balance: 0.0 } });
+          }
+          const newBalance = Number((wallet.balance + refundAmount).toFixed(2));
+          await this.prisma.wallet.update({ where: { id: wallet.id }, data: { balance: newBalance } });
+
+          // 4. Create wallet transaction
+          const txn = await this.prisma.walletTransaction.create({
+            data: {
+              walletId: wallet.id,
+              userId: refund.userId,
+              type: 'CREDIT',
+              title: `Refund: ${refund.serviceTitle || refund.application?.serviceTitle || 'Government Service Fee'}`,
+              subtitle: `Application #${refund.application?.refNumber || 'N/A'}`,
+              amount: refundAmount,
+              refId: refund.refNumber,
+              status: 'SUCCESS',
+            },
+          });
+
+          // 5. Notify citizen
+          const notif = await this.prisma.notification.create({
+            data: {
+              userId: refund.userId,
+              title: 'Refund Credited to Wallet',
+              body: `Your refund of ₹${refundAmount.toFixed(2)} for application #${refund.application?.refNumber || 'N/A'} (${refund.serviceTitle || 'Government Service'}) has been credited to your CyberSave wallet.`,
+              type: 'PAYMENT',
+              status: 'SENT',
+              sentAt: now,
+            },
+          });
+
+          // Broadcast events
+          AdminGateway.emitToUser(refund.userId, 'wallet_updated', { balance: newBalance, transaction: txn });
+          AdminGateway.emitToUser(refund.userId, 'refund_approved', { refund: updatedRefund, amount: refundAmount, newBalance, notification: notif });
+          AdminGateway.emitToUser(refund.userId, 'notification_received', notif);
+          AdminGateway.broadcast('refund_approved', updatedRefund);
+          AdminGateway.broadcast('refunds_updated', updatedRefund);
+          AdminGateway.broadcast('wallet_transactions_updated');
+          AdminGateway.broadcast('transactions_updated');
+          AdminGateway.broadcast('applications_updated');
+        }
+      }
     }
 
-    const actingName = adminName || 'Support Desk Officer';
-    const nowTimeStr = new Date().toLocaleString('en-IN', { dateStyle: 'medium', timeStyle: 'short' });
+    if (!ticket) {
+      if (processedRefundObj) {
+        return {
+          success: true,
+          message: `Refund claim #${cleanId} approved and credited to wallet.`,
+          refund: processedRefundObj,
+        };
+      }
+      throw new NotFoundException(`Grievance / Ticket ${id} not found`);
+    }
 
     const existingMsgs = Array.isArray(ticket.messages) ? (ticket.messages as any[]) : [];
     const resolutionMsg = {
@@ -381,26 +710,27 @@ export class AdminController {
       senderId: adminId || 'admin',
       senderName: `${actingName} (Resolution)`,
       role: 'AGENT',
-      text: `✅ Ticket Resolved — ${resolutionSummary || 'Issue has been resolved.'}`,
+      text: isRefundTicket
+        ? `✅ Refund Claim Approved! ₹${Number(processedRefundObj?.amount || 50).toFixed(2)} has been credited directly to your CyberSave wallet. ${resolutionSummary || 'Refund processed.'}`
+        : `✅ Ticket Resolved — ${resolutionSummary || 'Issue has been resolved.'}`,
       time: nowTimeStr,
+      timestamp: now.toISOString(),
       isResolution: true,
     };
     const updatedMsgs = [...existingMsgs, resolutionMsg];
 
-    const updateData: any = {
-      messages: updatedMsgs as any,
-      status: 'RESOLVED',
-      updatedAt: new Date(),
-    };
-
     const updatedTicket = await this.prisma.supportTicket.update({
       where: { id: ticket.id },
-      data: updateData,
+      data: {
+        messages: updatedMsgs as any,
+        status: 'RESOLVED',
+        updatedAt: now,
+      },
       include: { user: { include: { profile: true } } },
     });
 
-    // Notify citizen
-    if (notifyCitizen !== false && ticket.userId) {
+    // Notify citizen if non-refund (refund already notified with payment notification)
+    if (!isRefundTicket && notifyCitizen !== false && ticket.userId) {
       await this.prisma.notification.create({
         data: {
           userId: ticket.userId,
@@ -408,6 +738,7 @@ export class AdminController {
           body: resolutionSummary || 'Your support ticket has been resolved.',
           type: 'INFO',
           status: 'SENT',
+          sentAt: now,
         },
       }).catch(() => null);
 
@@ -423,8 +754,8 @@ export class AdminController {
     await AdminGateway.logActivity(this.prisma, {
       userId: adminId,
       userName: actingName,
-      action: 'GRIEVANCE_RESOLVED',
-      details: `Ticket #${ticket.refNumber} resolved. Category: ${resolutionCategory || 'N/A'}. Summary: ${(resolutionSummary || '').slice(0, 100)}`,
+      action: isRefundTicket ? 'REFUND_TICKET_RESOLVED' : 'GRIEVANCE_RESOLVED',
+      details: `Ticket #${ticket.refNumber} resolved by ${actingName}. Summary: ${(resolutionSummary || '').slice(0, 100)}`,
     });
 
     // Broadcast to admin console
@@ -442,52 +773,49 @@ export class AdminController {
       success: true,
       message: `Ticket #${ticket.refNumber} resolved successfully`,
       ticket: updatedTicket,
+      refund: processedRefundObj,
     };
   }
 
   @Get(['api/v1/support/user-tickets', 'api/support/user-tickets', 'support/user-tickets'])
   @ApiOperation({ summary: 'Get Grievances and Admin Replies for Specific Mobile User' })
   async getUserSupportTicketsRest(@Query('userId') userId?: string) {
-    let resolvedUserId = userId;
+    if (!userId || userId === 'all') {
+      return { success: true, tickets: [], count: 0 };
+    }
+
+    let resolvedUserId = userId.trim();
     const isMongoId = (s?: string) => typeof s === 'string' && /^[0-9a-fA-F]{24}$/.test(s);
 
     let userRecord: any = null;
-    if (resolvedUserId && isMongoId(resolvedUserId)) {
+    if (isMongoId(resolvedUserId)) {
       userRecord = await this.prisma.user.findUnique({
         where: { id: resolvedUserId },
       }).catch(() => null);
     }
-    if (!userRecord && resolvedUserId) {
+    if (!userRecord) {
       userRecord = await this.prisma.user.findFirst({
         where: { OR: [{ email: resolvedUserId }, { phone: resolvedUserId }] },
       }).catch(() => null);
       if (userRecord) resolvedUserId = userRecord.id;
     }
 
-    const orClauses: any[] = [];
-    if (resolvedUserId) orClauses.push({ userId: resolvedUserId });
-    if (userRecord?.id) orClauses.push({ userId: userRecord.id });
-    if (userRecord?.email) orClauses.push({ user: { email: userRecord.email } });
-    if (userRecord?.phone) orClauses.push({ user: { phone: userRecord.phone } });
-
-    let tickets: any[] = [];
-    if (orClauses.length > 0) {
-      tickets = await this.prisma.supportTicket.findMany({
-        where: { OR: orClauses },
-        orderBy: { updatedAt: 'desc' },
-        include: { user: { include: { profile: true } } },
-      });
+    const orClauses: any[] = [{ userId: resolvedUserId }];
+    if (userRecord?.id && userRecord.id !== resolvedUserId) {
+      orClauses.push({ userId: userRecord.id });
+    }
+    if (userRecord?.email) {
+      orClauses.push({ user: { email: userRecord.email } });
+    }
+    if (userRecord?.phone) {
+      orClauses.push({ user: { phone: userRecord.phone } });
     }
 
-    // Fallback: If this specific user doesn't have personal tickets yet in the system,
-    // return active citizen grievance tickets so the user can immediately view real admin responses
-    if (tickets.length === 0) {
-      tickets = await this.prisma.supportTicket.findMany({
-        take: 10,
-        orderBy: { updatedAt: 'desc' },
-        include: { user: { include: { profile: true } } },
-      });
-    }
+    const tickets = await this.prisma.supportTicket.findMany({
+      where: { OR: orClauses },
+      orderBy: { updatedAt: 'desc' },
+      include: { user: { include: { profile: true } } },
+    });
 
     const formatted = tickets.map((t) => {
       const msgs = Array.isArray(t.messages) ? (t.messages as any[]) : [];
@@ -552,6 +880,7 @@ export class AdminController {
       role: 'USER',
       text: text.trim(),
       time: nowTimeStr,
+      timestamp: new Date().toISOString(),
     };
 
     const updatedMsgs = [...existingMsgs, newMsg];
@@ -560,11 +889,19 @@ export class AdminController {
       where: { id: ticket.id },
       data: {
         messages: updatedMsgs as any,
+        status: 'IN_PROGRESS',
         updatedAt: new Date(),
       },
+      include: { user: { include: { profile: true } } },
     });
 
     AdminGateway.broadcast('support_tickets_updated');
+    AdminGateway.broadcast('new_ticket_message', {
+      ticketId: ticket.refNumber,
+      id: ticket.id,
+      message: newMsg,
+      ticket: updatedTicket,
+    });
     AdminGateway.broadcast('response_ticket_thread', {
       id: ticket.refNumber,
       title: ticket.title,
@@ -572,7 +909,7 @@ export class AdminController {
       attachmentUrl: ticket.attachmentUrl,
       category: ticket.category,
       priority: ticket.priority,
-      status: ticket.status,
+      status: 'IN_PROGRESS',
       createdOn: ticket.createdAt.toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' }),
       lastUpdated: new Date().toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' }),
       assignedTo: { id: 'admin1', name: 'Support Desk' },
@@ -591,15 +928,15 @@ export class AdminController {
     };
   }
 
-  @Post(['api/v1/support/feedback', 'api/support/feedback', 'support/feedback'])
+  @Post(['api/v1/support/feedback', 'api/support/feedback', 'support/feedback', 'api/v1/feedback', 'api/feedback'])
   @ApiOperation({ summary: 'Submit Customer Feedback from Mobile' })
   async submitFeedbackRest(@Body() body: any) {
     const { userId, rating, improvementCategory, feedbackText, imageUrl, attachmentUrl } = body;
     const finalImageUrl = imageUrl || attachmentUrl || null;
     const numericRating = typeof rating === 'number' ? rating : parseInt(rating, 10) || 5;
+    const cleanText = String(feedbackText || body?.comment || body?.message || '').trim();
 
     let resolvedUserId = userId;
-    // ponytail: resolve user by mongo ID or phone/email if non-standard ID provided
     if (resolvedUserId && !/^[0-9a-fA-F]{24}$/.test(resolvedUserId)) {
       const user = await this.prisma.user.findFirst({
         where: {
@@ -615,30 +952,67 @@ export class AdminController {
       resolvedUserId = firstUser?.id || null;
     }
 
+    const userObj = resolvedUserId
+      ? await this.prisma.user.findUnique({ where: { id: resolvedUserId }, include: { profile: true } }).catch(() => null)
+      : null;
+    const citizenName = userObj?.profile?.fullName || (userObj?.email ? userObj.email.split('@')[0] : 'Citizen User');
+
+    // 1. Create Feedback record in DB
     const feedback = await (this.prisma as any).feedback.create({
       data: {
         userId: resolvedUserId,
         rating: numericRating,
         improvementCategory: improvementCategory || 'App Experience',
-        feedbackText: feedbackText || '',
+        feedbackText: cleanText || 'Smooth service experience on CyberSave application.',
         imageUrl: finalImageUrl,
       },
     });
 
-    // Record real-time user activity in AuditLog
+    // 2. Create Support Ticket for Feedback
+    const fbTicketRef = `FDB-${feedback.id.slice(-6).toUpperCase()}`;
+    const nowTimeStr = new Date().toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' });
+    const nowIso = new Date().toISOString();
+
+    const ticket = await this.prisma.supportTicket.create({
+      data: {
+        refNumber: fbTicketRef,
+        userId: resolvedUserId,
+        title: `Citizen Feedback (${numericRating}★): ${improvementCategory || 'App Experience'}`,
+        description: `"${cleanText}"`,
+        category: 'Citizen Feedback',
+        priority: numericRating <= 2 ? 'High' : (numericRating === 3 ? 'Medium' : 'Low'),
+        status: 'OPEN',
+        attachmentUrl: finalImageUrl,
+        messages: [
+          {
+            id: `msg-fb-${feedback.id}`,
+            senderId: resolvedUserId || 'citizen',
+            senderName: citizenName,
+            role: 'CITIZEN',
+            text: `Rating: ${'★'.repeat(numericRating)}${'☆'.repeat(Math.max(0, 5 - numericRating))} (${numericRating}/5)\nCategory: ${improvementCategory || 'App Experience'}\n\nFeedback:\n"${cleanText}"`,
+            attachmentUrl: finalImageUrl,
+            time: nowTimeStr,
+            timestamp: nowIso,
+          },
+        ] as any,
+      },
+      include: { user: { include: { profile: true } } },
+    });
+
+    // 3. Record AuditLog
     if (resolvedUserId) {
-      const truncatedComment = (feedbackText || '').substring(0, 60);
+      const truncatedComment = cleanText.substring(0, 60);
       const imgNote = finalImageUrl ? ' [Image Attached]' : '';
       await this.prisma.auditLog.create({
         data: {
           userId: resolvedUserId,
           action: 'FEEDBACK_SUBMITTED',
-          details: `Submitted ${numericRating}-Star Feedback (${improvementCategory || 'General'}): "${truncatedComment}${feedbackText && feedbackText.length > 60 ? '...' : ''}"${imgNote}`,
+          details: `Submitted ${numericRating}-Star Feedback (${improvementCategory || 'General'}): "${truncatedComment}${cleanText.length > 60 ? '...' : ''}"${imgNote}`,
         },
-      });
+      }).catch(() => null);
     }
 
-    // Broadcast live event to admin dashboard
+    // 4. Broadcast live events
     AdminGateway.broadcast('new_user_feedback', {
       userId: resolvedUserId,
       feedback: {
@@ -651,28 +1025,121 @@ export class AdminController {
       },
     });
 
-    AdminGateway.broadcast('admin_notification', {
-      type: 'FEEDBACK',
-      title: `New ${numericRating}★ Feedback Received`,
-      message: `${(feedbackText || '').substring(0, 60)}...`,
-      time: 'Just now',
+    AdminGateway.broadcast('new_support_ticket', {
+      id: ticket.refNumber,
+      rawId: ticket.id,
+      refNumber: ticket.refNumber,
+      title: ticket.title,
+      description: ticket.description,
+      category: 'Citizen Feedback',
+      priority: ticket.priority,
+      status: 'OPEN',
+      rating: numericRating,
+      feedbackCategory: improvementCategory || 'App Experience',
+      feedbackText: cleanText,
+      createdOn: 'Today',
+      lastUpdated: 'Today',
+      createdAt: ticket.createdAt,
+      updatedAt: ticket.updatedAt,
+      reporter: {
+        id: resolvedUserId || '',
+        name: citizenName,
+        email: userObj?.email || '',
+        phone: userObj?.phone || '',
+      },
+      messages: ticket.messages,
     });
+    AdminGateway.broadcast('support_tickets_updated');
+
+    const formattedReview = {
+      id: feedback.id,
+      displayName: citizenName
+        ? `${citizenName.split(' ')[0]} ${citizenName.split(' ')[1] ? citizenName.split(' ')[1][0] + '.' : ''}`.trim()
+        : 'Citizen User',
+      rating: numericRating,
+      category: improvementCategory || 'App Experience',
+      review: cleanText,
+      comment: cleanText,
+      imageUrl: finalImageUrl,
+      createdAt: feedback.createdAt,
+      date: 'Today',
+    };
 
     return {
       success: true,
-      message: 'Feedback recorded successfully',
+      message: 'Feedback recorded successfully and logged in Support Tickets.',
       feedback,
+      ticket,
+      review: formattedReview,
     };
   }
 
-  @Get(['api/v1/support/feedbacks', 'api/support/feedbacks', 'support/feedbacks'])
-  @ApiOperation({ summary: 'List all Customer Feedbacks' })
-  async getFeedbacksList() {
-    return (this.prisma as any).feedback.findMany({
-      include: { user: { include: { profile: true } } },
-      orderBy: { createdAt: 'desc' },
-      take: 50,
-    });
+  @Get([
+    'api/v1/support/community-reviews',
+    'api/v1/feedback/community-reviews',
+    'api/v1/reviews',
+    'api/reviews',
+    'api/v1/support/feedbacks',
+    'api/support/feedbacks',
+    'support/feedbacks',
+    'api/v1/feedback',
+    'api/feedback',
+  ])
+  @ApiOperation({ summary: 'List Real Community Reviews & Feedbacks with Privacy Filtering' })
+  async getCommunityReviews(
+    @Query('limit') limit?: string,
+    @Query('page') page?: string,
+    @Query('category') category?: string,
+  ) {
+    try {
+      const takeCount = limit ? Math.min(parseInt(limit, 10), 100) : 50;
+      const skipCount = page ? (parseInt(page, 10) - 1) * takeCount : 0;
+      const where: any = {};
+      if (category && category !== 'All') {
+        where.improvementCategory = { contains: category, mode: 'insensitive' };
+      }
+
+      const feedbacks = await (this.prisma as any).feedback.findMany({
+        where,
+        include: { user: { include: { profile: true } } },
+        orderBy: { createdAt: 'desc' },
+        take: takeCount,
+        skip: skipCount,
+      });
+
+      const formatted = (feedbacks || []).map((f: any) => {
+        const rawName = f.user?.profile?.fullName || (f.user?.email ? f.user.email.split('@')[0] : 'Citizen User');
+        const parts = rawName.trim().split(/\s+/);
+        const safeName = parts.length > 1 ? `${parts[0]} ${parts[1][0]}.` : parts[0] || 'Citizen User';
+
+        return {
+          id: f.id,
+          displayName: safeName,
+          name: safeName,
+          rating: f.rating || 5,
+          category: f.improvementCategory || 'App Experience',
+          review: f.feedbackText || '',
+          comment: f.feedbackText || '',
+          imageUrl: f.imageUrl || null,
+          createdAt: f.createdAt ? f.createdAt.toISOString() : new Date().toISOString(),
+          date: f.createdAt ? new Date(f.createdAt).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' }) : 'Recent',
+        };
+      });
+
+      return {
+        success: true,
+        data: formatted,
+        reviews: formatted,
+        count: formatted.length,
+      };
+    } catch (e: any) {
+      return {
+        success: true,
+        data: [],
+        reviews: [],
+        count: 0,
+      };
+    }
   }
 
   // Handles both /api/auth/login and /auth/login for the admin portal

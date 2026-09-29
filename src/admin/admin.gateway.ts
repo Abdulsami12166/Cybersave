@@ -3461,4 +3461,234 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
       console.error('[AdminGateway] update_admin_profile error:', e);
     }
   }
+
+  @SubscribeMessage('send_ticket_message')
+  @SubscribeMessage('user_ticket_message')
+  async handleUserTicketMessage(
+    @ConnectedSocket() client: Socket,
+    @MessageBody() data: { ticketId?: string; message?: string; text?: string; sender?: string; senderType?: string; userId?: string; attachments?: string[] },
+  ) {
+    try {
+      const { ticketId, text, message, sender, senderType, userId, attachments } = data || {};
+      const msgContent = (text || message || '').trim();
+      if (!msgContent) {
+        client.emit('ticket_message_error', { error: 'Message content cannot be empty' });
+        return;
+      }
+
+      let ticket: any = null;
+      if (ticketId) {
+        ticket = await this.prisma.supportTicket.findUnique({
+          where: { id: ticketId },
+          include: { user: { include: { profile: true } } },
+        }).catch(() => null);
+      }
+
+      let effectiveUserId = userId || ticket?.userId;
+      if (!effectiveUserId) {
+        effectiveUserId = AdminGateway.socketToUser.get(client.id);
+      }
+
+      if (!ticket && effectiveUserId) {
+        ticket = await this.prisma.supportTicket.findFirst({
+          where: { userId: effectiveUserId, status: { not: 'CLOSED' } },
+          orderBy: { createdAt: 'desc' },
+          include: { user: { include: { profile: true } } },
+        }).catch(() => null);
+      }
+
+      const msgObj = {
+        id: `msg_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`,
+        sender: sender || (ticket?.user?.profile?.fullName || ticket?.user?.email?.split('@')[0] || 'Citizen'),
+        senderType: senderType || 'CITIZEN',
+        role: senderType || 'CITIZEN',
+        message: msgContent,
+        text: msgContent,
+        timestamp: new Date().toISOString(),
+        createdAt: new Date().toISOString(),
+        attachments: attachments || [],
+      };
+
+      if (ticket) {
+        const existingMessages = Array.isArray(ticket.messages) ? ticket.messages : [];
+        const updatedMessages = [...existingMessages, msgObj];
+
+        await this.prisma.supportTicket.update({
+          where: { id: ticket.id },
+          data: {
+            messages: updatedMessages,
+            status: ticket.status === 'RESOLVED' ? 'IN_PROGRESS' : ticket.status,
+            updatedAt: new Date(),
+          },
+        });
+
+        AdminGateway.broadcast('new_ticket_message', {
+          ticketId: ticket.id,
+          ticketRef: ticket.refNumber,
+          userId: ticket.userId,
+          message: msgObj,
+        });
+        AdminGateway.broadcast('support_ticket_updated', {
+          ticketId: ticket.id,
+          status: ticket.status,
+          updatedAt: new Date().toISOString(),
+        });
+
+        client.emit('ticket_message_sent', {
+          success: true,
+          ticketId: ticket.id,
+          message: msgObj,
+        });
+
+        if (ticket.userId) {
+          AdminGateway.emitToUser(ticket.userId, 'new_ticket_message', {
+            ticketId: ticket.id,
+            message: msgObj,
+          });
+        }
+      } else {
+        if (effectiveUserId) {
+          const count = await this.prisma.supportTicket.count().catch(() => 0);
+          const newTicketRef = `TCK-${String(count + 1).padStart(5, '0')}`;
+          const newTicket = await this.prisma.supportTicket.create({
+            data: {
+              refNumber: newTicketRef,
+              userId: effectiveUserId,
+              category: 'General Support',
+              title: msgContent.slice(0, 50),
+              description: msgContent,
+              status: 'OPEN',
+              priority: 'Medium',
+              messages: [msgObj],
+            },
+          });
+
+          AdminGateway.broadcast('support_ticket_created', newTicket);
+          client.emit('ticket_message_sent', {
+            success: true,
+            ticketId: newTicket.id,
+            message: msgObj,
+          });
+        }
+      }
+    } catch (err: any) {
+      console.error('[AdminGateway] handleUserTicketMessage error:', err?.message);
+      client.emit('ticket_message_error', { error: err?.message || 'Failed to send message' });
+    }
+  }
+
+  @SubscribeMessage('admin_ticket_reply')
+  @SubscribeMessage('admin_grievance_reply')
+  async handleAdminTicketReply(
+    @ConnectedSocket() client: Socket,
+    @MessageBody() data: { ticketId: string; message: string; text?: string; officerName?: string; attachments?: string[] },
+  ) {
+    try {
+      const { ticketId, message, text, officerName, attachments } = data || {};
+      const msgContent = (text || message || '').trim();
+      if (!ticketId || !msgContent) {
+        client.emit('ticket_reply_error', { error: 'ticketId and message are required' });
+        return;
+      }
+
+      const ticket = await this.prisma.supportTicket.findUnique({
+        where: { id: ticketId },
+        include: { user: { include: { profile: true } } },
+      });
+
+      if (!ticket) {
+        client.emit('ticket_reply_error', { error: 'Support ticket not found' });
+        return;
+      }
+
+      const replyObj = {
+        id: `reply_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`,
+        sender: officerName || 'CyberSave Officer',
+        senderType: 'ADMIN',
+        role: 'ADMIN',
+        message: msgContent,
+        text: msgContent,
+        timestamp: new Date().toISOString(),
+        createdAt: new Date().toISOString(),
+        attachments: attachments || [],
+      };
+
+      const existingMessages = Array.isArray(ticket.messages) ? ticket.messages : [];
+      const updatedMessages = [...existingMessages, replyObj];
+
+      await this.prisma.supportTicket.update({
+        where: { id: ticket.id },
+        data: {
+          messages: updatedMessages,
+          status: ticket.status === 'OPEN' ? 'IN_PROGRESS' : ticket.status,
+        },
+      });
+
+      AdminGateway.broadcast('new_ticket_message', {
+        ticketId: ticket.id,
+        ticketRef: ticket.refNumber,
+        userId: ticket.userId,
+        message: replyObj,
+      });
+
+      if (ticket.userId) {
+        AdminGateway.emitToUser(ticket.userId, 'new_ticket_message', {
+          ticketId: ticket.id,
+          message: replyObj,
+        });
+        AdminGateway.emitToUser(ticket.userId, 'user_grievance_reply', {
+          ticketId: ticket.id,
+          ticketRef: ticket.refNumber,
+          message: msgContent,
+          timestamp: new Date().toISOString(),
+          reply: replyObj,
+        });
+
+        await this.prisma.notification.create({
+          data: {
+            userId: ticket.userId,
+            title: 'Support Ticket Reply',
+            body: `New message on ticket #${ticket.refNumber}: "${msgContent.slice(0, 60)}..."`,
+            type: 'SYSTEM',
+            status: 'PENDING',
+          },
+        }).catch(() => null);
+      }
+
+      client.emit('admin_ticket_reply_success', {
+        success: true,
+        ticketId: ticket.id,
+        message: replyObj,
+      });
+    } catch (err: any) {
+      console.error('[AdminGateway] handleAdminTicketReply error:', err?.message);
+      client.emit('ticket_reply_error', { error: err?.message || 'Failed to reply' });
+    }
+  }
+
+  @SubscribeMessage('request_user_tickets')
+  async handleRequestUserTickets(
+    @ConnectedSocket() client: Socket,
+    @MessageBody() data: { userId?: string },
+  ) {
+    try {
+      let resolvedUserId = data?.userId;
+      if (!resolvedUserId) {
+        resolvedUserId = AdminGateway.socketToUser.get(client.id);
+      }
+      if (!resolvedUserId) {
+        client.emit('response_user_tickets', { success: true, tickets: [] });
+        return;
+      }
+
+      const tickets = await this.prisma.supportTicket.findMany({
+        where: { userId: resolvedUserId },
+        orderBy: { createdAt: 'desc' },
+      });
+
+      client.emit('response_user_tickets', { success: true, tickets });
+    } catch (err: any) {
+      console.error('[AdminGateway] request_user_tickets error:', err);
+    }
+  }
 }

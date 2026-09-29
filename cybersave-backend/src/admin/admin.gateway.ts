@@ -868,41 +868,37 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
       }
 
       if (!targetUser) {
-        targetUser = await this.prisma.user.findFirst({ where: { role: 'USER' }, include: { profile: true } }).catch(() => null);
+        client.emit('response_push_sent', { success: false, error: `Citizen target '${userId}' not found in records` });
+        return;
       }
-
-      const effectiveUserId = targetUser?.id || userId;
 
       // 1. Create Notification record in Database
-      let notifRecord: any = null;
-      if (targetUser && targetUser.id) {
-        notifRecord = await this.prisma.notification.create({
-          data: {
-            userId: targetUser.id,
-            title: title.trim(),
-            body: body.trim(),
-            type: (type as any) || 'SYSTEM',
-            status: 'SENT',
-            sentAt: new Date(),
-          },
-        }).catch((err) => {
-          console.warn('[AdminGateway] DB Notification create note:', err);
-          return null;
-        });
+      const notifRecord = await this.prisma.notification.create({
+        data: {
+          userId: targetUser.id,
+          title: title.trim(),
+          body: body.trim(),
+          type: (type as any) || 'SYSTEM',
+          status: 'SENT',
+          sentAt: new Date(),
+        },
+      }).catch((err) => {
+        console.warn('[AdminGateway] DB Notification create note:', err);
+        return null;
+      });
 
-        // 2. Log in AuditTrail
-        await this.prisma.auditLog.create({
-          data: {
-            userId: targetUser.id,
-            action: 'NOTIFICATION_SENT',
-            details: `Direct Push Notification sent: "${title.trim()}" - ${body.trim().substring(0, 55)}${body.length > 55 ? '...' : ''}`,
-          },
-        }).catch(() => null);
-      }
+      // 2. Log in AuditTrail
+      await this.prisma.auditLog.create({
+        data: {
+          userId: targetUser.id,
+          action: 'NOTIFICATION_SENT',
+          details: `Direct Push Notification sent: "${title.trim()}" - ${body.trim().substring(0, 55)}${body.length > 55 ? '...' : ''}`,
+        },
+      }).catch(() => null);
 
       // 3. Send FCM push notification to specific device token
       let fcmSent = false;
-      if (targetUser?.fcmToken && messaging) {
+      if (targetUser.fcmToken && messaging) {
         try {
           await messaging.send({
             token: targetUser.fcmToken,
@@ -914,7 +910,7 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
               title: title.trim(),
               body: body.trim(),
               type: type || 'SYSTEM',
-              userId: effectiveUserId,
+              userId: targetUser.id,
               notificationId: notifRecord?.id || '',
             },
             android: {
@@ -929,53 +925,39 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
             },
           });
           fcmSent = true;
-          console.log(`[AdminGateway] FCM Push sent to user ${effectiveUserId}`);
+          console.log(`[AdminGateway] FCM Push sent to user ${targetUser.id}`);
         } catch (firebaseErr: any) {
           console.warn('[AdminGateway] Firebase FCM note:', firebaseErr?.message || firebaseErr);
         }
       }
 
-      const dispatchPayload = {
+      // 4. Send targeted WebSocket event directly to citizen's active mobile socket & room
+      const socketDispatched = AdminGateway.emitToUser(targetUser.id, 'user_push_notification', {
         id: notifRecord?.id || `notif_${Date.now()}`,
-        userId: effectiveUserId,
-        userEmail: targetUser?.email,
-        userPhone: targetUser?.phone,
-        userName: targetUser?.profile?.fullName || targetUser?.phone || targetUser?.email || 'Citizen',
         title: title.trim(),
         body: body.trim(),
-        message: body.trim(),
-        content: body.trim(),
         type: type || 'SYSTEM',
-        isBroadcast: true,
-        broadcast: true,
-        fromAdmin: true,
-        source: 'ADMIN_GATEWAY',
         createdAt: new Date().toISOString(),
-      };
+      });
 
-      // 4. Send targeted & broadcast WebSocket events cluster-wide
-      if (targetUser?.id) {
-        AdminGateway.emitToUser(targetUser.id, 'user_push_notification', dispatchPayload);
-        AdminGateway.emitToUser(targetUser.id, 'new_notification', dispatchPayload);
-      }
-      AdminGateway.broadcast('receive_global_push', dispatchPayload);
-      AdminGateway.broadcast('broadcast_notification', dispatchPayload);
-      AdminGateway.broadcast('campaign_broadcast', dispatchPayload);
-      AdminGateway.broadcast('user_push_notification', dispatchPayload);
-      AdminGateway.broadcast('new_notification', dispatchPayload);
+      AdminGateway.emitToUser(targetUser.id, 'new_notification', {
+        id: notifRecord?.id || `notif_${Date.now()}`,
+        title: title.trim(),
+        body: body.trim(),
+        type: type || 'SYSTEM',
+        createdAt: new Date().toISOString(),
+      });
 
       // 5. Notify admin client
       client.emit('response_push_sent', {
         success: true,
-        message: `Notification successfully pushed to status bar!`,
+        message: `Notification successfully pushed to ${targetUser.profile?.fullName || targetUser.phone || targetUser.email || 'Citizen'}.`,
         fcmSent,
-        notification: dispatchPayload
+        socketDispatched,
       });
 
       // 6. Broadcast updates to Admin Dashboards
-      if (targetUser?.id) {
-        AdminGateway.broadcast('user_activity_updated', { userId: targetUser.id });
-      }
+      AdminGateway.broadcast('user_activity_updated', { userId: targetUser.id });
       AdminGateway.broadcast('audit_log_added');
     } catch (e: any) {
       console.error('[AdminGateway] send_push_notification error:', e);
@@ -2914,7 +2896,7 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
         status: foundTicket?.status || 'OPEN',
         createdOn: foundTicket ? foundTicket.createdAt.toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' }) : 'Today',
         lastUpdated: foundTicket ? foundTicket.updatedAt.toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' }) : 'Today',
-        assignedTo: { id: 'admin1', name: foundTicket?.assignedTo || 'Amit S. (Support Desk)' },
+        assignedTo: foundTicket?.assignedTo ? { id: 'admin1', name: foundTicket.assignedTo } : null,
         reporter: { id: reporterId, name: reporterName },
         messages: rawMessages,
         notes: [
@@ -2928,6 +2910,58 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
       });
     } catch (e) {
       console.error('[AdminGateway] request_ticket_thread error:', e);
+    }
+  }
+
+  @SubscribeMessage('request_ticket_detail')
+  async handleTicketDetail(
+    @ConnectedSocket() client: Socket,
+    @MessageBody() data: { id: string },
+  ) {
+    try {
+      const ticketId = data?.id;
+      if (!ticketId) return;
+
+      const isMongoId = (idStr?: string) => typeof idStr === 'string' && /^[0-9a-fA-F]{24}$/.test(idStr);
+      const orConditions: any[] = [
+        { refNumber: ticketId },
+        { refNumber: `TKT-${ticketId}` },
+      ];
+      if (isMongoId(ticketId)) {
+        orConditions.push({ id: ticketId });
+      }
+
+      const foundTicket = await this.prisma.supportTicket.findFirst({
+        where: { OR: orConditions },
+        include: { user: { include: { profile: true } } },
+      });
+
+      if (!foundTicket) return;
+
+      const u: any = foundTicket.user;
+      const reporterName = u?.profile?.fullName || u?.fullName || u?.email || 'Citizen User';
+      const reporterId = foundTicket.userId || '';
+
+      client.emit('response_ticket_detail', {
+        id: foundTicket.refNumber || foundTicket.id,
+        rawId: foundTicket.id,
+        refNumber: foundTicket.refNumber,
+        title: foundTicket.title,
+        description: foundTicket.description,
+        attachmentUrl: foundTicket.attachmentUrl,
+        category: foundTicket.category,
+        priority: foundTicket.priority,
+        status: foundTicket.status,
+        createdOn: foundTicket.createdAt.toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' }),
+        lastUpdated: foundTicket.updatedAt.toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' }),
+        createdAt: foundTicket.createdAt,
+        updatedAt: foundTicket.updatedAt,
+        assignedTo: foundTicket.assignedTo ? { id: 'admin1', name: foundTicket.assignedTo } : null,
+        reporter: { id: reporterId, name: reporterName, email: u?.email || '' },
+        messages: Array.isArray(foundTicket.messages) ? foundTicket.messages : [],
+      });
+    } catch (e) {
+      console.error('[AdminGateway] request_ticket_detail error:', e);
     }
   }
 
@@ -3032,6 +3066,80 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
       });
     } catch (e) {
       console.error('[AdminGateway] send_ticket_reply error:', e);
+    }
+  }
+
+  @SubscribeMessage('resolve_support_ticket')
+  async handleResolveTicket(
+    @ConnectedSocket() client: Socket,
+    @MessageBody() data: { id: string; resolutionSummary?: string; resolutionCategory?: string; rootCause?: string; adminId?: string; adminName?: string },
+  ) {
+    try {
+      const ticketId = data?.id;
+      if (!ticketId) return;
+
+      const isMongoId = (idStr?: string) => typeof idStr === 'string' && /^[0-9a-fA-F]{24}$/.test(idStr);
+      const orConditions: any[] = [{ refNumber: ticketId }, { refNumber: `TKT-${ticketId}` }];
+      if (isMongoId(ticketId)) {
+        orConditions.push({ id: ticketId });
+      }
+
+      const ticket = await this.prisma.supportTicket.findFirst({
+        where: { OR: orConditions },
+        include: { user: { include: { profile: true } } },
+      });
+
+      if (!ticket) return;
+
+      const actingName = data.adminName || 'Support Desk Officer';
+      const nowTimeStr = new Date().toLocaleString('en-IN', { dateStyle: 'medium', timeStyle: 'short' });
+
+      const existingMsgs = Array.isArray(ticket.messages) ? (ticket.messages as any[]) : [];
+      const resolutionMsg = {
+        id: `msg-resolve-${Date.now()}`,
+        senderId: data.adminId || 'admin',
+        senderName: `${actingName} (Resolution)`,
+        role: 'AGENT',
+        text: `✅ Ticket Resolved — ${data.resolutionSummary || 'Issue has been resolved.'}`,
+        time: nowTimeStr,
+        isResolution: true,
+      };
+      const updatedMsgs = [...existingMsgs, resolutionMsg];
+
+      await this.prisma.supportTicket.update({
+        where: { id: ticket.id },
+        data: {
+          messages: updatedMsgs as any,
+          status: 'RESOLVED',
+          updatedAt: new Date(),
+        },
+      });
+
+      // Broadcast resolve success to all admin clients
+      this.server.emit('resolve_ticket_success', {
+        id: ticket.refNumber,
+        rawId: ticket.id,
+        refNumber: ticket.refNumber,
+        title: ticket.title,
+        status: 'RESOLVED',
+        messages: updatedMsgs,
+      });
+      this.server.emit('support_tickets_updated');
+
+      // Notify citizen
+      if (ticket.userId) {
+        await this.prisma.notification.create({
+          data: {
+            userId: ticket.userId,
+            title: `Ticket #${ticket.refNumber} Resolved`,
+            body: data.resolutionSummary || 'Your support ticket has been resolved.',
+            type: 'INFO',
+            status: 'SENT',
+          },
+        }).catch(() => null);
+      }
+    } catch (e) {
+      console.error('[AdminGateway] resolve_support_ticket error:', e);
     }
   }
 
@@ -3351,6 +3459,239 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
       client.emit('update_admin_profile_success', updatedProfileExtra);
     } catch (e) {
       console.error('[AdminGateway] update_admin_profile error:', e);
+    }
+  }
+
+  @SubscribeMessage('send_ticket_message')
+  @SubscribeMessage('user_ticket_message')
+  async handleUserTicketMessage(
+    @ConnectedSocket() client: Socket,
+    @MessageBody() data: { ticketId?: string; message?: string; text?: string; sender?: string; senderType?: string; userId?: string; attachments?: string[] },
+  ) {
+    try {
+      const { ticketId, text, message, sender, senderType, userId, attachments } = data || {};
+      const msgContent = (text || message || '').trim();
+      if (!msgContent) {
+        client.emit('ticket_message_error', { error: 'Message content cannot be empty' });
+        return;
+      }
+
+      let ticket: any = null;
+      if (ticketId) {
+        ticket = await this.prisma.supportTicket.findUnique({
+          where: { id: ticketId },
+          include: { user: { include: { profile: true } } },
+        }).catch(() => null);
+      }
+
+      let effectiveUserId = userId || ticket?.userId;
+      if (!effectiveUserId) {
+        effectiveUserId = AdminGateway.socketToUser.get(client.id);
+      }
+
+      if (!ticket && effectiveUserId) {
+        ticket = await this.prisma.supportTicket.findFirst({
+          where: { userId: effectiveUserId, status: { not: 'CLOSED' } },
+          orderBy: { createdAt: 'desc' },
+          include: { user: { include: { profile: true } } },
+        }).catch(() => null);
+      }
+
+      const msgObj = {
+        id: `msg_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`,
+        sender: sender || (ticket?.user?.profile?.fullName || ticket?.user?.email?.split('@')[0] || 'Citizen'),
+        senderType: senderType || 'CITIZEN',
+        role: senderType || 'CITIZEN',
+        message: msgContent,
+        text: msgContent,
+        timestamp: new Date().toISOString(),
+        createdAt: new Date().toISOString(),
+        attachments: attachments || [],
+      };
+
+      if (ticket) {
+        const existingMessages = Array.isArray(ticket.messages) ? ticket.messages : [];
+        const updatedMessages = [...existingMessages, msgObj];
+
+        await this.prisma.supportTicket.update({
+          where: { id: ticket.id },
+          data: {
+            messages: updatedMessages,
+            status: ticket.status === 'RESOLVED' ? 'IN_PROGRESS' : ticket.status,
+            updatedAt: new Date(),
+          },
+        });
+
+        AdminGateway.broadcast('new_ticket_message', {
+          ticketId: ticket.id,
+          ticketRef: ticket.ticketId || ticket.ticketNumber,
+          userId: ticket.userId,
+          message: msgObj,
+        });
+        AdminGateway.broadcast('support_ticket_updated', {
+          ticketId: ticket.id,
+          status: ticket.status,
+          updatedAt: new Date().toISOString(),
+        });
+
+        client.emit('ticket_message_sent', {
+          success: true,
+          ticketId: ticket.id,
+          message: msgObj,
+        });
+
+        if (ticket.userId) {
+          AdminGateway.emitToUser(ticket.userId, 'new_ticket_message', {
+            ticketId: ticket.id,
+            message: msgObj,
+          });
+        }
+      } else {
+        if (effectiveUserId) {
+          const count = await this.prisma.supportTicket.count().catch(() => 0);
+          const newTicketRef = `TCK-${String(count + 1).padStart(5, '0')}`;
+          const newTicket = await this.prisma.supportTicket.create({
+            data: {
+              ticketNumber: newTicketRef,
+              ticketId: newTicketRef,
+              userId: effectiveUserId,
+              category: 'General Support',
+              subject: msgContent.slice(0, 50),
+              description: msgContent,
+              status: 'OPEN',
+              priority: 'Medium',
+              messages: [msgObj],
+            },
+          });
+
+          AdminGateway.broadcast('support_ticket_created', newTicket);
+          client.emit('ticket_message_sent', {
+            success: true,
+            ticketId: newTicket.id,
+            message: msgObj,
+          });
+        }
+      }
+    } catch (err: any) {
+      console.error('[AdminGateway] handleUserTicketMessage error:', err?.message);
+      client.emit('ticket_message_error', { error: err?.message || 'Failed to send message' });
+    }
+  }
+
+  @SubscribeMessage('admin_ticket_reply')
+  @SubscribeMessage('admin_grievance_reply')
+  async handleAdminTicketReply(
+    @ConnectedSocket() client: Socket,
+    @MessageBody() data: { ticketId: string; message: string; text?: string; officerName?: string; attachments?: string[] },
+  ) {
+    try {
+      const { ticketId, message, text, officerName, attachments } = data || {};
+      const msgContent = (text || message || '').trim();
+      if (!ticketId || !msgContent) {
+        client.emit('ticket_reply_error', { error: 'ticketId and message are required' });
+        return;
+      }
+
+      const ticket = await this.prisma.supportTicket.findUnique({
+        where: { id: ticketId },
+        include: { user: { include: { profile: true } } },
+      });
+
+      if (!ticket) {
+        client.emit('ticket_reply_error', { error: 'Support ticket not found' });
+        return;
+      }
+
+      const replyObj = {
+        id: `reply_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`,
+        sender: officerName || 'CyberSave Officer',
+        senderType: 'ADMIN',
+        role: 'ADMIN',
+        message: msgContent,
+        text: msgContent,
+        timestamp: new Date().toISOString(),
+        createdAt: new Date().toISOString(),
+        attachments: attachments || [],
+      };
+
+      const existingMessages = Array.isArray(ticket.messages) ? ticket.messages : [];
+      const updatedMessages = [...existingMessages, replyObj];
+
+      await this.prisma.supportTicket.update({
+        where: { id: ticket.id },
+        data: {
+          messages: updatedMessages,
+          response: msgContent,
+          status: ticket.status === 'OPEN' ? 'IN_PROGRESS' : ticket.status,
+          updatedAt: new Date(),
+        },
+      });
+
+      AdminGateway.broadcast('new_ticket_message', {
+        ticketId: ticket.id,
+        ticketRef: ticket.ticketId || ticket.ticketNumber,
+        userId: ticket.userId,
+        message: replyObj,
+      });
+
+      if (ticket.userId) {
+        AdminGateway.emitToUser(ticket.userId, 'new_ticket_message', {
+          ticketId: ticket.id,
+          message: replyObj,
+        });
+        AdminGateway.emitToUser(ticket.userId, 'user_grievance_reply', {
+          ticketId: ticket.id,
+          ticketRef: ticket.ticketId || ticket.ticketNumber,
+          message: msgContent,
+          timestamp: new Date().toISOString(),
+          reply: replyObj,
+        });
+
+        await this.prisma.notification.create({
+          data: {
+            userId: ticket.userId,
+            title: 'Support Ticket Reply',
+            message: `New message on ticket #${ticket.ticketId || ticket.ticketNumber}: "${msgContent.slice(0, 60)}..."`,
+            type: 'SUPPORT_REPLY',
+            status: 'UNREAD',
+          },
+        }).catch(() => null);
+      }
+
+      client.emit('admin_ticket_reply_success', {
+        success: true,
+        ticketId: ticket.id,
+        message: replyObj,
+      });
+    } catch (err: any) {
+      console.error('[AdminGateway] handleAdminTicketReply error:', err?.message);
+      client.emit('ticket_reply_error', { error: err?.message || 'Failed to reply' });
+    }
+  }
+
+  @SubscribeMessage('request_user_tickets')
+  async handleRequestUserTickets(
+    @ConnectedSocket() client: Socket,
+    @MessageBody() data: { userId?: string },
+  ) {
+    try {
+      let resolvedUserId = data?.userId;
+      if (!resolvedUserId) {
+        resolvedUserId = AdminGateway.socketToUser.get(client.id);
+      }
+      if (!resolvedUserId) {
+        client.emit('response_user_tickets', { success: true, tickets: [] });
+        return;
+      }
+
+      const tickets = await this.prisma.supportTicket.findMany({
+        where: { userId: resolvedUserId },
+        orderBy: { createdAt: 'desc' },
+      });
+
+      client.emit('response_user_tickets', { success: true, tickets });
+    } catch (err: any) {
+      console.error('[AdminGateway] request_user_tickets error:', err);
     }
   }
 }
