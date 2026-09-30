@@ -1750,15 +1750,39 @@ export function setupSockets(io: Server) {
           isActive: data.status === 'Active' || data.isActive === true || data.status === undefined,
         };
 
-        const newService = await prisma.service.upsert({
-          where: { slug },
-          update: updateData,
-          create: {
-            slug,
-            ...updateData,
-            eligibility: data.eligibility || ['Citizen of India', 'Valid ID verification credentials'],
-          }
-        });
+        // EDIT vs CREATE: update the exact record when the payload carries an
+        // existing service id (or a slug that resolves), never duplicate it.
+        const isMongoId = (s?: string) => typeof s === 'string' && /^[0-9a-fA-F]{24}$/.test(s);
+        let existing: any = null;
+        if (data.id && isMongoId(data.id)) {
+          existing = await prisma.service.findUnique({ where: { id: data.id } }).catch(() => null);
+        }
+        if (!existing && data.id) {
+          existing = await prisma.service.findUnique({ where: { slug: data.id } }).catch(() => null);
+        }
+        if (!existing) {
+          existing = await prisma.service.findUnique({ where: { slug } }).catch(() => null);
+        }
+
+        let newService: any;
+        if (existing) {
+          newService = await prisma.service.update({
+            where: { id: existing.id },
+            data: {
+              ...updateData,
+              ...(data.eligibility ? { eligibility: data.eligibility } : {}),
+              ...(data.slug ? { slug: data.slug } : {}),
+            },
+          });
+        } else {
+          newService = await prisma.service.create({
+            data: {
+              slug,
+              ...updateData,
+              eligibility: data.eligibility || ['Citizen of India', 'Valid ID verification credentials'],
+            }
+          });
+        }
 
         console.log('[Socket] Service configuration saved and published:', newService.id);
         socket.emit('save_service_config_success', newService);

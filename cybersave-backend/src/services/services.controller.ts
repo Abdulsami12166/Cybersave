@@ -14,21 +14,16 @@ export class ServicesController {
   }
 
   @Post()
-  @ApiOperation({ summary: 'Create or update a government service workflow' })
+  @ApiOperation({ summary: 'Create a new government service workflow (edit must use PUT)' })
   async createService(@Body() body: any) {
     return this.servicesService.createOrUpdateService(body);
   }
 
-  @Put(':id')
-  @ApiOperation({ summary: 'Update existing service scheme and configure sub-services' })
-  async updateService(@Param('id') id: string, @Body() body: any) {
-    return this.servicesService.createOrUpdateService({ ...body, id });
-  }
-
-  @Patch(':id')
-  @ApiOperation({ summary: 'Patch existing service scheme and configure sub-services' })
-  async patchService(@Param('id') id: string, @Body() body: any) {
-    return this.servicesService.createOrUpdateService({ ...body, id });
+  @Put([':idOrSlug', 'edit/:idOrSlug'])
+  @Patch([':idOrSlug', 'edit/:idOrSlug'])
+  @ApiOperation({ summary: 'Update an existing service by id — never creates a new record' })
+  async updateService(@Param('idOrSlug') idOrSlug: string, @Body() body: any) {
+    return this.servicesService.updateService(idOrSlug, body);
   }
 
   @Get(':slug')

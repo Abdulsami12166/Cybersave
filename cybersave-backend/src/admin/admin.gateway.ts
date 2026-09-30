@@ -2056,15 +2056,40 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
         isActive: data.status === 'Active' || data.isActive === true || data.status === undefined,
       };
 
-      const newService = await this.prisma.service.upsert({
-        where: { slug },
-        update: updateData,
-        create: {
-          slug,
-          ...updateData,
-          eligibility: data.eligibility || ['Citizen of India', 'Valid ID verification credentials'],
-        },
-      });
+      // EDIT vs CREATE: when the wizard supplies an existing service id (or slug),
+      // update that exact record in place. Only a payload without any existing
+      // identity is allowed to create a new service.
+      const isMongoId = (s?: string) => typeof s === 'string' && /^[0-9a-fA-F]{24}$/.test(s);
+      let existing: any = null;
+      if (data.id && isMongoId(data.id)) {
+        existing = await this.prisma.service.findUnique({ where: { id: data.id } }).catch(() => null);
+      }
+      if (!existing && data.id) {
+        existing = await this.prisma.service.findUnique({ where: { slug: data.id } }).catch(() => null);
+      }
+      if (!existing) {
+        existing = await this.prisma.service.findUnique({ where: { slug } }).catch(() => null);
+      }
+
+      let newService: any;
+      if (existing) {
+        newService = await this.prisma.service.update({
+          where: { id: existing.id },
+          data: {
+            ...updateData,
+            ...(data.eligibility ? { eligibility: data.eligibility } : {}),
+            ...(data.slug ? { slug: data.slug } : {}),
+          },
+        });
+      } else {
+        newService = await this.prisma.service.create({
+          data: {
+            slug,
+            ...updateData,
+            eligibility: data.eligibility || ['Citizen of India', 'Valid ID verification credentials'],
+          },
+        });
+      }
 
       console.log('[AdminGateway] Service configuration saved and published:', newService.id, newService.slug);
       client.emit('save_service_config_success', newService);
@@ -3524,7 +3549,7 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
 
         AdminGateway.broadcast('new_ticket_message', {
           ticketId: ticket.id,
-          ticketRef: ticket.ticketId || ticket.ticketNumber,
+          ticketRef: ticket.refNumber,
           userId: ticket.userId,
           message: msgObj,
         });
@@ -3552,11 +3577,10 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
           const newTicketRef = `TCK-${String(count + 1).padStart(5, '0')}`;
           const newTicket = await this.prisma.supportTicket.create({
             data: {
-              ticketNumber: newTicketRef,
-              ticketId: newTicketRef,
+              refNumber: newTicketRef,
               userId: effectiveUserId,
               category: 'General Support',
-              subject: msgContent.slice(0, 50),
+              title: msgContent.slice(0, 50),
               description: msgContent,
               status: 'OPEN',
               priority: 'Medium',
@@ -3621,15 +3645,13 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
         where: { id: ticket.id },
         data: {
           messages: updatedMessages,
-          response: msgContent,
           status: ticket.status === 'OPEN' ? 'IN_PROGRESS' : ticket.status,
-          updatedAt: new Date(),
         },
       });
 
       AdminGateway.broadcast('new_ticket_message', {
         ticketId: ticket.id,
-        ticketRef: ticket.ticketId || ticket.ticketNumber,
+        ticketRef: ticket.refNumber,
         userId: ticket.userId,
         message: replyObj,
       });
@@ -3641,7 +3663,7 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
         });
         AdminGateway.emitToUser(ticket.userId, 'user_grievance_reply', {
           ticketId: ticket.id,
-          ticketRef: ticket.ticketId || ticket.ticketNumber,
+          ticketRef: ticket.refNumber,
           message: msgContent,
           timestamp: new Date().toISOString(),
           reply: replyObj,
@@ -3651,9 +3673,9 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
           data: {
             userId: ticket.userId,
             title: 'Support Ticket Reply',
-            message: `New message on ticket #${ticket.ticketId || ticket.ticketNumber}: "${msgContent.slice(0, 60)}..."`,
-            type: 'SUPPORT_REPLY',
-            status: 'UNREAD',
+            body: `New message on ticket #${ticket.refNumber}: "${msgContent.slice(0, 60)}..."`,
+            type: 'SYSTEM',
+            status: 'PENDING',
           },
         }).catch(() => null);
       }

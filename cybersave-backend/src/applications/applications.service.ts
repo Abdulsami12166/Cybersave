@@ -1,4 +1,4 @@
-import { Injectable, Logger, NotFoundException } from '@nestjs/common';
+import { Injectable, Logger, NotFoundException, BadRequestException } from '@nestjs/common';
 import { PrismaService } from '../database/prisma.service';
 import { TwilioService } from '../common/services/twilio.service';
 import { AdminGateway } from '../admin/admin.gateway';
@@ -126,6 +126,18 @@ export class ApplicationsService {
       }).catch(() => null);
       if (srv) serviceId = srv.id;
     }
+
+    // Inactive services are not open for new applications (server-enforced,
+    // not a frontend-only hide). Historical applications remain untouched.
+    if (serviceId) {
+      const activeSrv = await this.prisma.service.findUnique({ where: { id: serviceId } }).catch(() => null);
+      if (activeSrv && activeSrv.isActive === false) {
+        throw new BadRequestException(
+          `Service "${activeSrv.title}" is currently unavailable and not accepting new applications.`,
+        );
+      }
+    }
+
     if (!serviceId) {
       const firstSrv = await this.prisma.service.findFirst();
       if (firstSrv) {

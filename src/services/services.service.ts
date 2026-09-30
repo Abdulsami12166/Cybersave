@@ -1,4 +1,4 @@
-import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
+import { Injectable, Logger, OnModuleInit, NotFoundException, BadRequestException } from '@nestjs/common';
 import { PrismaService } from '../database/prisma.service';
 import { AdminGateway } from '../admin/admin.gateway';
 
@@ -216,6 +216,91 @@ export class ServicesService implements OnModuleInit {
     return this.getServiceByIdOrSlug(slug);
   }
 
+  /**
+   * Update an EXISTING service by id (or slug fallback). Never creates.
+   * The record identity (id) is preserved; slug is only changed when the
+   * caller explicitly sends a new one (renames keep the original slug by default).
+   */
+  async updateService(idOrSlug: string, data: any) {
+    const existing = await this.resolveServiceStrict(idOrSlug);
+
+    const rawTitle = data.title || data.name || existing.title;
+    const feeVal = typeof data.fee === 'number'
+      ? data.fee
+      : parseFloat(data.pricing?.fee || data.fee || '50.0') || 50.0;
+
+    const resolvedIcon = data.iconUrl || data.imageUrl || data.iconName || existing.iconName;
+    const incomingPricing =
+      typeof data.pricingConfig === 'object' && data.pricingConfig !== null
+        ? data.pricingConfig
+        : typeof data.pricing === 'object' && data.pricing !== null
+          ? data.pricing
+          : undefined;
+    const pricingObj = {
+      ...((existing.pricingConfig as Record<string, any>) || {}),
+      ...(incomingPricing || { fee: feeVal }),
+      iconUrl: data.iconUrl || data.imageUrl || (resolvedIcon.startsWith('http') ? resolvedIcon : undefined),
+    };
+
+    const eligibilityValue = data.eligibility
+      ? (Array.isArray(data.eligibility) ? data.eligibility : [data.eligibility])
+      : ((existing.eligibility as string[] | null) || ['Citizen of India']);
+
+    const updated = await this.prisma.service.update({
+      where: { id: existing.id },
+      data: {
+        title: rawTitle,
+        description: data.description || data.shortDescription || existing.description,
+        category: data.category || existing.category,
+        department: data.department || data.departmentRole || existing.department,
+        fee: feeVal,
+        processingTime: data.processingTime || data.tat || existing.processingTime,
+        eligibility: eligibilityValue,
+        requiredDocs: data.requiredDocs || data.documents || (existing.requiredDocs as any) || [],
+        subServices: data.subServices || (existing.subServices as any) || [],
+        formDataSchema: data.formDataSchema || data.formElements || (existing.formDataSchema as any) || [],
+        pricingConfig: pricingObj,
+        iconName: resolvedIcon,
+        colorHex: data.colorHex || existing.colorHex,
+        isActive: data.isActive !== undefined
+          ? data.isActive
+          : data.status !== undefined
+            ? data.status === 'Active'
+            : existing.isActive,
+        ...(data.slug ? { slug: data.slug } : {}),
+      },
+    });
+
+    try {
+      await AdminGateway.logActivity(this.prisma, {
+        action: 'SERVICE_SCHEME_UPDATED',
+        details: `Updated e-governance service scheme "${updated.title}" (Category: ${updated.category}, Fee: ₹${updated.fee}, SLA: ${updated.processingTime})`,
+      });
+      AdminGateway.broadcast('services_updated', updated);
+      AdminGateway.broadcast('service_updated', updated);
+    } catch (auditErr: any) {
+      this.logger.warn(`Service audit log warning: ${auditErr?.message}`);
+    }
+
+    this.logger.log(`Service updated in place: ${updated.title} (${updated.slug}) [${updated.id}]`);
+    return updated;
+  }
+
+  private async resolveServiceStrict(idOrSlug: string) {
+    const isMongoId = /^[0-9a-fA-F]{24}$/.test(idOrSlug);
+    let existing: any = null;
+    if (isMongoId) {
+      existing = await this.prisma.service.findUnique({ where: { id: idOrSlug } }).catch(() => null);
+    }
+    if (!existing) {
+      existing = await this.prisma.service.findUnique({ where: { slug: idOrSlug } }).catch(() => null);
+    }
+    if (!existing) {
+      throw new NotFoundException(`Service "${idOrSlug}" not found; cannot update a non-existent service.`);
+    }
+    return existing;
+  }
+
   async createOrUpdateService(data: any) {
     const rawTitle = data.title || data.name || 'Custom Service';
     const slug = (data.slug || rawTitle)
@@ -252,6 +337,14 @@ export class ServicesService implements OnModuleInit {
     };
 
     const isExisting = await this.prisma.service.findUnique({ where: { slug } }).catch(() => null);
+
+    // Explicit create: do not silently convert into an update of an unrelated
+    // record that merely shares the slug (breaks edit-vs-create semantics).
+    if (isExisting && data.allowSlugUpsert !== true) {
+      throw new BadRequestException(
+        `A service with slug "${slug}" already exists. Use PUT /api/v1/services/${isExisting.id} to update it, or send allowSlugUpsert:true to merge.`,
+      );
+    }
 
     const service = await this.prisma.service.upsert({
       where: { slug },

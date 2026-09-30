@@ -2056,15 +2056,40 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
         isActive: data.status === 'Active' || data.isActive === true || data.status === undefined,
       };
 
-      const newService = await this.prisma.service.upsert({
-        where: { slug },
-        update: updateData,
-        create: {
-          slug,
-          ...updateData,
-          eligibility: data.eligibility || ['Citizen of India', 'Valid ID verification credentials'],
-        },
-      });
+      // EDIT vs CREATE: when the wizard supplies an existing service id (or slug),
+      // update that exact record in place. Only a payload without any existing
+      // identity is allowed to create a new service.
+      const isMongoId = (s?: string) => typeof s === 'string' && /^[0-9a-fA-F]{24}$/.test(s);
+      let existing: any = null;
+      if (data.id && isMongoId(data.id)) {
+        existing = await this.prisma.service.findUnique({ where: { id: data.id } }).catch(() => null);
+      }
+      if (!existing && data.id) {
+        existing = await this.prisma.service.findUnique({ where: { slug: data.id } }).catch(() => null);
+      }
+      if (!existing) {
+        existing = await this.prisma.service.findUnique({ where: { slug } }).catch(() => null);
+      }
+
+      let newService: any;
+      if (existing) {
+        newService = await this.prisma.service.update({
+          where: { id: existing.id },
+          data: {
+            ...updateData,
+            ...(data.eligibility ? { eligibility: data.eligibility } : {}),
+            ...(data.slug ? { slug: data.slug } : {}),
+          },
+        });
+      } else {
+        newService = await this.prisma.service.create({
+          data: {
+            slug,
+            ...updateData,
+            eligibility: data.eligibility || ['Citizen of India', 'Valid ID verification credentials'],
+          },
+        });
+      }
 
       console.log('[AdminGateway] Service configuration saved and published:', newService.id, newService.slug);
       client.emit('save_service_config_success', newService);
