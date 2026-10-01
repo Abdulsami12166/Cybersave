@@ -1734,6 +1734,19 @@ export function setupSockets(io: Server) {
         const slug = (data.slug || rawTitle).toLowerCase().trim().replace(/[^a-z0-9]+/g, '-');
         const feeVal = typeof data.pricing?.fee === 'number' ? data.pricing.fee : (parseFloat(data.fee || '50.0') || 50.0);
 
+        // Metadata with no dedicated columns (Overview copy, teams, tags,
+        // publish flag) round-trips inside pricingConfig so a later edit
+        // restores exactly what was saved instead of reverting to templates.
+        const incomingPricing = (typeof data.pricing === 'object' && data.pricing !== null)
+          ? data.pricing
+          : (typeof data.pricingConfig === 'object' && data.pricingConfig !== null ? data.pricingConfig : { fee: feeVal });
+        if (data.assignedTeams !== undefined) incomingPricing.assignedTeams = data.assignedTeams;
+        if (data.searchTags !== undefined) incomingPricing.searchTags = data.searchTags;
+        if (data.displayName !== undefined) incomingPricing.displayName = data.displayName;
+        if (data.shortDescription !== undefined) incomingPricing.shortDescription = data.shortDescription;
+        if (data.detailedDescription !== undefined) incomingPricing.detailedDescription = data.detailedDescription;
+        if (data.isPublished !== undefined) incomingPricing.isPublished = Boolean(data.isPublished);
+
         const updateData: any = {
           title: rawTitle,
           description: data.description || data.shortDescription || 'Government certified digital service workflow.',
@@ -1744,7 +1757,7 @@ export function setupSockets(io: Server) {
           subServices: data.subServices || [],
           formDataSchema: data.formElements || data.formDataSchema || [],
           requiredDocs: data.documents || data.requiredDocs || [],
-          pricingConfig: data.pricing || data.pricingConfig || { fee: feeVal },
+          pricingConfig: incomingPricing,
           iconName: data.iconName || 'file-document-outline',
           colorHex: data.colorHex || '#2563eb',
           isActive: data.status === 'Active' || data.isActive === true || data.status === undefined,

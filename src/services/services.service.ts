@@ -132,63 +132,12 @@ export class ServicesService implements OnModuleInit {
         new Promise<any[]>((resolve) => setTimeout(() => resolve([]), 3500)),
       ]);
 
-      if (services && services.length > 0) {
-        return services;
-      }
-      return [
-        {
-          id: 'srv_aadhaar',
-          slug: 'aadhaar-update',
-          title: 'Aadhaar Services',
-          description: 'UIDAI Official Central Services for address, mobile, name updates',
-          category: 'Government',
-          department: 'UIDAI Central Authority',
-          fee: 50.0,
-          processingTime: '5-7 Days',
-          iconName: 'shield-account-outline',
-          colorHex: '#2F6BFF',
-          isActive: true,
-        },
-        {
-          id: 'srv_pan',
-          slug: 'pan-card',
-          title: 'PAN Card Services',
-          description: 'Income Tax Department - New PAN, corrections, reprint & linking',
-          category: 'Government',
-          department: 'Income Tax Department',
-          fee: 50.0,
-          processingTime: '7-10 Days',
-          iconName: 'card-account-details-outline',
-          colorHex: '#00A86B',
-          isActive: true,
-        },
-        {
-          id: 'srv_income',
-          slug: 'income-certificate',
-          title: 'Income Certificate',
-          description: 'State Revenue Department Income Verification Certificate',
-          category: 'Government',
-          department: 'Revenue Department',
-          fee: 30.0,
-          processingTime: '7-10 Days',
-          iconName: 'trending-up',
-          colorHex: '#10B981',
-          isActive: true,
-        },
-        {
-          id: 'srv_bills',
-          slug: 'utility-bills',
-          title: 'Electricity & Water Bills',
-          description: 'Pay State & Central Electricity & Water invoices',
-          category: 'Finance',
-          department: 'Electricity Board',
-          fee: 0.0,
-          processingTime: 'Instant',
-          iconName: 'receipt-text-outline',
-          colorHex: '#FF5B73',
-          isActive: true,
-        },
-      ];
+      // Return ONLY real database records. The previous hardcoded fallback
+      // (srv_aadhaar / srv_pan / ...) violated the status toggle contract: an
+      // admin could deactivate every real service and citizens would still see
+      // phantom active services that no longer exist in the database. An empty
+      // or slow database must render as an empty catalog — never fake data.
+      return services || [];
     } catch (error: any) {
       this.logger.warn(`Database query fallback for services: ${error?.message}`);
       return [];
@@ -241,6 +190,21 @@ export class ServicesService implements OnModuleInit {
       ...(incomingPricing || { fee: feeVal }),
       iconUrl: data.iconUrl || data.imageUrl || (resolvedIcon.startsWith('http') ? resolvedIcon : undefined),
     };
+
+    // Metadata with no dedicated Service columns (Overview copy, assigned
+    // teams, search tags, publish flag) round-trips inside pricingConfig so a
+    // later edit restores exactly what was saved instead of silently reverting
+    // to template text.
+    pricingObj.assignedTeams = data.assignedTeams !== undefined
+      ? data.assignedTeams
+      : (existing.pricingConfig as any)?.assignedTeams;
+    pricingObj.searchTags = data.searchTags !== undefined
+      ? data.searchTags
+      : (existing.pricingConfig as any)?.searchTags;
+    if (data.displayName !== undefined) pricingObj.displayName = data.displayName;
+    if (data.shortDescription !== undefined) pricingObj.shortDescription = data.shortDescription;
+    if (data.detailedDescription !== undefined) pricingObj.detailedDescription = data.detailedDescription;
+    if (data.isPublished !== undefined) pricingObj.isPublished = Boolean(data.isPublished);
 
     const eligibilityValue = data.eligibility
       ? (Array.isArray(data.eligibility) ? data.eligibility : [data.eligibility])
@@ -335,6 +299,15 @@ export class ServicesService implements OnModuleInit {
       ...(typeof data.pricingConfig === 'object' ? data.pricingConfig : (typeof data.pricing === 'object' ? data.pricing : { fee: feeVal })),
       iconUrl: data.iconUrl || data.imageUrl || (resolvedIcon.startsWith('http') ? resolvedIcon : undefined),
     };
+
+    // Persist metadata with no dedicated columns (Overview copy, teams, tags,
+    // publish flag) so a later edit restores exactly what was saved.
+    if (data.assignedTeams !== undefined) pricingObj.assignedTeams = data.assignedTeams;
+    if (data.searchTags !== undefined) pricingObj.searchTags = data.searchTags;
+    if (data.displayName !== undefined) pricingObj.displayName = data.displayName;
+    if (data.shortDescription !== undefined) pricingObj.shortDescription = data.shortDescription;
+    if (data.detailedDescription !== undefined) pricingObj.detailedDescription = data.detailedDescription;
+    if (data.isPublished !== undefined) pricingObj.isPublished = Boolean(data.isPublished);
 
     const isExisting = await this.prisma.service.findUnique({ where: { slug } }).catch(() => null);
 
