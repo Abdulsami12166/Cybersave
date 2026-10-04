@@ -771,7 +771,7 @@ export function setupSockets(io: Server) {
         ] = await Promise.all([
           prisma.application.count(),
           prisma.application.count({ 
-            where: { status: { notIn: ['APPROVED', 'COMPLETED', 'REJECTED'] } } 
+            where: { status: { in: ['SUBMITTED', 'VERIFYING', 'PENDING'] } } 
           }),
           prisma.application.count({ 
             where: { 
@@ -1370,7 +1370,7 @@ export function setupSockets(io: Server) {
         const processing = allDbApps.filter(a => ['IN_PROGRESS', 'PROCESSING'].includes(String(a.status || '').toUpperCase())).length;
         const approved = allDbApps.filter(a => String(a.status || '').toUpperCase() === 'APPROVED').length;
         const completedTotal = allDbApps.filter(a => String(a.status || '').toUpperCase() === 'COMPLETED').length;
-        const pending = submitted + underReview + processing;
+        const pending = submitted + underReview;
         const completedToday = allDbApps.filter(a => ['APPROVED', 'COMPLETED'].includes(String(a.status || '').toUpperCase()) && new Date(a.updatedAt || a.submittedAt || Date.now()) >= today).length;
 
         const apps = await fetchApplicationsWithUsers({}, limit, skip);

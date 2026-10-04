@@ -191,7 +191,7 @@ export async function buildDashboardData(forceRefresh = false): Promise<any> {
   ] = await Promise.all([
     prisma.application.count(),
     prisma.application.count({ where: { submittedAt: { gte: today } } }),
-    prisma.application.count({ where: { status: { notIn: ['APPROVED', 'COMPLETED', 'REJECTED'] } } }),
+    prisma.application.count({ where: { status: { in: ['SUBMITTED', 'VERIFYING', 'PENDING'] } } }),
     prisma.application.count({ where: { status: { in: ['APPROVED', 'COMPLETED'] }, updatedAt: { gte: today } } }),
     prisma.application.count({ where: { status: 'REJECTED', updatedAt: { gte: today } } }),
     prisma.application.count({ where: { status: { in: ['APPROVED', 'COMPLETED'] } } }),
