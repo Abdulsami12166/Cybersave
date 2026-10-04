@@ -3381,7 +3381,7 @@ export function setupSockets(io: Server) {
       try {
         const [totalApps, pendingApps, approvedApps, rejectedApps, allApps, totalDocs, realTxnData] = await Promise.all([
           prisma.application.count(),
-          prisma.application.count({ where: { status: { in: ['SUBMITTED', 'VERIFYING', 'IN_PROGRESS', 'PENDING'] } } }),
+          prisma.application.count({ where: { status: { in: ['SUBMITTED', 'VERIFYING', 'PENDING'] } } }),
           prisma.application.count({ where: { status: { in: ['APPROVED', 'COMPLETED'] } } }),
           prisma.application.count({ where: { status: 'REJECTED' } }),
           fetchApplicationsWithUsers({}, 100),
@@ -3420,8 +3420,11 @@ export function setupSockets(io: Server) {
           stats: {
             totalSubmissions: totalApps,
             verifiedCount: approvedApps,
+            verified: approvedApps,
             pendingCount: pendingApps,
+            pendingReview: pendingApps,
             rejectedCount: rejectedApps,
+            rejected: rejectedApps,
             totalFeeCollected: realTxnData.stats.totalAmount,
             grossInflow: realTxnData.stats.grossInflow,
             totalRefundsDeducted: realTxnData.stats.refundedAmount,
