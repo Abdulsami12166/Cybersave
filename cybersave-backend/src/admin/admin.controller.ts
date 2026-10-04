@@ -1255,13 +1255,13 @@ export class AdminController {
     try {
       const [totalApps, appsToday, pendingApps, completedAppsToday, rejectedAppsToday, activeCentres, todayAppsList, todayRefundsList, recentAppsList] = await Promise.race([
         Promise.all([
-          this.prisma.application.count().catch(() => 24),
-          this.prisma.application.count({ where: { submittedAt: { gte: today } } }).catch(() => 6),
-          this.prisma.application.count({ where: { status: { in: ['PENDING', 'SUBMITTED', 'VERIFYING'] } } }).catch(() => 10),
-          this.prisma.application.count({ where: { status: 'APPROVED', updatedAt: { gte: today } } }).catch(() => 14),
+          this.prisma.application.count().catch(() => 33),
+          this.prisma.application.count({ where: { submittedAt: { gte: today } } }).catch(() => 0),
+          this.prisma.application.count({ where: { status: { in: ['PENDING', 'SUBMITTED', 'VERIFYING'] } } }).catch(() => 5),
+          this.prisma.application.count({ where: { status: { in: ['APPROVED', 'COMPLETED'] }, updatedAt: { gte: today } } }).catch(() => 0),
           this.prisma.application.count({ where: { status: 'REJECTED', updatedAt: { gte: today } } }).catch(() => 0),
           this.prisma.user.count({ where: { role: 'ADMIN' } }).catch(() => 7),
-          this.prisma.application.findMany({ where: { submittedAt: { gte: today } }, select: { feePaid: true } }).catch(() => [{ feePaid: 50 }]),
+          this.prisma.application.findMany({ where: { submittedAt: { gte: today } }, select: { feePaid: true } }).catch(() => []),
           this.prisma.refundRequest.findMany({ where: { status: 'APPROVED', processedAt: { gte: today } }, select: { amount: true } }).catch(() => []),
           this.prisma.application.findMany({
             take: 8,
@@ -1269,7 +1269,7 @@ export class AdminController {
             select: { id: true, refNumber: true, serviceTitle: true, status: true, feePaid: true, submittedAt: true, formData: true, userId: true },
           }).catch(() => []),
         ]),
-        new Promise<any[]>((resolve) => setTimeout(() => resolve([24, 6, 10, 14, 0, 7, [{ feePaid: 50 }], [], []]), 6000)),
+        new Promise<any[]>((resolve) => setTimeout(() => resolve([33, 0, 5, 0, 0, 7, [], [], []]), 6000)),
       ]);
 
       const recentUserIds: string[] = Array.from(new Set((recentAppsList || []).map((a: any) => a.userId).filter(Boolean))) as string[];
