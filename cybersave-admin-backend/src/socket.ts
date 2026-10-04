@@ -6,6 +6,31 @@ import { findUserByIdOrCit, fetchCitizenFullDetails, fetchCitizensList, invalida
 
 const prisma = new PrismaClient();
 
+export const isRealOfficer = (off?: any): string => {
+  if (!off || typeof off !== 'string') return '';
+  const trimmed = off.trim();
+  const placeholders = [
+    'Officer Sharma (SDM)',
+    'Officer Sharma',
+    'Principal Verification Officer (SDM)',
+    'Principal Verification Officer',
+    'Verification Officer (SDM)',
+    'Verification Officer',
+    'Principal Officer',
+    'Administrative Officer',
+    'Auto Assigned',
+    'Auto',
+    'Unassigned',
+    'SDM Delhi',
+    'Vikram T.',
+    'Sunita M.',
+    'Deepak V.',
+    'Rakesh S.'
+  ];
+  if (placeholders.some(p => p.toLowerCase() === trimmed.toLowerCase())) return '';
+  return trimmed;
+};
+
 export async function fetchApplicationsWithUsers(where: any = {}, take: number = 50, skip?: number): Promise<any[]> {
   const apps = await prisma.application.findMany({
     where,
@@ -1425,7 +1450,7 @@ export function setupSockets(io: Server) {
           priority: 'Medium',
           status: a.status === 'APPROVED' ? 'Approved' : (a.status === 'COMPLETED' ? 'Completed' : (a.status === 'REJECTED' ? 'Rejected' : (a.status === 'IN_PROGRESS' || a.status === 'PROCESSING' ? 'Processing' : (a.status === 'VERIFYING' || a.status === 'PENDING' ? 'Under Review' : 'Submitted')))),
           rawStatus: a.status,
-          assigned: a.officialOfficer || 'Auto Assigned',
+          assigned: isRealOfficer(a.officialOfficer),
           submitted: a.submittedAt ? a.submittedAt.toISOString() : new Date().toISOString(),
           sla: '24h',
           amount: a.feePaid || 50,
@@ -1505,7 +1530,7 @@ export function setupSockets(io: Server) {
             submitted: new Date(app.submittedAt).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' }),
             submittedAt: app.submittedAt,
             updatedAt: app.updatedAt,
-            assignedTo: app.officialOfficer || 'Vikram Tiwari (VLE-0234)',
+            assignedTo: isRealOfficer(app.officialOfficer),
             centre: app.user?.profile?.district ? `CSC ${app.user.profile.district}` : 'CSC Hazratganj, Lucknow',
             status: app.status,
             amount: app.feePaid || 50,
@@ -3696,7 +3721,7 @@ function formatCitizenSocketPayload(u: any) {
       totalAmountSpent: `₹${totalAmountSpent.toLocaleString('en-IN')}`,
       lastActive: 'Active recently',
       registeredCentre: district && district !== '-' ? `CSC ${district} Centre` : 'CSC Lucknow Centre',
-      assignedOperator: 'Vikram Tiwari (VLE-0234)',
+      assignedOperator: apps.find((a: any) => isRealOfficer(a.officialOfficer))?.officialOfficer || '',
     },
     recentServices,
     uploadedDocuments: docList,

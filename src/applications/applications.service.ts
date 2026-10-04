@@ -200,7 +200,7 @@ export class ApplicationsService {
         serviceTitle: dto.serviceTitle,
         status: ApplicationStatus.SUBMITTED,
         estimatedCompletion: '7-10 Days',
-        officialOfficer: 'Officer Sharma (SDM)',
+        officialOfficer: null,
         feePaid: dto.feePaid || 50.0,
         paymentStatus: dto.paymentStatus || 'Success',
         razorpayOrderId: dto.razorpayOrderId,

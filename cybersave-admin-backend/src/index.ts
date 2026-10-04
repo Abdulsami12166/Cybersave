@@ -608,7 +608,7 @@ app.post(['/api/admin/applications', '/api/v1/applications', '/api/applications'
         serviceId: resolvedServiceId,
         serviceTitle: finalServiceTitle,
         status: 'SUBMITTED',
-        officialOfficer: 'Principal Verification Officer (SDM)',
+        officialOfficer: null,
         estimatedCompletion: '3-5 Business Days',
         feePaid: feePaid !== undefined ? Number(feePaid) : 50,
         paymentStatus: paymentStatus || 'Success',

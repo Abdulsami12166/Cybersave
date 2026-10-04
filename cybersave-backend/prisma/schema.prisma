@@ -131,7 +131,7 @@ model Application {
   status               ApplicationStatus @default(SUBMITTED)
   rejectionReason      String?
   estimatedCompletion  String?
-  officialOfficer      String?           @default("Officer Sharma (SDM)")
+  officialOfficer      String?
   feePaid              Float             @default(50.0)
   paymentStatus        String            @default("Success")
   razorpayOrderId      String?
