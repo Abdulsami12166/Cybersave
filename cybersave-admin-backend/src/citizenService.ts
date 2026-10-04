@@ -579,6 +579,8 @@ export async function fetchCitizensList(params?: { page?: number; limit?: number
       select: {
         id: true,
         status: true,
+        isOnline: true,
+        lastSeenAt: true,
         createdAt: true,
         applications: {
           select: { id: true, status: true },
@@ -619,9 +621,12 @@ export async function fetchCitizensList(params?: { page?: number; limit?: number
   ]);
 
   const totalCitizens = allCitizensForStats.length;
+  const fiveMinutesAgo = new Date(Date.now() - 5 * 60 * 1000);
   const activeCitizensCount = allCitizensForStats.filter(u => {
     const s = String(u.status || '').toUpperCase();
-    return s !== 'BLOCKED' && s !== 'SUSPENDED';
+    if (s === 'BLOCKED' || s === 'SUSPENDED') return false;
+    const isRecent = u.lastSeenAt ? new Date(u.lastSeenAt) >= fiveMinutesAgo : false;
+    return u.isOnline === true || isRecent;
   }).length;
   const newThisMonth = allCitizensForStats.filter(u => new Date(u.createdAt) >= startOfMonth).length;
   const pendingVerifications = allCitizensForStats.filter(u => {
@@ -640,6 +645,8 @@ export async function fetchCitizensList(params?: { page?: number; limit?: number
     const district = prof.district || 'Central District';
     const aadhaar = prof.dob ? `•••• •••• ${u.id.slice(-4)}` : `•••• •••• ${u.id.slice(-4)}`;
 
+    const isOnlineNow = (u.isOnline === true || (u.lastSeenAt ? new Date(u.lastSeenAt) >= fiveMinutesAgo : false)) && String(u.status || '').toUpperCase() !== 'BLOCKED';
+
     return {
       id: `CIT-${u.id.slice(-6).toUpperCase()}`,
       dbId: u.id,
@@ -650,8 +657,8 @@ export async function fetchCitizensList(params?: { page?: number; limit?: number
       aadhaar,
       servicesUsed: u.applications?.length || 0,
       status: (u.status === 'BLOCKED' || u.status === 'SUSPENDED') ? 'Blocked' : ((u.status === 'PENDING' || u.status === 'UNVERIFIED') ? 'Pending' : 'Verified'),
-      isOnline: u.isOnline === true,
-      lastActive: u.isOnline ? 'Active Now' : 'Active recently',
+      isOnline: isOnlineNow,
+      lastActive: isOnlineNow ? 'Active Now' : 'Active recently',
       avatarUrl: prof.avatarUrl || null,
       createdAt: u.createdAt.toISOString(),
     };
@@ -661,6 +668,7 @@ export async function fetchCitizensList(params?: { page?: number; limit?: number
     stats: {
       totalCitizens,
       activeCitizens: activeCitizensCount,
+      onlineCitizens: activeCitizensCount,
       newThisMonth,
       pendingVerification: pendingVerifications
     },
@@ -1068,6 +1076,9 @@ export async function performApplicationStatusUpdate(params: {
   };
 
   const broadcastIo = io || (global as any).__cybersave_io;
+  if ((global as any).__invalidateDashboardCache) {
+    (global as any).__invalidateDashboardCache();
+  }
   if ((global as any).__invalidateAuditLogsCache) {
     (global as any).__invalidateAuditLogsCache();
   }

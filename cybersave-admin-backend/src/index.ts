@@ -191,7 +191,7 @@ export async function buildDashboardData(forceRefresh = false): Promise<any> {
   ] = await Promise.all([
     prisma.application.count(),
     prisma.application.count({ where: { submittedAt: { gte: today } } }),
-    prisma.application.count({ where: { status: { in: ['SUBMITTED', 'VERIFYING', 'IN_PROGRESS', 'PENDING'] } } }),
+    prisma.application.count({ where: { status: { notIn: ['APPROVED', 'COMPLETED', 'REJECTED'] } } }),
     prisma.application.count({ where: { status: { in: ['APPROVED', 'COMPLETED'] }, updatedAt: { gte: today } } }),
     prisma.application.count({ where: { status: 'REJECTED', updatedAt: { gte: today } } }),
     prisma.application.count({ where: { status: { in: ['APPROVED', 'COMPLETED'] } } }),
@@ -1331,6 +1331,12 @@ app.post(['/api/admin/users/heartbeat', '/api/v1/users/heartbeat', '/api/users/h
         where: { id: userId },
         data: { isOnline: true, lastSeenAt: new Date() }
       }).catch(() => null);
+
+      const broadcastIo = (global as any).__cybersave_io || io;
+      if (broadcastIo) {
+        broadcastIo.emit('citizen_presence_updated', { userId, isOnline: true, lastSeenAt: new Date() });
+        broadcastIo.emit('user_status_changed', { userId, isOnline: true, lastSeenAt: new Date() });
+      }
     }
     res.json({ success: true });
   } catch (e: any) {
@@ -1346,6 +1352,12 @@ app.post(['/api/admin/users/offline', '/api/v1/users/offline', '/api/users/offli
         where: { id: userId },
         data: { isOnline: false, lastSeenAt: new Date() }
       }).catch(() => null);
+
+      const broadcastIo = (global as any).__cybersave_io || io;
+      if (broadcastIo) {
+        broadcastIo.emit('citizen_presence_updated', { userId, isOnline: false, lastSeenAt: new Date() });
+        broadcastIo.emit('user_status_changed', { userId, isOnline: false, lastSeenAt: new Date() });
+      }
     }
     res.json({ success: true });
   } catch (e: any) {
@@ -2114,24 +2126,38 @@ app.get(['/api/v1/support/user-tickets', '/api/support/user-tickets'], async (re
     const { userId } = req.query;
     if (!userId) return res.json({ success: true, tickets: [] });
 
-    const isMongo = /^[0-9a-fA-F]{24}$/.test(String(userId));
+    const cleanUserId = String(userId).trim();
+    const isMongo = /^[0-9a-fA-F]{24}$/.test(cleanUserId);
+    const userOrConditions: any[] = [];
+    if (isMongo) userOrConditions.push({ id: cleanUserId });
+    userOrConditions.push({ email: cleanUserId.toLowerCase() });
+    userOrConditions.push({ email: cleanUserId });
+    userOrConditions.push({ phone: cleanUserId });
+
+    const digits = cleanUserId.replace(/\D/g, '').slice(-10);
+    if (digits.length === 10) {
+      userOrConditions.push({ phone: `+91${digits}` });
+      userOrConditions.push({ phone: `+91 ${digits.slice(0, 5)} ${digits.slice(5)}` });
+      userOrConditions.push({ phone: digits });
+    }
+
     const targetUser = await prisma.user.findFirst({
-      where: {
-        OR: [
-          ...(isMongo ? [{ id: String(userId) }] : []),
-          { email: String(userId).trim() },
-          { phone: String(userId).trim() },
-        ]
-      }
+      where: { OR: userOrConditions }
     }).catch(() => null);
 
-    const orConditions: any[] = [{ userId: String(userId) }];
-    if (targetUser) orConditions.push({ userId: targetUser.id });
+    const orConditions: any[] = [];
+    if (isMongo) orConditions.push({ userId: cleanUserId });
+    if (targetUser?.id && /^[0-9a-fA-F]{24}$/.test(targetUser.id) && targetUser.id !== cleanUserId) {
+      orConditions.push({ userId: targetUser.id });
+    }
 
-    const tickets = await prisma.supportTicket.findMany({
-      where: { OR: orConditions },
-      orderBy: { createdAt: 'desc' },
-    });
+    let tickets: any[] = [];
+    if (orConditions.length > 0) {
+      tickets = await prisma.supportTicket.findMany({
+        where: { OR: orConditions },
+        orderBy: { createdAt: 'desc' },
+      });
+    }
 
     res.json({
       success: true,
@@ -2150,27 +2176,32 @@ app.get(['/api/v1/support/user-tickets', '/api/support/user-tickets'], async (re
       }))
     });
   } catch (e: any) {
+    console.error('[GET /api/v1/support/user-tickets] error:', e);
     res.status(500).json({ error: e.message });
   }
 });
 
 app.post(['/api/v1/support/user-reply', '/api/support/user-reply'], async (req: any, res: any) => {
   try {
-    const { ticketId, text } = req.body;
+    const { ticketId, text, userName } = req.body;
     if (!ticketId || !text) return res.status(400).json({ success: false, message: 'ticketId and text required' });
 
     const isMongo = /^[0-9a-fA-F]{24}$/.test(String(ticketId));
     const ticket = await prisma.supportTicket.findFirst({
       where: isMongo ? { OR: [{ id: ticketId }, { refNumber: ticketId }] } : { refNumber: ticketId },
+      include: { user: { include: { profile: true } } }
     });
     if (!ticket) return res.status(404).json({ success: false, message: 'Ticket not found' });
 
+    const senderName = String(userName || '').trim() || ticket.user?.profile?.fullName || (ticket.user?.email ? ticket.user.email.split('@')[0] : 'Citizen User');
     const currentMsgs = Array.isArray(ticket.messages) ? ticket.messages : [];
     const newMsg = {
       id: `msg-${Date.now()}`,
-      sender: 'Citizen',
+      sender: senderName,
+      senderName: senderName,
       role: 'CITIZEN',
       text: text.trim(),
+      time: new Date().toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' }),
       timestamp: new Date().toISOString(),
     };
     currentMsgs.push(newMsg);
@@ -2186,14 +2217,33 @@ app.post(['/api/v1/support/user-reply', '/api/support/user-reply'], async (req: 
 
     if (io) {
       io.emit('support_tickets_updated');
-      io.emit('new_ticket_message', { ticketId: ticket.refNumber, message: newMsg });
+      io.emit('new_ticket_message', {
+        ticketId: ticket.refNumber,
+        id: ticket.id,
+        sender: senderName,
+        senderName: senderName,
+        userId: ticket.userId,
+        message: newMsg,
+        ticket: updated
+      });
+      io.emit('support_message_notification', {
+        id: `notif-${Date.now()}`,
+        ticketId: ticket.refNumber,
+        ticketMongoId: ticket.id,
+        senderName: senderName,
+        text: newMsg.text,
+        time: newMsg.time,
+        timestamp: newMsg.timestamp,
+      });
     }
 
     res.json({ success: true, ticket: updated });
   } catch (e: any) {
+    console.error('[POST /api/v1/support/user-reply] error:', e);
     res.status(500).json({ error: e.message });
   }
 });
+
 
 app.post(['/api/v1/support/upload', '/api/support/upload'], async (req: any, res: any) => {
   try {

@@ -420,23 +420,40 @@ export async function formatSupportTicketThread(idOrRef: string) {
         attachmentUrl: ticket.attachmentUrl || linkedRefund.proofUrl || null
       };
     }
-  } else if (ticket.category === 'Citizen Feedback' || ticket.refNumber?.startsWith('FDB-')) {
-    const linkedFb = await prisma.feedback.findFirst({
-      where: {
-        OR: [
-          { id: ticket.id },
-          { id: { contains: cleanId.replace(/^FDB-/i, '').toLowerCase(), mode: 'insensitive' } }
-        ]
+  } else if (ticket.category === 'Citizen Feedback' || ticket.refNumber?.startsWith('FDB-') || ticket.title?.includes('Feedback')) {
+    const titleMatch = ticket.title?.match(/\((\d)★\)/);
+    const parsedStar = titleMatch && titleMatch[1] ? parseInt(titleMatch[1], 10) : undefined;
+    const fdbSuffix = (ticket.refNumber || '').replace(/^FDB-/i, '').toLowerCase();
+
+    let linkedFb: any = null;
+    try {
+      const fbWhere: any = {};
+      const fbOr: any[] = [];
+      if (ticket.userId && /^[0-9a-fA-F]{24}$/.test(String(ticket.userId))) {
+        fbOr.push({ userId: String(ticket.userId) });
       }
-    });
-    if (linkedFb) {
-      extraRefundData = {
-        rating: linkedFb.rating,
-        feedbackCategory: linkedFb.improvementCategory,
-        attachmentUrl: ticket.attachmentUrl || linkedFb.imageUrl || null
-      };
-    }
+      if (fbOr.length > 0) {
+        fbWhere.OR = fbOr;
+        linkedFb = await prisma.feedback.findFirst({
+          where: fbWhere,
+          orderBy: { createdAt: 'desc' }
+        });
+      }
+      if (!linkedFb && fdbSuffix) {
+        const allFb = await prisma.feedback.findMany({ take: 20, orderBy: { createdAt: 'desc' } });
+        linkedFb = allFb.find(f => f.id.toLowerCase().endsWith(fdbSuffix));
+      }
+    } catch (_) {}
+
+
+    const realRating = linkedFb?.rating ?? parsedStar ?? 5;
+    extraRefundData = {
+      rating: realRating,
+      feedbackCategory: linkedFb?.improvementCategory || (ticket.title?.includes(':') ? ticket.title.split(':').slice(1).join(':').trim() : 'App Experience'),
+      attachmentUrl: ticket.attachmentUrl || linkedFb?.imageUrl || null
+    };
   }
+
 
   const reporterName = ticket.user?.profile?.fullName || (ticket.user?.email ? ticket.user.email.split('@')[0] : 'Citizen Applicant');
   const reporterEmail = ticket.user?.email || 'citizen@cybersave.gov.in';
@@ -648,11 +665,14 @@ export function setupSockets(io: Server) {
   io.on('connection', (socket: Socket) => {
     console.log('Client connected:', socket.id);
 
+    let currentUserId: string | null = null;
+
     // Mobile presence and token registration
     socket.on('user_connected', async (data: { userId: string; fcmToken?: string }) => {
       try {
         if (!data || !data.userId) return;
         const uid = String(data.userId).trim();
+        currentUserId = uid;
         socket.join(uid);
         socket.join('citizens');
         socket.join('all');
@@ -666,10 +686,24 @@ export function setupSockets(io: Server) {
             }
           }).catch(() => null);
         }
-        io.emit('citizen_presence_updated', { userId: uid, isOnline: true });
+        io.emit('citizen_presence_updated', { userId: uid, isOnline: true, lastSeenAt: new Date() });
+        io.emit('user_status_changed', { userId: uid, isOnline: true, lastSeenAt: new Date() });
       } catch (err) {
         console.warn('[user_connected socket error]:', err);
       }
+    });
+
+    socket.on('disconnect', async () => {
+      try {
+        if (currentUserId && /^[0-9a-fA-F]{24}$/.test(currentUserId)) {
+          await prisma.user.update({
+            where: { id: currentUserId },
+            data: { isOnline: false, lastSeenAt: new Date() }
+          }).catch(() => null);
+          io.emit('citizen_presence_updated', { userId: currentUserId, isOnline: false, lastSeenAt: new Date() });
+          io.emit('user_status_changed', { userId: currentUserId, isOnline: false, lastSeenAt: new Date() });
+        }
+      } catch (_) {}
     });
 
     socket.on('citizen_heartbeat', async (data: { userId: string }) => {
@@ -679,6 +713,8 @@ export function setupSockets(io: Server) {
           where: { id: data.userId },
           data: { isOnline: true, lastSeenAt: new Date() }
         }).catch(() => null);
+        io.emit('citizen_presence_updated', { userId: data.userId, isOnline: true, lastSeenAt: new Date() });
+        io.emit('user_status_changed', { userId: data.userId, isOnline: true, lastSeenAt: new Date() });
       } catch (_) {}
     });
 
@@ -689,6 +725,8 @@ export function setupSockets(io: Server) {
           where: { id: data.userId },
           data: { isOnline: false, lastSeenAt: new Date() }
         }).catch(() => null);
+        io.emit('citizen_presence_updated', { userId: data.userId, isOnline: false, lastSeenAt: new Date() });
+        io.emit('user_status_changed', { userId: data.userId, isOnline: false, lastSeenAt: new Date() });
       } catch (_) {}
     });
 
@@ -699,6 +737,8 @@ export function setupSockets(io: Server) {
           where: { id: data.userId },
           data: { isOnline: false, lastSeenAt: new Date() }
         }).catch(() => null);
+        io.emit('citizen_presence_updated', { userId: data.userId, isOnline: false, lastSeenAt: new Date() });
+        io.emit('user_status_changed', { userId: data.userId, isOnline: false, lastSeenAt: new Date() });
       } catch (_) {}
     });
 
@@ -731,7 +771,7 @@ export function setupSockets(io: Server) {
         ] = await Promise.all([
           prisma.application.count(),
           prisma.application.count({ 
-            where: { status: { in: ['SUBMITTED', 'VERIFYING', 'IN_PROGRESS', 'PENDING'] } } 
+            where: { status: { notIn: ['APPROVED', 'COMPLETED', 'REJECTED'] } } 
           }),
           prisma.application.count({ 
             where: { 
@@ -1325,13 +1365,13 @@ export function setupSockets(io: Server) {
           return sub >= today;
         }).length;
 
-        const submitted = allDbApps.filter(a => a.status === 'SUBMITTED').length;
-        const underReview = allDbApps.filter(a => ['VERIFYING', 'PENDING', 'UNDER_REVIEW'].includes(a.status)).length;
-        const processing = allDbApps.filter(a => ['IN_PROGRESS', 'PROCESSING'].includes(a.status)).length;
-        const approved = allDbApps.filter(a => a.status === 'APPROVED').length;
-        const completedTotal = allDbApps.filter(a => a.status === 'COMPLETED').length;
+        const submitted = allDbApps.filter(a => String(a.status || '').toUpperCase() === 'SUBMITTED').length;
+        const underReview = allDbApps.filter(a => ['VERIFYING', 'PENDING', 'UNDER_REVIEW', 'IN_REVIEW', 'REVIEW'].includes(String(a.status || '').toUpperCase())).length;
+        const processing = allDbApps.filter(a => ['IN_PROGRESS', 'PROCESSING'].includes(String(a.status || '').toUpperCase())).length;
+        const approved = allDbApps.filter(a => String(a.status || '').toUpperCase() === 'APPROVED').length;
+        const completedTotal = allDbApps.filter(a => String(a.status || '').toUpperCase() === 'COMPLETED').length;
         const pending = submitted + underReview + processing;
-        const completedToday = allDbApps.filter(a => ['APPROVED', 'COMPLETED'].includes(a.status) && new Date(a.updatedAt || a.submittedAt || Date.now()) >= today).length;
+        const completedToday = allDbApps.filter(a => ['APPROVED', 'COMPLETED'].includes(String(a.status || '').toUpperCase()) && new Date(a.updatedAt || a.submittedAt || Date.now()) >= today).length;
 
         const apps = await fetchApplicationsWithUsers({}, limit, skip);
 
@@ -2481,6 +2521,18 @@ export function setupSockets(io: Server) {
           const reporterId = t.user?.id || t.userId || 'citizen';
           const assignedName = typeof t.assignedTo === 'string' && t.assignedTo.trim() ? t.assignedTo : '';
 
+          let ticketRating: number | undefined = undefined;
+          let feedbackCat: string | undefined = undefined;
+          if (t.category === 'Citizen Feedback' || t.refNumber?.startsWith('FDB-') || t.title?.includes('Feedback')) {
+            const titleMatch = t.title?.match(/\((\d)★\)/);
+            if (titleMatch && titleMatch[1]) {
+              ticketRating = parseInt(titleMatch[1], 10);
+            }
+            if (t.title?.includes(':')) {
+              feedbackCat = t.title.split(':').slice(1).join(':').trim();
+            }
+          }
+
           return {
             id: t.refNumber || `TKT-${t.id.substring(0, 8).toUpperCase()}`,
             rawId: t.id,
@@ -2489,6 +2541,8 @@ export function setupSockets(io: Server) {
             description: t.description,
             category: t.category,
             priority: t.priority,
+            rating: ticketRating,
+            feedbackCategory: feedbackCat,
             createdOn: t.createdAt ? t.createdAt.toLocaleDateString('en-IN') : 'Today',
             lastUpdated: t.updatedAt ? t.updatedAt.toLocaleDateString('en-IN') : 'Today',
             createdAt: t.createdAt,
@@ -2502,6 +2556,7 @@ export function setupSockets(io: Server) {
             messages: t.messages || [],
           };
         });
+
 
         const existingRefs = new Set(formatted.map(t => String(t.refNumber || t.id).toUpperCase()));
 
@@ -2579,7 +2634,11 @@ export function setupSockets(io: Server) {
         // Merge Citizen Feedbacks
         for (const f of feedbacks) {
           const fbRef = `FDB-${f.id.slice(-6).toUpperCase()}`;
-          if (!existingRefs.has(fbRef) && !existingRefs.has(f.id.toUpperCase())) {
+          const existing = formatted.find(t => String(t.refNumber || t.id).toUpperCase() === fbRef || String(t.rawId || '').toUpperCase() === f.id.toUpperCase());
+          if (existing) {
+            existing.rating = f.rating;
+            existing.feedbackCategory = f.improvementCategory;
+          } else if (!existingRefs.has(fbRef) && !existingRefs.has(f.id.toUpperCase())) {
             existingRefs.add(fbRef);
             const reporterName = f.user?.profile?.fullName || (f.user?.email ? f.user.email.split('@')[0] : 'Citizen User');
             const reporterEmail = f.user?.email || '';
@@ -2620,6 +2679,7 @@ export function setupSockets(io: Server) {
             });
           }
         }
+
 
         formatted.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
 
@@ -2813,10 +2873,22 @@ export function setupSockets(io: Server) {
           socket.emit('response_ticket_thread', formatted);
           socket.emit('response_ticket_detail', formatted);
           io.emit('support_tickets_updated');
+          io.emit('new_ticket_message', {
+            ticketId: ticket.refNumber,
+            id: ticket.id,
+            userId: targetUserId,
+            userEmail: ticket.user?.email,
+            userPhone: ticket.user?.phone,
+            message: newMsg,
+            ticket: formatted
+          });
           io.emit('support_ticket_replied', {
             id: ticket.id,
             refNumber: ticket.refNumber,
+            ticketId: ticket.refNumber,
             userId: targetUserId,
+            userEmail: ticket.user?.email,
+            userPhone: ticket.user?.phone,
             text: replyText,
             senderName: data.adminName || 'Support Desk Agent',
             role: 'AGENT',
@@ -2862,32 +2934,75 @@ export function setupSockets(io: Server) {
     socket.on('user_ticket_message', async (data: { ticketId: string; text: string; userId?: string; userName?: string; attachmentUrl?: string }) => {
       try {
         const targetId = String(data?.ticketId || '').trim();
-        if (!targetId || (!data?.text && !data?.attachmentUrl)) return;
+        if ((!targetId && !data?.userId) || (!data?.text && !data?.attachmentUrl)) return;
         const isMongoId = /^[0-9a-fA-F]{24}$/.test(targetId);
         let ticket: any = null;
-        if (isMongoId) {
-          ticket = await prisma.supportTicket.findUnique({ where: { id: targetId }, include: { user: { include: { profile: true } } } });
+        if (targetId) {
+          if (isMongoId) {
+            ticket = await prisma.supportTicket.findUnique({ where: { id: targetId }, include: { user: { include: { profile: true } } } });
+          }
+          if (!ticket) {
+            ticket = await prisma.supportTicket.findFirst({ where: { refNumber: targetId }, include: { user: { include: { profile: true } } } });
+          }
+          if (!ticket) {
+            ticket = await prisma.supportTicket.findFirst({
+              where: {
+                OR: [
+                  { refNumber: { contains: targetId, mode: 'insensitive' } },
+                  { id: { contains: targetId, mode: 'insensitive' } }
+                ]
+              },
+              include: { user: { include: { profile: true } } }
+            });
+          }
         }
-        if (!ticket) {
-          ticket = await prisma.supportTicket.findFirst({ where: { refNumber: targetId }, include: { user: { include: { profile: true } } } });
-        }
-        if (!ticket) {
-          ticket = await prisma.supportTicket.findFirst({
+
+        // If ticket not found yet, check user latest ticket
+        if (!ticket && data?.userId) {
+          const isMongoU = /^[0-9a-fA-F]{24}$/.test(String(data.userId));
+          const targetU = await prisma.user.findFirst({
             where: {
               OR: [
-                { refNumber: { contains: targetId, mode: 'insensitive' } },
-                { id: { contains: targetId, mode: 'insensitive' } }
+                ...(isMongoU ? [{ id: String(data.userId) }] : []),
+                { email: String(data.userId).trim() },
+                { phone: String(data.userId).trim() }
               ]
+            }
+          }).catch(() => null);
+          if (targetU) {
+            ticket = await prisma.supportTicket.findFirst({
+              where: { userId: targetU.id },
+              orderBy: { updatedAt: 'desc' },
+              include: { user: { include: { profile: true } } }
+            });
+          }
+        }
+
+        // If still no ticket, create one instantly
+        if (!ticket) {
+          const newRef = `TKT-${Math.floor(100000 + Math.random() * 900000)}`;
+          ticket = await prisma.supportTicket.create({
+            data: {
+              refNumber: newRef,
+              userId: (/^[0-9a-fA-F]{24}$/.test(String(data?.userId))) ? String(data.userId) : null,
+              title: (data.text || 'Grievance Query').slice(0, 40),
+              description: data.text || 'Citizen message',
+              category: 'Technical Support',
+              priority: 'Medium',
+              status: 'OPEN',
+              messages: []
             },
             include: { user: { include: { profile: true } } }
           });
         }
+
         if (ticket) {
+          const senderName = data.userName || ticket.user?.profile?.fullName || (ticket.user?.email ? ticket.user.email.split('@')[0] : 'Citizen User');
           const currentMsgs = Array.isArray(ticket.messages) ? ticket.messages : [];
           const newMsg = {
             id: `msg-${Date.now()}`,
-            sender: data.userName || ticket.user?.profile?.fullName || 'Citizen User',
-            senderName: data.userName || ticket.user?.profile?.fullName || 'Citizen User',
+            sender: senderName,
+            senderName: senderName,
             role: 'CITIZEN',
             text: (data.text || '').trim(),
             attachmentUrl: data.attachmentUrl,
@@ -2905,7 +3020,24 @@ export function setupSockets(io: Server) {
           });
           const formatted = await formatSupportTicketThread(ticket.id);
           io.emit('support_tickets_updated');
-          io.emit('new_ticket_message', { ticketId: ticket.refNumber, id: ticket.id, message: newMsg, ticket: formatted });
+          io.emit('new_ticket_message', {
+            ticketId: ticket.refNumber,
+            id: ticket.id,
+            sender: senderName,
+            senderName: senderName,
+            userId: ticket.userId,
+            message: newMsg,
+            ticket: formatted
+          });
+          io.emit('support_message_notification', {
+            id: `notif-${Date.now()}`,
+            ticketId: ticket.refNumber,
+            ticketMongoId: ticket.id,
+            senderName: senderName,
+            text: newMsg.text,
+            time: newMsg.time,
+            timestamp: newMsg.timestamp,
+          });
           io.emit('response_ticket_thread', formatted);
           io.emit('response_ticket_detail', formatted);
         }
@@ -2922,24 +3054,39 @@ export function setupSockets(io: Server) {
           socket.emit('response_user_tickets', { success: true, tickets: [] });
           return;
         }
-        const isMongo = /^[0-9a-fA-F]{24}$/.test(String(userId));
+
+        const cleanUserId = String(userId).trim();
+        const isMongo = /^[0-9a-fA-F]{24}$/.test(cleanUserId);
+        const userOrConditions: any[] = [];
+        if (isMongo) userOrConditions.push({ id: cleanUserId });
+        userOrConditions.push({ email: cleanUserId.toLowerCase() });
+        userOrConditions.push({ email: cleanUserId });
+        userOrConditions.push({ phone: cleanUserId });
+
+        const digits = cleanUserId.replace(/\D/g, '').slice(-10);
+        if (digits.length === 10) {
+          userOrConditions.push({ phone: `+91${digits}` });
+          userOrConditions.push({ phone: `+91 ${digits.slice(0, 5)} ${digits.slice(5)}` });
+          userOrConditions.push({ phone: digits });
+        }
+
         const targetUser = await prisma.user.findFirst({
-          where: {
-            OR: [
-              ...(isMongo ? [{ id: String(userId) }] : []),
-              { email: String(userId).trim() },
-              { phone: String(userId).trim() },
-            ]
-          }
+          where: { OR: userOrConditions }
         }).catch(() => null);
 
-        const orConditions: any[] = [{ userId: String(userId) }];
-        if (targetUser) orConditions.push({ userId: targetUser.id });
+        const orConditions: any[] = [];
+        if (isMongo) orConditions.push({ userId: cleanUserId });
+        if (targetUser?.id && /^[0-9a-fA-F]{24}$/.test(targetUser.id) && targetUser.id !== cleanUserId) {
+          orConditions.push({ userId: targetUser.id });
+        }
 
-        const tickets = await prisma.supportTicket.findMany({
-          where: { OR: orConditions },
-          orderBy: { createdAt: 'desc' },
-        });
+        let tickets: any[] = [];
+        if (orConditions.length > 0) {
+          tickets = await prisma.supportTicket.findMany({
+            where: { OR: orConditions },
+            orderBy: { createdAt: 'desc' },
+          });
+        }
 
         socket.emit('response_user_tickets', {
           success: true,
@@ -2958,9 +3105,11 @@ export function setupSockets(io: Server) {
           }))
         });
       } catch (e) {
+        console.error('[Socket] request_user_tickets error:', e);
         socket.emit('response_user_tickets', { success: false, tickets: [] });
       }
     });
+
 
     socket.on('resolve_support_ticket', async (data: any) => {
       try {
