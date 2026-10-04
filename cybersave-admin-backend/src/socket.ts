@@ -873,12 +873,41 @@ export function setupSockets(io: Server) {
           });
         }
 
-        const operatorLogs = auditLogs.map(l => ({
-          id: l.id,
-          title: l.action.replace(/_/g, ' '),
-          description: l.details || `User action logged`,
-          time: l.createdAt.toISOString()
-        }));
+        const operatorLogs = auditLogs.map(l => {
+          const act = (l.action || '').toLowerCase();
+          const isApproved = act.includes('approve');
+          const isRejected = act.includes('reject');
+          const isWallet = act.includes('wallet') || act.includes('payment');
+          const isTicket = act.includes('ticket');
+          const type = isApproved ? 'approved' : isRejected ? 'rejected' : isWallet ? 'wallet' : isTicket ? 'ticket' : 'operator';
+          return {
+            id: l.id,
+            type,
+            title: l.action.replace(/_/g, ' '),
+            description: l.details || (l.user?.profile?.fullName ? `Action by ${l.user.profile.fullName}` : `System operation recorded`),
+            time: new Date(l.createdAt).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' }),
+            timestamp: l.createdAt.toISOString()
+          };
+        });
+
+        const recentAppsFormatted = allApps.slice(0, 15).map((app: any) => {
+          const citizenName = app.user?.profile?.fullName || app.formData?.fullName || app.user?.phone || 'Citizen Applicant';
+          const cleanRef = app.refNumber || `CS-2026-${app.id.substring(0, 4).toUpperCase()}`;
+          return {
+            id: cleanRef,
+            refNumber: cleanRef,
+            citizenName,
+            service: app.serviceTitle || 'Government Service Clearance',
+            status: app.status === 'SUBMITTED' ? 'In Review' : 
+                    app.status === 'VERIFYING' ? 'Pending' :
+                    app.status === 'APPROVED' ? 'Completed' :
+                    app.status === 'REJECTED' ? 'Rejected' : app.status,
+            rawStatus: app.status,
+            feeAmount: app.feePaid !== undefined ? app.feePaid : 50,
+            dateSubmitted: app.submittedAt ? new Date(app.submittedAt).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit', hour12: true }) : 'Today',
+            rawApp: app
+          };
+        });
 
         socket.emit('response_dashboard_data', {
           stats: {
@@ -888,6 +917,7 @@ export function setupSockets(io: Server) {
             grossInflow: realTxnData.stats.grossInflow,
             appsToday,
             totalApps,
+            pendingApps,
             totalApproved: totalApprovedApps,
             approvedApps: totalApprovedApps,
             completedAppsToday: completedAppsTodayCount,
@@ -905,9 +935,15 @@ export function setupSockets(io: Server) {
           },
           transactions: realTxnData.transactions,
           collections: {
-            totalCollections: totalRevenue,
-            onlinePayments: totalRevenue,
-            cashCollections: 0
+            totalCollectionsToday: revenueToday,
+            totalCollections: revenueToday,
+            totalLifetime: totalRevenue,
+            onlinePayments: revenueToday,
+            cashCollections: 0,
+            onlinePercentage: revenueToday > 0 ? 100 : 0,
+            cashPercentage: 0,
+            netToday: revenueToday,
+            netLifetime: totalRevenue,
           },
           serviceShare: serviceShare.length > 0 ? serviceShare : [
             { name: 'Aadhaar Update', percentage: 35 },
@@ -916,7 +952,7 @@ export function setupSockets(io: Server) {
             { name: 'Income Certificate', percentage: 20 }
           ],
           operatorLogs,
-          recentApps: allApps,
+          recentApps: recentAppsFormatted,
           charts: {
             revenueOverview,
             applicationTrends

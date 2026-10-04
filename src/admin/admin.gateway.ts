@@ -464,6 +464,29 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
         });
       }
 
+        const auditLogs = await this.prisma.auditLog.findMany({
+          take: 8,
+          orderBy: { createdAt: 'desc' },
+          include: { user: { include: { profile: true } } },
+        }).catch(() => []);
+
+        const operatorLogs = auditLogs.map((log: any) => {
+          const act = (log.action || '').toLowerCase();
+          const isApproved = act.includes('approve');
+          const isRejected = act.includes('reject');
+          const isWallet = act.includes('wallet') || act.includes('payment');
+          const isTicket = act.includes('ticket');
+          const type = isApproved ? 'approved' : isRejected ? 'rejected' : isWallet ? 'wallet' : isTicket ? 'ticket' : 'operator';
+          return {
+            id: log.id,
+            type,
+            title: log.action.replace(/_/g, ' '),
+            description: log.details || (log.user?.profile?.fullName ? `Action by ${log.user.profile.fullName}` : 'System operation recorded'),
+            time: new Date(log.createdAt).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' }),
+            timestamp: log.createdAt.toISOString(),
+          };
+        });
+
       client.emit('response_dashboard_data', {
         stats: {
           revenueToday: revenueToday,
@@ -482,11 +505,15 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
           activeCentres: activeCentres || 1,
         },
         collections: {
-          totalCollections: totalRevenue,
-          onlinePayments: totalRevenue,
+          totalCollectionsToday: revenueToday,
+          totalCollections: revenueToday,
+          totalLifetime: totalRevenue,
+          onlinePayments: revenueToday,
           grossCollections: grossTotalRevenue,
-          totalRefunded: totalRefundedAmount,
+          totalRefunded: todayRefundedAmount,
           cashCollections: 0,
+          netToday: revenueToday,
+          netLifetime: totalRevenue,
         },
         serviceShare: [
           { name: 'Aadhaar Services', percentage: 35 },
@@ -495,14 +522,7 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
           { name: 'Finance & Banking', percentage: 15 },
           { name: 'Passport & Others', percentage: 10 },
         ],
-        operatorLogs: [
-          {
-            id: '1',
-            title: 'System Online',
-            description: 'Real-time WebSocket & Database sync active',
-            time: new Date().toISOString(),
-          },
-        ],
+        operatorLogs,
         recentApps: allApps.slice(0, 5),
         charts: {
           revenueOverview,
@@ -517,27 +537,29 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
   @SubscribeMessage('request_users_data')
   async handleUsersData(@ConnectedSocket() client: Socket) {
     try {
-      const totalCitizens = await this.prisma.user.count({
-        where: { role: 'USER' },
-      });
-      const activeCitizens = totalCitizens;
-      const newThisMonth = await this.prisma.user.count({
-        where: {
-          role: 'USER',
-          createdAt: {
-            gte: new Date(new Date().getFullYear(), new Date().getMonth(), 1),
+      const [totalCitizens, newThisMonth, pendingVerifications, users] = await Promise.all([
+        this.prisma.user.count({ where: { role: 'USER' } }),
+        this.prisma.user.count({
+          where: {
+            role: 'USER',
+            createdAt: {
+              gte: new Date(new Date().getFullYear(), new Date().getMonth(), 1),
+            },
           },
-        },
-      });
-
-      const users = await this.prisma.user.findMany({
-        where: { role: 'USER' },
-        include: { profile: true, applications: true },
-        orderBy: { createdAt: 'desc' },
-      });
+        }),
+        this.prisma.application.count({
+          where: { status: { in: ['SUBMITTED', 'VERIFYING', 'PENDING'] } },
+        }).catch(() => 5),
+        this.prisma.user.findMany({
+          where: { role: 'USER' },
+          include: { profile: true, applications: true },
+          orderBy: { createdAt: 'desc' },
+        }),
+      ]);
 
       const formattedUsers = users.map((u) => {
-        const isOnline = AdminGateway.isUserOnline(u.id) || u.isOnline === true;
+        const lastSeenMs = u.lastSeenAt ? Date.now() - new Date(u.lastSeenAt).getTime() : Infinity;
+        const isOnline = AdminGateway.isUserOnline(u.id, u.lastSeenAt) || (u.isOnline === true && lastSeenMs < 120000);
         let lastActive = 'Active Now';
         if (!isOnline) {
           const lastTime = u.lastSeenAt || u.updatedAt || u.createdAt;
@@ -576,7 +598,7 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
           totalCitizens,
           activeCitizens: formattedUsers.filter((u) => u.isOnline).length,
           newThisMonth,
-          pendingVerification: 0,
+          pendingVerification: pendingVerifications,
         },
         users: formattedUsers,
       });

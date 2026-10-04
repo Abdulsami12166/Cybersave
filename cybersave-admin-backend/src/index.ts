@@ -1663,38 +1663,8 @@ app.patch(['/api/v1/services/:id', '/api/services/:id'], async (req: any, res: a
     res.status(500).json({ error: e.message });
   }
 });
-// Duplicate /api/v1/applications route removed — authoritative handler with refNumbers support is defined above at line ~320
+// Duplicate /api/v1/users route removed — authoritative handler with stats & full citizen directory is defined above at line ~946
 
-app.get(['/api/v1/users', '/api/users'], async (req: any, res: any) => {
-  try {
-    const { limit, page } = req.query;
-    const take = limit ? Math.min(parseInt(limit as string) || 50, 200) : 50;
-    const skipVal = page ? ((parseInt(page as string) || 1) - 1) * take : undefined;
-
-    const users = await prisma.user.findMany({
-      where: { role: 'USER' },
-      take,
-      ...(skipVal !== undefined ? { skip: skipVal } : {}),
-      select: {
-        id: true,
-        email: true,
-        phone: true,
-        status: true,
-        createdAt: true,
-        profile: true,
-        applications: {
-          select: { id: true, refNumber: true, status: true, serviceTitle: true, feePaid: true, submittedAt: true },
-          orderBy: { submittedAt: 'desc' },
-          take: 10,
-        },
-      },
-      orderBy: { createdAt: 'desc' },
-    });
-    res.json(users);
-  } catch (e: any) {
-    res.status(500).json({ error: e.message });
-  }
-});
 
 app.get(['/api/admin/refunds', '/api/v1/refunds', '/api/refunds'], async (req: any, res: any) => {
   try {

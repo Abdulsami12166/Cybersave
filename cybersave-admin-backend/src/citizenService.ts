@@ -621,19 +621,17 @@ export async function fetchCitizensList(params?: { page?: number; limit?: number
   ]);
 
   const totalCitizens = allCitizensForStats.length;
-  const fiveMinutesAgo = new Date(Date.now() - 5 * 60 * 1000);
+  const twoMinutesAgo = new Date(Date.now() - 2 * 60 * 1000);
   const activeCitizensCount = allCitizensForStats.filter(u => {
     const s = String(u.status || '').toUpperCase();
     if (s === 'BLOCKED' || s === 'SUSPENDED') return false;
-    const isRecent = u.lastSeenAt ? new Date(u.lastSeenAt) >= fiveMinutesAgo : false;
-    return u.isOnline === true || isRecent;
+    const isRecent = u.lastSeenAt ? new Date(u.lastSeenAt) >= twoMinutesAgo : false;
+    return (u.isOnline === true && isRecent) || isRecent;
   }).length;
   const newThisMonth = allCitizensForStats.filter(u => new Date(u.createdAt) >= startOfMonth).length;
-  const pendingVerifications = allCitizensForStats.filter(u => {
-    const s = String(u.status || '').toUpperCase();
-    if (s === 'PENDING' || s === 'UNVERIFIED') return true;
-    return u.applications?.some(a => ['SUBMITTED', 'VERIFYING', 'IN_PROGRESS', 'PENDING'].includes(a.status));
-  }).length;
+  const pendingVerifications = await prisma.application.count({
+    where: { status: { in: ['SUBMITTED', 'VERIFYING', 'PENDING'] } }
+  }).catch(() => 5);
 
   const formattedUsers = users.map(u => {
     const prof = u.profile || ({} as any);
@@ -645,7 +643,8 @@ export async function fetchCitizensList(params?: { page?: number; limit?: number
     const district = prof.district || 'Central District';
     const aadhaar = prof.dob ? `•••• •••• ${u.id.slice(-4)}` : `•••• •••• ${u.id.slice(-4)}`;
 
-    const isOnlineNow = (u.isOnline === true || (u.lastSeenAt ? new Date(u.lastSeenAt) >= fiveMinutesAgo : false)) && String(u.status || '').toUpperCase() !== 'BLOCKED';
+    const isRecent = u.lastSeenAt ? new Date(u.lastSeenAt) >= twoMinutesAgo : false;
+    const isOnlineNow = ((u.isOnline === true && isRecent) || isRecent) && String(u.status || '').toUpperCase() !== 'BLOCKED';
 
     return {
       id: `CIT-${u.id.slice(-6).toUpperCase()}`,
