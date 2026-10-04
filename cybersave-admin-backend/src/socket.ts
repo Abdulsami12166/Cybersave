@@ -853,7 +853,7 @@ export function setupSockets(io: Server) {
           const dayRev = breakdownEntry ? breakdownEntry.net : dayApps.reduce((sum, a) => sum + (a.feePaid || 50), 0);
           
           const dayApproved = dayApps.filter(a => a.status === 'APPROVED' || a.status === 'COMPLETED').length;
-          const dayPending = dayApps.filter(a => ['SUBMITTED', 'VERIFYING', 'IN_PROGRESS', 'PENDING'].includes(a.status)).length;
+          const dayPending = dayApps.filter(a => ['SUBMITTED', 'VERIFYING', 'PENDING'].includes(a.status)).length;
           const dayRejected = dayApps.filter(a => a.status === 'REJECTED').length;
 
           revenueOverview.push({
