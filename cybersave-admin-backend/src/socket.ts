@@ -1456,6 +1456,8 @@ export function setupSockets(io: Server) {
           rawStatus: a.status,
           assigned: isRealOfficer(a.officialOfficer),
           submitted: a.submittedAt ? a.submittedAt.toISOString() : new Date().toISOString(),
+          submittedAt: a.submittedAt,
+          updatedAt: a.updatedAt,
           sla: '24h',
           amount: a.feePaid || 50,
           feeAmount: a.feePaid || 50,

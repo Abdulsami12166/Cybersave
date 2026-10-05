@@ -356,7 +356,7 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
       });
 
       const todayApps = allApps.filter((a) => {
-        const d = new Date(a.submittedAt || a.updatedAt);
+        const d = new Date(a.submittedAt);
         return d >= today;
       });
 
@@ -369,7 +369,7 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
       const totalRefundedAmount = allApprovedRefunds.reduce((sum, r) => sum + (Number(r.amount) || 0), 0);
 
       const grossRevenueToday = todayApps.reduce((sum, a) => {
-        const fee = typeof a.feePaid === 'number' && !isNaN(a.feePaid) ? a.feePaid : (a.feePaid ? Number(a.feePaid) : 55.0);
+        const fee = typeof a.feePaid === 'number' && !isNaN(a.feePaid) ? a.feePaid : (a.feePaid ? Number(a.feePaid) : 0);
         return sum + fee;
       }, 0);
 
@@ -377,7 +377,7 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
       const revenueToday = Math.max(0, grossRevenueToday - todayRefundedAmount);
 
       const grossTotalRevenue = allApps.reduce((sum, a) => {
-        const fee = typeof a.feePaid === 'number' && !isNaN(a.feePaid) ? a.feePaid : (a.feePaid ? Number(a.feePaid) : 55.0);
+        const fee = typeof a.feePaid === 'number' && !isNaN(a.feePaid) ? a.feePaid : (a.feePaid ? Number(a.feePaid) : 0);
         return sum + fee;
       }, 0);
 
@@ -386,17 +386,29 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
       const appsToday = todayApps.length;
       const pendingApps = allApps.filter((a) => {
         const st = (a.status || '').toUpperCase();
-        return st === 'PENDING' || st === 'SUBMITTED' || st === 'VERIFYING';
+        return st === 'PENDING' || st === 'SUBMITTED' || st === 'VERIFYING' || st === 'IN_PROGRESS';
       }).length;
-      const completedAppsToday = todayApps.filter((a) => {
+
+      // Completed Today: Regardless of which date the application arrived, if approved or completed today, count it dynamically!
+      const completedAppsToday = allApps.filter((a) => {
         const st = (a.status || '').toUpperCase();
-        return st === 'COMPLETED' || st === 'APPROVED';
+        if (st !== 'COMPLETED' && st !== 'APPROVED') return false;
+        const d = new Date(a.updatedAt || a.submittedAt);
+        return d >= today;
       }).length;
+
       const totalApproved = allApps.filter((a) => {
         const st = (a.status || '').toUpperCase();
         return st === 'COMPLETED' || st === 'APPROVED';
       }).length;
-      const rejectedAppsToday = todayApps.filter((a) => (a.status || '').toUpperCase() === 'REJECTED').length;
+
+      // Rejected Today: Regardless of which date the application arrived, if rejected today, count it dynamically!
+      const rejectedAppsToday = allApps.filter((a) => {
+        const st = (a.status || '').toUpperCase();
+        if (st !== 'REJECTED') return false;
+        const d = new Date(a.updatedAt || a.submittedAt);
+        return d >= today;
+      }).length;
 
       const activeCentres = await this.prisma.user.count({
         where: { role: 'ADMIN' },
@@ -1516,28 +1528,31 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
   @SubscribeMessage('request_applications_data')
   async handleApplicationsData(@ConnectedSocket() client: Socket) {
     try {
-      const totalApps = await this.prisma.application.count();
       const today = new Date();
       today.setHours(0, 0, 0, 0);
-      const todayApps = await this.prisma.application.count({
-        where: { submittedAt: { gte: today } },
-      });
-      const pending = await this.prisma.application.count({
-        where: { status: 'SUBMITTED' },
-      });
-      const processing = await this.prisma.application.count({
-        where: { status: 'IN_PROGRESS' },
-      });
-      const completed = await this.prisma.application.count({
-        where: { status: 'APPROVED' },
-      });
 
-      const apps = await this.prisma.application.findMany({
-        take: 100,
+      const allApps = await this.prisma.application.findMany({
         orderBy: { submittedAt: 'desc' },
       });
 
-      const userIds: string[] = Array.from(new Set(apps.map((a) => a.userId).filter(Boolean))) as string[];
+      const totalApps = allApps.length;
+      const todayApps = allApps.filter((a) => new Date(a.submittedAt) >= today).length;
+      const submitted = allApps.filter((a) => String(a.status || '').toUpperCase() === 'SUBMITTED').length;
+      const underReview = allApps.filter((a) => ['VERIFYING', 'PENDING', 'UNDER_REVIEW', 'IN_REVIEW', 'REVIEW'].includes(String(a.status || '').toUpperCase()) && String(a.status || '').toUpperCase() !== 'SUBMITTED').length;
+      const processing = allApps.filter((a) => ['IN_PROGRESS', 'PROCESSING'].includes(String(a.status || '').toUpperCase())).length;
+      const approved = allApps.filter((a) => String(a.status || '').toUpperCase() === 'APPROVED').length;
+      const completed = allApps.filter((a) => String(a.status || '').toUpperCase() === 'COMPLETED').length;
+      const pending = submitted + underReview;
+
+      // Completed Today: Regardless of which date the application arrived, if approved or completed today, count it dynamically!
+      const completedToday = allApps.filter((a) => {
+        const st = String(a.status || '').toUpperCase();
+        if (st !== 'APPROVED' && st !== 'COMPLETED') return false;
+        const d = new Date(a.updatedAt || a.submittedAt);
+        return d >= today;
+      }).length;
+
+      const userIds: string[] = Array.from(new Set(allApps.map((a) => a.userId).filter(Boolean))) as string[];
       const [users, profiles] = await Promise.all([
         userIds.length > 0
           ? this.prisma.user.findMany({
@@ -1555,7 +1570,7 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
       const userMap = new Map((users as any[]).map((u) => [u.id, u]));
       const profileMap = new Map((profiles as any[]).map((p) => [p.userId, p]));
 
-      const formattedApps = apps.map((a) => {
+      const formattedApps = allApps.map((a) => {
         const u: any = userMap.get(a.userId);
         const p: any = profileMap.get(a.userId);
         const formData = (a.formData as any) || {};
@@ -1598,6 +1613,8 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
           assigned: a.officialOfficer || 'Auto Assigned (SDM)',
           submitted: a.submittedAt ? a.submittedAt.toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' }) : 'Today',
           submittedAtFull: a.submittedAt ? a.submittedAt.toLocaleString('en-IN', { dateStyle: 'medium', timeStyle: 'short' }) : new Date().toLocaleString('en-IN'),
+          submittedAt: a.submittedAt,
+          updatedAt: a.updatedAt,
           sla: '24h',
           amount: a.feePaid || 50.0,
           paymentStatus: a.paymentStatus || 'Success',
@@ -1633,11 +1650,13 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
             pinCode: p?.pinCode || formData.pinCode || 'Not Provided',
             address: p?.address || formData.address || 'Not Provided',
           },
+          rawApp: a,
         };
       });
 
       client.emit('response_applications_data', {
-        stats: { totalApps, todayApps, pending, processing, completed },
+        stats: { totalApps, todayApps, pending, processing, completed: completedToday },
+        pipeline: { submitted, underReview, processing, approved, completed },
         applications: formattedApps,
       });
     } catch (e) {
@@ -1717,13 +1736,16 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
 
         // Real-time broadcast to all connected Admin and Mobile clients
         this.server.emit('applications_updated');
+        this.server.emit('dashboard_updated');
         this.server.emit('transactions_updated');
         this.server.emit('application_status_changed', {
           id: updated.id,
+          rawId: updated.id,
           refNumber: updated.refNumber,
           userId: updated.userId,
           status: updated.status,
           rejectionReason: updated.rejectionReason,
+          updatedAt: updated.updatedAt,
         });
 
         const actingOfficerName = data.adminName || (data.adminEmail ? data.adminEmail.split('@')[0] : (updated.officialOfficer || 'Field Operator'));
