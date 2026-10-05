@@ -465,7 +465,8 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
       }
 
         const auditLogs = await this.prisma.auditLog.findMany({
-          take: 8,
+          where: { action: { notIn: ['APP_OPENED', 'APP_CLOSED'] } },
+          take: 50,
           orderBy: { createdAt: 'desc' },
           include: { user: { include: { profile: true } } },
         }).catch(() => []);
@@ -477,12 +478,15 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
           const isWallet = act.includes('wallet') || act.includes('payment');
           const isTicket = act.includes('ticket');
           const type = isApproved ? 'approved' : isRejected ? 'rejected' : isWallet ? 'wallet' : isTicket ? 'ticket' : 'operator';
+          const isToday = new Date(log.createdAt).toDateString() === new Date().toDateString();
           return {
             id: log.id,
             type,
             title: log.action.replace(/_/g, ' '),
             description: log.details || (log.user?.profile?.fullName ? `Action by ${log.user.profile.fullName}` : 'System operation recorded'),
-            time: new Date(log.createdAt).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' }),
+            time: isToday
+              ? new Date(log.createdAt).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })
+              : new Date(log.createdAt).toLocaleDateString('en-IN', { day: '2-digit', month: 'short' }),
             timestamp: log.createdAt.toISOString(),
           };
         });
@@ -509,9 +513,11 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
           totalCollections: revenueToday,
           totalLifetime: totalRevenue,
           onlinePayments: revenueToday,
-          grossCollections: grossTotalRevenue,
+          grossCollections: grossRevenueToday,
           totalRefunded: todayRefundedAmount,
           cashCollections: 0,
+          onlinePercentage: revenueToday > 0 ? 100 : 0,
+          cashPercentage: 0,
           netToday: revenueToday,
           netLifetime: totalRevenue,
         },

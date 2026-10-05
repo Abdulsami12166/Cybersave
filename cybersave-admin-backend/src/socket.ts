@@ -823,7 +823,8 @@ export function setupSockets(io: Server) {
           prisma.refundRequest.count(),
           prisma.refundRequest.findMany({ where: { status: 'APPROVED' }, select: { amount: true } }),
           prisma.auditLog.findMany({
-            take: 8,
+            where: { action: { notIn: ['APP_OPENED', 'APP_CLOSED'] } },
+            take: 50,
             orderBy: { createdAt: 'desc' },
             include: { user: { include: { profile: true } } }
           }),
@@ -905,12 +906,15 @@ export function setupSockets(io: Server) {
           const isWallet = act.includes('wallet') || act.includes('payment');
           const isTicket = act.includes('ticket');
           const type = isApproved ? 'approved' : isRejected ? 'rejected' : isWallet ? 'wallet' : isTicket ? 'ticket' : 'operator';
+          const isToday = new Date(l.createdAt).toDateString() === new Date().toDateString();
           return {
             id: l.id,
             type,
             title: l.action.replace(/_/g, ' '),
             description: l.details || (l.user?.profile?.fullName ? `Action by ${l.user.profile.fullName}` : `System operation recorded`),
-            time: new Date(l.createdAt).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' }),
+            time: isToday
+              ? new Date(l.createdAt).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })
+              : new Date(l.createdAt).toLocaleDateString('en-IN', { day: '2-digit', month: 'short' }),
             timestamp: l.createdAt.toISOString()
           };
         });

@@ -1253,7 +1253,7 @@ export class AdminController {
     today.setHours(0, 0, 0, 0);
 
     try {
-      const [totalApps, appsToday, pendingApps, completedAppsToday, rejectedAppsToday, activeCentres, todayAppsList, todayRefundsList, recentAppsList] = await Promise.race([
+      const [totalApps, appsToday, pendingApps, completedAppsToday, rejectedAppsToday, activeCentres, todayAppsList, todayRefundsList, recentAppsList, auditLogs] = await Promise.race([
         Promise.all([
           this.prisma.application.count().catch(() => 33),
           this.prisma.application.count({ where: { submittedAt: { gte: today } } }).catch(() => 0),
@@ -1268,8 +1268,14 @@ export class AdminController {
             orderBy: { submittedAt: 'desc' },
             select: { id: true, refNumber: true, serviceTitle: true, status: true, feePaid: true, submittedAt: true, formData: true, userId: true },
           }).catch(() => []),
+          this.prisma.auditLog.findMany({
+            where: { action: { notIn: ['APP_OPENED', 'APP_CLOSED'] } },
+            take: 50,
+            orderBy: { createdAt: 'desc' },
+            include: { user: { include: { profile: true } } },
+          }).catch(() => []),
         ]),
-        new Promise<any[]>((resolve) => setTimeout(() => resolve([33, 0, 5, 0, 0, 7, [], [], []]), 6000)),
+        new Promise<any[]>((resolve) => setTimeout(() => resolve([33, 0, 5, 0, 0, 7, [], [], [], []]), 6000)),
       ]);
 
       const recentUserIds: string[] = Array.from(new Set((recentAppsList || []).map((a: any) => a.userId).filter(Boolean))) as string[];
@@ -1308,10 +1314,31 @@ export class AdminController {
         };
       });
 
+      const operatorLogs = (auditLogs || []).map((log: any) => {
+        const act = (log.action || '').toLowerCase();
+        const isApproved = act.includes('approve');
+        const isRejected = act.includes('reject');
+        const isWallet = act.includes('wallet') || act.includes('payment');
+        const isTicket = act.includes('ticket');
+        const type = isApproved ? 'approved' : isRejected ? 'rejected' : isWallet ? 'wallet' : isTicket ? 'ticket' : 'operator';
+        const isToday = new Date(log.createdAt).toDateString() === new Date().toDateString();
+        return {
+          id: log.id,
+          type,
+          title: log.action.replace(/_/g, ' '),
+          description: log.details || (log.user?.profile?.fullName ? `Action by ${log.user.profile.fullName}` : 'System operation recorded'),
+          time: isToday
+            ? new Date(log.createdAt).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })
+            : new Date(log.createdAt).toLocaleDateString('en-IN', { day: '2-digit', month: 'short' }),
+          timestamp: log.createdAt.toISOString(),
+        };
+      });
+
       return {
         stats: {
           revenueToday: revenueToday,
           totalRevenue: revenueToday,
+          totalCollectionsToday: revenueToday,
           appsToday: appsToday || 0,
           totalApplications: totalApps || 0,
           pendingApps: pendingApps || 0,
@@ -1323,9 +1350,17 @@ export class AdminController {
           totalTransactionsCount: totalApps || 0,
         },
         collections: {
+          totalCollectionsToday: revenueToday,
           totalCollections: revenueToday,
+          totalLifetime: (totalApps || 33) * 50,
           onlinePayments: revenueToday,
+          grossCollections: grossRevenueToday,
+          totalRefunded: todayRefunds,
           cashCollections: 0,
+          onlinePercentage: revenueToday > 0 ? 100 : 0,
+          cashPercentage: 0,
+          netToday: revenueToday,
+          netLifetime: (totalApps || 33) * 50,
         },
         serviceShare: [
           { name: 'Aadhaar', percentage: 35 },
@@ -1334,10 +1369,7 @@ export class AdminController {
           { name: 'Banking', percentage: 15 },
           { name: 'Other', percentage: 10 },
         ],
-        operatorLogs: [
-          { id: '1', title: 'Aadhaar Update Verified', description: 'Operator approved demographic update #CSB2026849102', time: new Date().toISOString() },
-          { id: '2', title: 'PAN Card Processed', description: 'Operator submitted form 49A to NSDL portal', time: new Date(Date.now() - 3600000).toISOString() },
-        ],
+        operatorLogs,
         recentApps: formattedRecent,
         charts: {
           revenueOverview: [

@@ -369,7 +369,7 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
       const totalRefundedAmount = allApprovedRefunds.reduce((sum, r) => sum + (Number(r.amount) || 0), 0);
 
       const grossRevenueToday = todayApps.reduce((sum, a) => {
-        const fee = typeof a.feePaid === 'number' && !isNaN(a.feePaid) ? a.feePaid : (a.feePaid ? Number(a.feePaid) : 55.0);
+        const fee = typeof a.feePaid === 'number' && !isNaN(a.feePaid) ? a.feePaid : (a.feePaid ? Number(a.feePaid) : 0);
         return sum + fee;
       }, 0);
 
@@ -377,7 +377,7 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
       const revenueToday = Math.max(0, grossRevenueToday - todayRefundedAmount);
 
       const grossTotalRevenue = allApps.reduce((sum, a) => {
-        const fee = typeof a.feePaid === 'number' && !isNaN(a.feePaid) ? a.feePaid : (a.feePaid ? Number(a.feePaid) : 55.0);
+        const fee = typeof a.feePaid === 'number' && !isNaN(a.feePaid) ? a.feePaid : (a.feePaid ? Number(a.feePaid) : 0);
         return sum + fee;
       }, 0);
 
@@ -464,6 +464,33 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
         });
       }
 
+      const auditLogs = await this.prisma.auditLog.findMany({
+        where: { action: { notIn: ['APP_OPENED', 'APP_CLOSED'] } },
+        take: 50,
+        orderBy: { createdAt: 'desc' },
+        include: { user: { include: { profile: true } } },
+      }).catch(() => []);
+
+      const operatorLogs = auditLogs.map((log: any) => {
+        const act = (log.action || '').toLowerCase();
+        const isApproved = act.includes('approve');
+        const isRejected = act.includes('reject');
+        const isWallet = act.includes('wallet') || act.includes('payment');
+        const isTicket = act.includes('ticket');
+        const type = isApproved ? 'approved' : isRejected ? 'rejected' : isWallet ? 'wallet' : isTicket ? 'ticket' : 'operator';
+        const isToday = new Date(log.createdAt).toDateString() === new Date().toDateString();
+        return {
+          id: log.id,
+          type,
+          title: log.action.replace(/_/g, ' '),
+          description: log.details || (log.user?.profile?.fullName ? `Action by ${log.user.profile.fullName}` : 'System operation recorded'),
+          time: isToday
+            ? new Date(log.createdAt).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })
+            : new Date(log.createdAt).toLocaleDateString('en-IN', { day: '2-digit', month: 'short' }),
+          timestamp: log.createdAt.toISOString(),
+        };
+      });
+
       client.emit('response_dashboard_data', {
         stats: {
           revenueToday: revenueToday,
@@ -482,11 +509,17 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
           activeCentres: activeCentres || 1,
         },
         collections: {
-          totalCollections: totalRevenue,
-          onlinePayments: totalRevenue,
-          grossCollections: grossTotalRevenue,
-          totalRefunded: totalRefundedAmount,
+          totalCollectionsToday: revenueToday,
+          totalCollections: revenueToday,
+          totalLifetime: totalRevenue,
+          onlinePayments: revenueToday,
+          grossCollections: grossRevenueToday,
+          totalRefunded: todayRefundedAmount,
           cashCollections: 0,
+          onlinePercentage: revenueToday > 0 ? 100 : 0,
+          cashPercentage: 0,
+          netToday: revenueToday,
+          netLifetime: totalRevenue,
         },
         serviceShare: [
           { name: 'Aadhaar Services', percentage: 35 },
@@ -495,14 +528,7 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
           { name: 'Finance & Banking', percentage: 15 },
           { name: 'Passport & Others', percentage: 10 },
         ],
-        operatorLogs: [
-          {
-            id: '1',
-            title: 'System Online',
-            description: 'Real-time WebSocket & Database sync active',
-            time: new Date().toISOString(),
-          },
-        ],
+        operatorLogs,
         recentApps: allApps.slice(0, 5),
         charts: {
           revenueOverview,
