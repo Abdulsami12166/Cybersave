@@ -2212,19 +2212,37 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
     @MessageBody() data: { id: string; permissions: string[] },
   ) {
     try {
-      const finalPermissions = Array.from(new Set([...(Array.isArray(data.permissions) ? data.permissions : []), 'SETTINGS']));
+      if (!data?.id) return;
+      const cleanId = String(data.id).trim();
+      const isMongo = /^[0-9a-fA-F]{24}$/.test(cleanId);
+      const targetUser = isMongo
+        ? await this.prisma.user.findUnique({ where: { id: cleanId } })
+        : await this.prisma.user.findFirst({
+            where: {
+              OR: [
+                { id: cleanId },
+                { email: { equals: cleanId, mode: 'insensitive' } },
+                { keycloakId: cleanId },
+                { phone: cleanId }
+              ]
+            }
+          });
+      if (!targetUser) return;
+
+      const finalPermissions = Array.isArray(data.permissions) ? Array.from(new Set(data.permissions)) : [];
       await this.prisma.user.update({
-        where: { id: data.id },
+        where: { id: targetUser.id },
         data: { permissions: finalPermissions },
       });
       client.emit('update_operator_access_success', {
-        id: data.id,
+        id: targetUser.id,
         permissions: finalPermissions,
       });
 
       // Broadcast live permission update directly to all connected sockets
       AdminGateway.broadcast('operator_permissions_updated', {
-        id: data.id,
+        id: targetUser.id,
+        email: targetUser.email,
         permissions: finalPermissions,
       });
 

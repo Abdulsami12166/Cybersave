@@ -116,9 +116,20 @@ app.post('/api/auth/login', async (req: any, res: any) => {
   const { email, password } = req.body;
   if (!email || !password) return res.status(400).json({ error: 'Email and password required' });
 
-  const user = await prisma.user.findFirst({ where: { email, role: 'ADMIN' } });
+  const cleanEmail = email.trim().toLowerCase();
+  const user = await prisma.user.findFirst({
+    where: {
+      email: { equals: cleanEmail, mode: 'insensitive' },
+      role: 'ADMIN'
+    }
+  });
+
   if (!user || !user.passwordHash) {
     return res.status(401).json({ error: 'Invalid credentials or not an admin' });
+  }
+
+  if (user.status === 'SUSPENDED') {
+    return res.status(403).json({ error: 'Account has been suspended. Please contact the Super Administrator.' });
   }
 
   const isMatch = await bcrypt.compare(password, user.passwordHash);
@@ -126,8 +137,28 @@ app.post('/api/auth/login', async (req: any, res: any) => {
     return res.status(401).json({ error: 'Invalid credentials' });
   }
 
+  // Update last seen & record audit log for real-time tracking
+  await prisma.user.update({
+    where: { id: user.id },
+    data: { lastSeenAt: new Date() }
+  }).catch(() => null);
+
+  await prisma.auditLog.create({
+    data: {
+      userId: user.id,
+      action: 'OPERATOR_LOGIN',
+      details: `Operator ${user.email} logged into admin console. Session established.`,
+      ipAddress: req.ip || '127.0.0.1'
+    }
+  }).catch(() => null);
+
+  const isSuper = user.email === 'admin@cybersave.com' || user.email === 'officer.admin@cybersave.gov.in';
+  const effectivePerms = Array.isArray(user.permissions)
+    ? (user.permissions.length === 0 && isSuper ? ['SUPER_ADMIN', 'ALL'] : user.permissions)
+    : (isSuper ? ['SUPER_ADMIN', 'ALL'] : ['DASHBOARD']);
+
   const token = jwt.sign({ id: user.id, email: user.email, role: user.role }, JWT_SECRET, { expiresIn: '24h' });
-  res.json({ token, admin: { id: user.id, email: user.email, permissions: user.permissions || [] } });
+  res.json({ token, admin: { id: user.id, email: user.email, permissions: effectivePerms } });
 });
 
 const authenticateAdmin = (req: any, res: any, next: any) => {
@@ -2439,6 +2470,27 @@ app.get([
   }
 });
 
+// ponytail: robustly find admin user by mongo ID, email, or keycloakId/phone
+export async function findAdminUserByIdentifier(identifier?: string) {
+  if (!identifier) return null;
+  const clean = String(identifier).trim();
+  const isMongoId = /^[0-9a-fA-F]{24}$/.test(clean);
+  if (isMongoId) {
+    const user = await prisma.user.findUnique({ where: { id: clean } });
+    if (user) return user;
+  }
+  return await prisma.user.findFirst({
+    where: {
+      OR: [
+        { id: clean },
+        { email: { equals: clean, mode: 'insensitive' } },
+        { phone: clean },
+        { keycloakId: clean }
+      ]
+    }
+  });
+}
+
 // High-performance In-Memory Caches for Sub-Second Operator & Audit Log Retrieval
 export const operatorCache = new Map<string, { data: any; timestamp: number }>();
 export let operatorsListCache: { data: any; timestamp: number } | null = null;
@@ -2452,24 +2504,13 @@ export async function getFastOperatorData(id?: string) {
     return cached.data;
   }
 
-  const isMongoId = (s?: string) => typeof s === 'string' && /^[0-9a-fA-F]{24}$/.test(s);
-  let userWhere: any = { role: 'ADMIN' };
-  if (isMongoId(id)) {
-    userWhere = { id };
-  } else if (id && typeof id === 'string') {
-    const cleanId = id.trim().toLowerCase();
-    userWhere = {
-      OR: [
-        { email: { equals: cleanId, mode: 'insensitive' } },
-        { keycloakId: id },
-        { phone: id }
-      ]
-    };
+  let user: any = null;
+  if (id) {
+    user = await findAdminUserByIdentifier(id);
   }
-
-  const [user, logs] = await Promise.all([
-    prisma.user.findFirst({
-      where: userWhere,
+  if (!user) {
+    user = await prisma.user.findFirst({
+      where: { role: 'ADMIN' },
       select: {
         id: true,
         email: true,
@@ -2477,24 +2518,27 @@ export async function getFastOperatorData(id?: string) {
         role: true,
         permissions: true,
         status: true,
-        createdAt: true
+        createdAt: true,
+        updatedAt: true,
+        lastSeenAt: true,
       }
-    }),
-    prisma.auditLog.findMany({
-      where: (id && id.length === 24)
-        ? { userId: id }
-        : { action: { contains: 'OPERATOR' } },
-      orderBy: { createdAt: 'desc' },
-      take: 50,
+    });
+  } else {
+    user = await prisma.user.findUnique({
+      where: { id: user.id },
       select: {
         id: true,
-        action: true,
-        details: true,
-        ipAddress: true,
-        createdAt: true
+        email: true,
+        phone: true,
+        role: true,
+        permissions: true,
+        status: true,
+        createdAt: true,
+        updatedAt: true,
+        lastSeenAt: true,
       }
-    })
-  ]);
+    });
+  }
 
   if (!user) return null;
 
@@ -2607,16 +2651,31 @@ export async function getFastOperatorData(id?: string) {
   const rejectionRateStr = totalProcessed > 0 ? `${((rejectionsCount / totalProcessed) * 100).toFixed(1)}%` : '0.0%';
   const accuracyStr = totalProcessed > 0 ? `${(((totalProcessed - rejectionsCount) / totalProcessed) * 100).toFixed(1)}% Accuracy` : '100% Accuracy';
 
+  // ponytail: compute true last login timestamp from lastSeenAt or most recent login audit log
+  const loginLog = (userLogs || []).find((l: any) => l.action && l.action.toUpperCase().includes('LOGIN'));
+  const effectiveLoginTime = user.lastSeenAt || loginLog?.createdAt || user.updatedAt || user.createdAt;
+  const formattedLastLogin = effectiveLoginTime ? new Date(effectiveLoginTime).toLocaleString('en-IN', {
+    day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit'
+  }) : 'Active recently';
+
+  const isSuperAdminUser = user.email === 'admin@cybersave.com' || user.email === 'officer.admin@cybersave.gov.in';
+  // ponytail: strictly preserve sub-admin custom permissions; only super admin defaults to all
+  const resolvedPermissions = Array.isArray(user.permissions)
+    ? (user.permissions.length === 0 && isSuperAdminUser ? ['DASHBOARD', 'APPLICATIONS', 'REFUNDS', 'TRANSACTIONS', 'SERVICES', 'USERS', 'OPERATORS', 'SUPPORT', 'ANALYTICS', 'AUDIT', 'NOTIFICATIONS', 'SETTINGS'] : user.permissions)
+    : (isSuperAdminUser ? ['DASHBOARD', 'APPLICATIONS', 'REFUNDS', 'TRANSACTIONS', 'SERVICES', 'USERS', 'OPERATORS', 'SUPPORT', 'ANALYTICS', 'AUDIT', 'NOTIFICATIONS', 'SETTINGS'] : ['DASHBOARD']);
+
   const operatorData = {
     id: user.id,
     name: profile?.fullName || (user.email ? user.email.split('@')[0] : 'Admin Officer'),
     email: user.email || '',
     phone: user.phone || profile?.phone || '+91 98765 43210',
-    role: (user.email === 'admin@cybersave.com' || user.email === 'officer.admin@cybersave.gov.in') ? 'Super Admin' : 'Field Operator',
+    role: isSuperAdminUser ? 'Super Admin' : 'Field Operator',
     department: profile?.district ? `Seva Kendra (${profile.district})` : 'CSC Operations & Verification Desk',
-    permissions: user.permissions && user.permissions.length > 0 ? user.permissions : ['DASHBOARD', 'APPLICATIONS', 'TRANSACTIONS', 'SERVICES', 'USERS', 'OPERATORS', 'SUPPORT', 'AUDIT', 'SETTINGS'],
+    permissions: resolvedPermissions,
     joinedDate: user.createdAt ? new Date(user.createdAt).toLocaleDateString('en-GB') : '14/08/2026',
-    lastActive: 'Active now',
+    lastActive: user.lastSeenAt ? 'Active now' : 'Active recently',
+    lastLogin: formattedLastLogin,
+    lastLoginAt: effectiveLoginTime ? new Date(effectiveLoginTime).toISOString() : new Date().toISOString(),
     status: user.status === 'SUSPENDED' ? 'Suspended' : 'Active',
     avatarUrl: profile?.avatarUrl || null,
     address: profile?.address || 'CSC Seva Kendra, Main Administrative Complex',
@@ -2767,7 +2826,9 @@ export async function getFastOperatorsList() {
         role: true,
         permissions: true,
         status: true,
-        createdAt: true
+        createdAt: true,
+        updatedAt: true,
+        lastSeenAt: true,
       },
       orderBy: { createdAt: 'desc' }
     })
@@ -2780,23 +2841,35 @@ export async function getFastOperatorsList() {
     else if (o.email === 'officer.admin@cybersave.gov.in') displayName = 'Principal Verification Officer';
     else if (base) displayName = base.replace(/[._]/g, ' ').replace(/\b\w/g, (c: string) => c.toUpperCase());
 
+    const isSuper = o.email === 'admin@cybersave.com' || o.email === 'officer.admin@cybersave.gov.in';
+    const perms = Array.isArray(o.permissions)
+      ? (o.permissions.length === 0 && isSuper ? ['DASHBOARD', 'APPLICATIONS', 'REFUNDS', 'TRANSACTIONS', 'SERVICES', 'USERS', 'OPERATORS', 'SUPPORT', 'ANALYTICS', 'AUDIT', 'NOTIFICATIONS', 'SETTINGS'] : o.permissions)
+      : (isSuper ? ['DASHBOARD', 'APPLICATIONS', 'REFUNDS', 'TRANSACTIONS', 'SERVICES', 'USERS', 'OPERATORS', 'SUPPORT', 'ANALYTICS', 'AUDIT', 'NOTIFICATIONS', 'SETTINGS'] : ['DASHBOARD']);
+
+    const loginTime = o.lastSeenAt || o.updatedAt || o.createdAt;
+    const formattedLogin = loginTime ? new Date(loginTime).toLocaleString('en-IN', {
+      day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit'
+    }) : 'Active recently';
+
     return {
       id: o.id,
       name: displayName,
       email: o.email || '',
       phone: o.phone || '+91 98765 43210',
-      role: (o.email === 'admin@cybersave.com' || o.email === 'officer.admin@cybersave.gov.in') ? 'Super Admin' : 'Field Operator',
+      role: isSuper ? 'Super Admin' : 'Field Operator',
       department: 'CSC Operations & Verification Desk',
-      permissions: o.permissions && o.permissions.length > 0 ? o.permissions : ['DASHBOARD', 'APPLICATIONS', 'SETTINGS'],
+      permissions: perms,
       joinedDate: o.createdAt ? new Date(o.createdAt).toLocaleDateString('en-GB') : '14/08/2026',
-      lastActive: 'Active now',
+      lastActive: o.lastSeenAt ? 'Active now' : 'Active recently',
+      lastLogin: formattedLogin,
+      lastLoginAt: loginTime ? new Date(loginTime).toISOString() : new Date().toISOString(),
       status: o.status === 'SUSPENDED' ? 'Suspended' : 'Active',
       avatarUrl: null,
     };
   });
 
   const resData = {
-    stats: { totalOps, active: totalOps, pending: 0, suspended: 0 },
+    stats: { totalOps, active: formattedOps.filter(x => x.status !== 'Suspended').length, pending: 0, suspended: formattedOps.filter(x => x.status === 'Suspended').length },
     operators: formattedOps,
   };
 
@@ -2903,6 +2976,11 @@ app.post(['/api/admin/operators', '/api/v1/operators', '/api/operators'], async 
 app.put(['/api/admin/operators/:id', '/api/v1/operators/:id', '/api/operators/:id'], async (req: any, res: any) => {
   try {
     const { id } = req.params;
+    const targetUser = await findAdminUserByIdentifier(id);
+    if (!targetUser) {
+      return res.status(404).json({ error: `Operator ${id} not found` });
+    }
+
     const { 
       permissions, 
       status, 
@@ -2923,19 +3001,21 @@ app.put(['/api/admin/operators/:id', '/api/v1/operators/:id', '/api/operators/:i
     const opDistrict = district || department;
 
     const updateData: any = {};
-    if (permissions !== undefined) updateData.permissions = permissions;
+    if (permissions !== undefined) {
+      updateData.permissions = Array.isArray(permissions) ? Array.from(new Set(permissions)) : [];
+    }
     if (status !== undefined) updateData.status = status;
     if (phone !== undefined) updateData.phone = phone;
     if (email !== undefined && email.trim() !== '') updateData.email = email.trim().toLowerCase();
 
     const updated = await prisma.user.update({
-      where: { id },
+      where: { id: targetUser.id },
       data: updateData
     });
 
     if (opName || opDistrict || address || state || pinCode || dob || gender) {
       await prisma.profile.upsert({
-        where: { userId: id },
+        where: { userId: targetUser.id },
         update: { 
           ...(opName ? { fullName: opName } : {}),
           ...(opDistrict ? { district: opDistrict } : {}),
@@ -2946,7 +3026,7 @@ app.put(['/api/admin/operators/:id', '/api/v1/operators/:id', '/api/operators/:i
           ...(gender !== undefined ? { gender } : {}),
         },
         create: { 
-          userId: id, 
+          userId: targetUser.id, 
           fullName: opName || 'Operator User',
           district: opDistrict || 'CSC Operations',
           address: address || null,
@@ -2960,15 +3040,16 @@ app.put(['/api/admin/operators/:id', '/api/v1/operators/:id', '/api/operators/:i
 
     await prisma.auditLog.create({
       data: {
-        userId: id,
+        userId: targetUser.id,
         action: 'OPERATOR_UPDATED',
-        details: `Operator #${id.slice(-6)} profile/permissions updated: [${(updated.permissions || []).join(', ')}] status: ${updated.status}. User: ${updated.email}.`,
+        details: `Operator #${targetUser.id.slice(-6)} profile/permissions updated: [${(updated.permissions || []).join(', ')}] status: ${updated.status}. User: ${updated.email}.`,
         ipAddress: req.ip || '127.0.0.1',
       }
     }).catch(() => null);
 
     operatorsListCache = null;
     auditLogsCache = null;
+    operatorCache.delete(targetUser.id);
     operatorCache.delete(id);
     operatorCache.delete('default');
 
@@ -2976,7 +3057,11 @@ app.put(['/api/admin/operators/:id', '/api/v1/operators/:id', '/api/operators/:i
     io.emit('audit_logs_updated');
     io.emit('dashboard_updated');
     if (permissions !== undefined) {
-      io.emit('operator_permissions_updated', { id: updated.id, permissions: updated.permissions });
+      io.emit('operator_permissions_updated', {
+        id: targetUser.id,
+        email: targetUser.email,
+        permissions: updated.permissions
+      });
     }
     res.json({ success: true, operator: updated });
   } catch (e: any) {
@@ -2987,31 +3072,39 @@ app.put(['/api/admin/operators/:id', '/api/v1/operators/:id', '/api/operators/:i
 app.post(['/api/admin/operators/:id/status', '/api/v1/operators/:id/status', '/api/operators/:id/status'], async (req: any, res: any) => {
   try {
     const { id } = req.params;
+    const targetUser = await findAdminUserByIdentifier(id);
+    if (!targetUser) {
+      return res.status(404).json({ error: `Operator ${id} not found` });
+    }
+
     const { status } = req.body;
+    const newStatus = status || 'ACTIVE';
     const updated = await prisma.user.update({
-      where: { id },
-      data: { status: status || 'ACTIVE' }
+      where: { id: targetUser.id },
+      data: { status: newStatus }
     });
 
     await prisma.auditLog.create({
       data: {
-        userId: id,
+        userId: targetUser.id,
         action: 'OPERATOR_STATUS_CHANGED',
-        details: `Operator #${id.slice(-6)} status updated to ${status || 'ACTIVE'}. User: ${updated.email}.`,
+        details: `Operator #${targetUser.id.slice(-6)} status updated to ${newStatus}. User: ${updated.email}.`,
         ipAddress: req.ip || '127.0.0.1',
       }
     }).catch(() => null);
 
     operatorsListCache = null;
     auditLogsCache = null;
+    operatorCache.delete(targetUser.id);
     operatorCache.delete(id);
     operatorCache.delete('default');
 
     io.emit('operators_updated');
     io.emit('audit_logs_updated');
     io.emit('dashboard_updated');
-    if (status === 'SUSPENDED') {
-      io.emit('operator_suspended', { userId: id, message: 'Your account has been suspended by an Administrator.' });
+    if (newStatus === 'SUSPENDED') {
+      io.emit('operator_suspended', { userId: targetUser.id, email: targetUser.email, message: 'Your account has been suspended by an Administrator.' });
+      io.emit('force_logout', { userId: targetUser.id, email: targetUser.email, message: 'Your account has been suspended by an Administrator.' });
     }
     res.json({ success: true, operator: updated });
   } catch (e: any) {
@@ -3114,6 +3207,11 @@ app.post(['/api/admin/operators/:id/upload-document', '/api/v1/operators/:id/upl
 app.post(['/api/admin/operators/:id/reset-password', '/api/v1/operators/:id/reset-password', '/api/operators/:id/reset-password'], async (req: any, res: any) => {
   try {
     const { id } = req.params;
+    const targetUser = await findAdminUserByIdentifier(id);
+    if (!targetUser) {
+      return res.status(404).json({ error: `Operator ${id} not found` });
+    }
+
     const { password } = req.body;
     if (!password || String(password).trim().length < 6) {
       return res.status(400).json({ error: 'Password must be at least 6 characters long' });
@@ -3121,25 +3219,26 @@ app.post(['/api/admin/operators/:id/reset-password', '/api/v1/operators/:id/rese
 
     const passwordHash = await bcrypt.hash(String(password).trim(), 8);
     const updated = await prisma.user.update({
-      where: { id },
+      where: { id: targetUser.id },
       data: { passwordHash }
     });
 
     await prisma.auditLog.create({
       data: {
-        userId: id,
+        userId: targetUser.id,
         action: 'OPERATOR_PASSWORD_RESET',
-        details: `Operator #${id.slice(-6)} password was reset by administrator. User: ${updated.email}.`,
+        details: `Operator #${targetUser.id.slice(-6)} password was reset by administrator. User: ${updated.email}.`,
         ipAddress: req.ip || '127.0.0.1',
       }
     }).catch(() => null);
 
     operatorsListCache = null;
+    operatorCache.delete(targetUser.id);
     operatorCache.delete(id);
     operatorCache.delete('default');
 
     io.emit('operators_updated');
-    io.emit('reset_operator_password_success', { id, success: true });
+    io.emit('reset_operator_password_success', { id: targetUser.id, success: true });
     io.emit('audit_logs_updated');
 
     res.json({ success: true, message: 'Operator password reset successfully!' });

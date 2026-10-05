@@ -1915,6 +1915,27 @@ export function setupSockets(io: Server) {
       }
     });
 
+    // ponytail: robustly find admin user by mongo ID, email, or keycloakId/phone
+    async function findAdminUserByIdentifier(identifier?: string) {
+      if (!identifier) return null;
+      const clean = String(identifier).trim();
+      const isMongoId = /^[0-9a-fA-F]{24}$/.test(clean);
+      if (isMongoId) {
+        const user = await prisma.user.findUnique({ where: { id: clean } });
+        if (user) return user;
+      }
+      return await prisma.user.findFirst({
+        where: {
+          OR: [
+            { id: clean },
+            { email: { equals: clean, mode: 'insensitive' } },
+            { phone: clean },
+            { keycloakId: clean }
+          ]
+        }
+      });
+    }
+
     // In-memory caching for socket queries uses module-scoped caches
     async function getSocketFastOperatorsList() {
       if (socketOperatorsListCache && Date.now() - socketOperatorsListCache.timestamp < 60000) {
@@ -1932,7 +1953,9 @@ export function setupSockets(io: Server) {
             role: true,
             permissions: true,
             status: true,
-            createdAt: true
+            createdAt: true,
+            updatedAt: true,
+            lastSeenAt: true,
           },
           orderBy: { createdAt: 'desc' }
         })
@@ -1945,23 +1968,35 @@ export function setupSockets(io: Server) {
         else if (o.email === 'officer.admin@cybersave.gov.in') displayName = 'Principal Verification Officer';
         else if (base) displayName = base.replace(/[._]/g, ' ').replace(/\b\w/g, (c: string) => c.toUpperCase());
 
+        const isSuper = o.email === 'admin@cybersave.com' || o.email === 'officer.admin@cybersave.gov.in';
+        const perms = Array.isArray(o.permissions)
+          ? (o.permissions.length === 0 && isSuper ? ['DASHBOARD', 'APPLICATIONS', 'REFUNDS', 'TRANSACTIONS', 'SERVICES', 'USERS', 'OPERATORS', 'SUPPORT', 'ANALYTICS', 'AUDIT', 'NOTIFICATIONS', 'SETTINGS'] : o.permissions)
+          : (isSuper ? ['DASHBOARD', 'APPLICATIONS', 'REFUNDS', 'TRANSACTIONS', 'SERVICES', 'USERS', 'OPERATORS', 'SUPPORT', 'ANALYTICS', 'AUDIT', 'NOTIFICATIONS', 'SETTINGS'] : ['DASHBOARD']);
+
+        const loginTime = o.lastSeenAt || o.updatedAt || o.createdAt;
+        const formattedLogin = loginTime ? new Date(loginTime).toLocaleString('en-IN', {
+          day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit'
+        }) : 'Active recently';
+
         return {
           id: o.id, 
           name: displayName, 
           email: o.email || '',
           phone: o.phone || '+91 98765 43210',
-          role: (o.email === 'admin@cybersave.com' || o.email === 'officer.admin@cybersave.gov.in') ? 'Super Admin' : 'Field Operator', 
+          role: isSuper ? 'Super Admin' : 'Field Operator', 
           department: 'CSC Operations & Verification Desk', 
           joinedDate: o.createdAt ? new Date(o.createdAt).toLocaleDateString('en-GB') : '14/08/2026', 
-          lastActive: 'Active now', 
+          lastActive: o.lastSeenAt ? 'Active now' : 'Active recently', 
+          lastLogin: formattedLogin,
+          lastLoginAt: loginTime ? new Date(loginTime).toISOString() : new Date().toISOString(),
           status: o.status === 'SUSPENDED' ? 'Suspended' : 'Active',
           avatarUrl: null,
-          permissions: o.permissions && o.permissions.length > 0 ? o.permissions : ['DASHBOARD', 'APPLICATIONS', 'SETTINGS']
+          permissions: perms
         };
       });
 
       const resData = {
-        stats: { totalOps: totalOps, active: totalOps, pending: 0, suspended: 0 },
+        stats: { totalOps: totalOps, active: formattedOps.filter(x => x.status !== 'Suspended').length, pending: 0, suspended: formattedOps.filter(x => x.status === 'Suspended').length },
         operators: formattedOps
       };
       socketOperatorsListCache = { data: resData, timestamp: Date.now() };
@@ -1975,24 +2010,13 @@ export function setupSockets(io: Server) {
         return cached.data;
       }
 
-      const isMongoId = (s?: string) => typeof s === 'string' && /^[0-9a-fA-F]{24}$/.test(s);
-      let userWhere: any = { role: 'ADMIN' };
-      if (isMongoId(id)) {
-        userWhere = { id };
-      } else if (id && typeof id === 'string') {
-        const cleanId = id.trim().toLowerCase();
-        userWhere = {
-          OR: [
-            { email: { equals: cleanId, mode: 'insensitive' } },
-            { keycloakId: id },
-            { phone: id }
-          ]
-        };
+      let user: any = null;
+      if (id) {
+        user = await findAdminUserByIdentifier(id);
       }
-
-      const [user, logs] = await Promise.all([
-        prisma.user.findFirst({
-          where: userWhere,
+      if (!user) {
+        user = await prisma.user.findFirst({
+          where: { role: 'ADMIN' },
           select: {
             id: true,
             email: true,
@@ -2000,24 +2024,42 @@ export function setupSockets(io: Server) {
             role: true,
             permissions: true,
             status: true,
-            createdAt: true
+            createdAt: true,
+            updatedAt: true,
+            lastSeenAt: true,
           }
-        }),
-        prisma.auditLog.findMany({
-          where: (id && id.length === 24)
-            ? { userId: id }
-            : { action: { contains: 'OPERATOR' } },
-          orderBy: { createdAt: 'desc' },
-          take: 50,
+        });
+      } else {
+        user = await prisma.user.findUnique({
+          where: { id: user.id },
           select: {
             id: true,
-            action: true,
-            details: true,
-            ipAddress: true,
-            createdAt: true
+            email: true,
+            phone: true,
+            role: true,
+            permissions: true,
+            status: true,
+            createdAt: true,
+            updatedAt: true,
+            lastSeenAt: true,
           }
-        })
-      ]);
+        });
+      }
+
+      const logs = await prisma.auditLog.findMany({
+        where: (id && id.length === 24)
+          ? { userId: id }
+          : { action: { contains: 'OPERATOR' } },
+        orderBy: { createdAt: 'desc' },
+        take: 50,
+        select: {
+          id: true,
+          action: true,
+          details: true,
+          ipAddress: true,
+          createdAt: true
+        }
+      });
 
       if (!user) return null;
 
@@ -2129,16 +2171,29 @@ export function setupSockets(io: Server) {
       const rejectionRateStr = totalProcessed > 0 ? `${((rejectionsCount / totalProcessed) * 100).toFixed(1)}%` : '0.0%';
       const accuracyStr = totalProcessed > 0 ? `${(((totalProcessed - rejectionsCount) / totalProcessed) * 100).toFixed(1)}% Accuracy` : '100% Accuracy';
 
+      const loginLog = (userLogs || []).find((l: any) => l.action && l.action.toUpperCase().includes('LOGIN'));
+      const effectiveLoginTime = user.lastSeenAt || loginLog?.createdAt || user.updatedAt || user.createdAt;
+      const formattedLastLogin = effectiveLoginTime ? new Date(effectiveLoginTime).toLocaleString('en-IN', {
+        day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit'
+      }) : 'Active recently';
+
+      const isSuperAdminUser = user.email === 'admin@cybersave.com' || user.email === 'officer.admin@cybersave.gov.in';
+      const resolvedPermissions = Array.isArray(user.permissions)
+        ? (user.permissions.length === 0 && isSuperAdminUser ? ['DASHBOARD', 'APPLICATIONS', 'REFUNDS', 'TRANSACTIONS', 'SERVICES', 'USERS', 'OPERATORS', 'SUPPORT', 'ANALYTICS', 'AUDIT', 'NOTIFICATIONS', 'SETTINGS'] : user.permissions)
+        : (isSuperAdminUser ? ['DASHBOARD', 'APPLICATIONS', 'REFUNDS', 'TRANSACTIONS', 'SERVICES', 'USERS', 'OPERATORS', 'SUPPORT', 'ANALYTICS', 'AUDIT', 'NOTIFICATIONS', 'SETTINGS'] : ['DASHBOARD']);
+
       const operatorData = {
         id: user.id,
         name: profile?.fullName || (user.email ? user.email.split('@')[0] : 'Admin Officer'),
         email: user.email || '',
         phone: user.phone || profile?.phone || '+91 98765 43210',
-        role: (user.email === 'admin@cybersave.com' || user.email === 'officer.admin@cybersave.gov.in') ? 'Super Admin' : 'Field Operator',
+        role: isSuperAdminUser ? 'Super Admin' : 'Field Operator',
         department: profile?.district ? `Seva Kendra (${profile.district})` : 'CSC Operations & Verification Desk',
-        permissions: user.permissions && user.permissions.length > 0 ? user.permissions : ['DASHBOARD', 'APPLICATIONS', 'TRANSACTIONS', 'SERVICES', 'USERS', 'OPERATORS', 'SUPPORT', 'AUDIT', 'SETTINGS'],
+        permissions: resolvedPermissions,
         joinedDate: user.createdAt ? new Date(user.createdAt).toLocaleDateString('en-GB') : '14/08/2026',
-        lastActive: 'Active now',
+        lastActive: user.lastSeenAt ? 'Active now' : 'Active recently',
+        lastLogin: formattedLastLogin,
+        lastLoginAt: effectiveLoginTime ? new Date(effectiveLoginTime).toISOString() : new Date().toISOString(),
         status: user.status === 'SUSPENDED' ? 'Suspended' : 'Active',
         avatarUrl: profile?.avatarUrl || null,
         address: profile?.address || 'CSC Seva Kendra, Main Administrative Complex',
@@ -2213,22 +2268,24 @@ export function setupSockets(io: Server) {
     socket.on('reset_operator_password', async (data: { id: string; password?: string }) => {
       try {
         if (!data?.id) return;
+        const targetUser = await findAdminUserByIdentifier(data.id);
+        if (!targetUser) return;
         const newPass = data.password || 'CyberSave@2026';
         const passwordHash = await bcrypt.hash(newPass, 8);
         const updated = await prisma.user.update({
-          where: { id: data.id },
+          where: { id: targetUser.id },
           data: { passwordHash }
         });
         await prisma.auditLog.create({
           data: {
-            userId: data.id,
+            userId: targetUser.id,
             action: 'OPERATOR_PASSWORD_RESET',
-            details: `Operator #${data.id.slice(-6)} credentials reset via secure administrative protocol. User: ${updated.email}.`,
+            details: `Operator #${targetUser.id.slice(-6)} credentials reset via secure administrative protocol. User: ${updated.email}.`,
             ipAddress: '127.0.0.1',
           }
         }).catch(() => null);
         socketOperatorCache.clear();
-        socket.emit('reset_operator_password_success', { success: true, id: data.id });
+        socket.emit('reset_operator_password_success', { success: true, id: targetUser.id });
         io.emit('operators_updated');
       } catch (err) {
         console.error('[Socket] reset_operator_password error:', err);
@@ -2238,21 +2295,28 @@ export function setupSockets(io: Server) {
     socket.on('update_operator_status', async (data: { id: string; status: string }) => {
       try {
         if (!data?.id) return;
+        const targetUser = await findAdminUserByIdentifier(data.id);
+        if (!targetUser) return;
+        const newStatus = data.status || 'ACTIVE';
         const updated = await prisma.user.update({
-          where: { id: data.id },
-          data: { status: data.status || 'ACTIVE' }
+          where: { id: targetUser.id },
+          data: { status: newStatus }
         });
         await prisma.auditLog.create({
           data: {
-            userId: data.id,
+            userId: targetUser.id,
             action: 'OPERATOR_STATUS_CHANGED',
-            details: `Operator #${data.id.slice(-6)} status updated to ${data.status}. User: ${updated.email}.`,
+            details: `Operator #${targetUser.id.slice(-6)} status updated to ${newStatus}. User: ${updated.email}.`,
             ipAddress: '127.0.0.1',
           }
         }).catch(() => null);
         socketOperatorCache.clear();
-        socket.emit('update_operator_status_success', { success: true, id: data.id, status: data.status });
+        socket.emit('update_operator_status_success', { success: true, id: targetUser.id, status: newStatus });
         io.emit('operators_updated');
+        if (newStatus === 'SUSPENDED') {
+          io.emit('operator_suspended', { userId: targetUser.id, email: targetUser.email, message: 'Your account has been suspended by an Administrator.' });
+          io.emit('force_logout', { userId: targetUser.id, email: targetUser.email, message: 'Your account has been suspended by an Administrator.' });
+        }
       } catch (err) {
         console.error('[Socket] update_operator_status error:', err);
       }
@@ -2260,16 +2324,20 @@ export function setupSockets(io: Server) {
 
     socket.on('update_operator_access', async (data: { id: string, permissions: string[] }) => {
       try {
+        if (!data?.id) return;
+        const targetUser = await findAdminUserByIdentifier(data.id);
+        if (!targetUser) return;
+        const finalPermissions = Array.isArray(data.permissions) ? Array.from(new Set(data.permissions)) : [];
         const updated = await prisma.user.update({
-          where: { id: data.id },
-          data: { permissions: data.permissions }
+          where: { id: targetUser.id },
+          data: { permissions: finalPermissions }
         });
 
         await prisma.auditLog.create({
           data: {
-            userId: data.id,
+            userId: targetUser.id,
             action: 'OPERATOR_UPDATED',
-            details: `Operator #${data.id.slice(-6)} permissions updated via socket: [${data.permissions.join(', ')}]. User: ${updated.email}.`,
+            details: `Operator #${targetUser.id.slice(-6)} permissions updated via socket: [${finalPermissions.join(', ')}]. User: ${updated.email}.`,
             ipAddress: socket.handshake.address || '127.0.0.1',
           }
         }).catch(() => null);
@@ -2277,8 +2345,8 @@ export function setupSockets(io: Server) {
         socketOperatorCache.clear();
         socketOperatorsListCache = null;
         socketAuditLogsCache = null;
-        socket.emit('update_operator_access_success', { id: data.id, permissions: data.permissions });
-        io.emit('operator_permissions_updated', { id: data.id, permissions: data.permissions });
+        socket.emit('update_operator_access_success', { id: targetUser.id, permissions: finalPermissions });
+        io.emit('operator_permissions_updated', { id: targetUser.id, email: targetUser.email, permissions: finalPermissions });
         io.emit('audit_logs_updated');
         io.emit('dashboard_updated');
         // Broadcast the update so all clients refresh
