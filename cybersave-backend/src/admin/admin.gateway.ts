@@ -2285,7 +2285,8 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
       const passwordHash = await bcrypt.hash(data.password || 'admin123', salt);
 
       const normalizedEmail = (data.email || '').trim().toLowerCase();
-      const initialPermissions = Array.from(new Set([...(Array.isArray(data.permissions) && data.permissions.length > 0 ? data.permissions : ['DASHBOARD']), 'SETTINGS']));
+      // ponytail: Respect exact selected least-privilege permissions without forcing extra screens
+      const initialPermissions = Array.from(new Set(Array.isArray(data.permissions) && data.permissions.length > 0 ? data.permissions : ['DASHBOARD']));
 
       const newUser = await this.prisma.user.create({
         data: {
