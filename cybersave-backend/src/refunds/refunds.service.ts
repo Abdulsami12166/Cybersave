@@ -198,12 +198,21 @@ export class RefundsService {
     if (query?.userId && query.userId !== 'all') {
       if (isMongoId(query.userId)) {
         where.userId = query.userId;
+      } else {
+        where.user = {
+          OR: [{ email: query.userId }, { keycloakId: query.userId }],
+        };
       }
     }
 
     if (query?.applicationId) {
       if (isMongoId(query.applicationId)) {
         where.applicationId = query.applicationId;
+      } else {
+        where.OR = [
+          { refNumber: query.applicationId },
+          { application: { refNumber: query.applicationId } },
+        ];
       }
     }
 

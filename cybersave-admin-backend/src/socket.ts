@@ -1452,7 +1452,7 @@ export function setupSockets(io: Server) {
           serviceType: a.serviceTitle || a.service?.title || 'Government Service',
           service: a.serviceTitle || a.service?.title || 'Government Service',
           priority: 'Medium',
-          status: a.status === 'APPROVED' ? 'Approved' : (a.status === 'COMPLETED' ? 'Completed' : (a.status === 'REJECTED' ? 'Rejected' : (a.status === 'IN_PROGRESS' || a.status === 'PROCESSING' ? 'Processing' : (a.status === 'VERIFYING' || a.status === 'PENDING' ? 'Under Review' : 'Submitted')))),
+          status: a.status === 'APPROVED' ? 'Approved' : (a.status === 'COMPLETED' ? 'Completed' : (a.status === 'REJECTED' ? 'Rejected' : (a.status === 'IN_PROGRESS' || a.status === 'PROCESSING' ? 'Processing' : (['VERIFYING', 'PENDING', 'UNDER_REVIEW', 'IN_REVIEW', 'REVIEW'].includes(String(a.status || '').toUpperCase()) ? 'In Review' : 'Submitted')))),
           rawStatus: a.status,
           assigned: isRealOfficer(a.officialOfficer),
           submitted: a.submittedAt ? a.submittedAt.toISOString() : new Date().toISOString(),

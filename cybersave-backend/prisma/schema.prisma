@@ -137,6 +137,7 @@ model Application {
   razorpayOrderId      String?
   razorpayPaymentId    String?
   razorpaySignature    String?
+  clientSubmissionId   String?           // ponytail: client-generated idempotency key for one-submission guarantee
   formData             Json?             // Form input fields (fullName, dob, state, etc.)
   documents            Json?             // List of uploaded file objects/URLs
   submittedAt          DateTime          @default(now())
@@ -150,6 +151,7 @@ model Application {
   @@index([userId, submittedAt(sort: Desc)])
   @@index([status])
   @@index([razorpayOrderId])
+  @@index([clientSubmissionId])
 }
 
 model Wallet {

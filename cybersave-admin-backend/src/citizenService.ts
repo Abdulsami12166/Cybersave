@@ -698,7 +698,9 @@ export async function fetchRealTransactionsData() {
         rejectionReason: true,
         feePaid: true,
         paymentStatus: true,
+        razorpayOrderId: true,
         razorpayPaymentId: true,
+        clientSubmissionId: true,
         submittedAt: true,
         updatedAt: true,
         refundStatus: true,
@@ -756,13 +758,24 @@ export async function fetchRealTransactionsData() {
   const seenTxnKeys = new Set<string>();
 
   // Process Application payment transactions directly from the live application ledger
+  // ponytail: Deduplicate transactions by order, client submission, payment ID, or recent timestamp to prevent double counting revenue
   apps.forEach((a: any) => {
     const matchingRefund = approvedRefundMap.get(a.id) || (a.refNumber ? approvedRefundMap.get(a.refNumber) : null);
     const isRef = (a.refundStatus || '').toUpperCase() === 'APPROVED' || (a.paymentStatus || '').toLowerCase() === 'refunded' || !!matchingRefund;
     const txId = a.razorpayPaymentId || `TXN-APP${a.id.substring(0, 8).toUpperCase()}`;
-    const key = `app_${a.id}`;
-    if (!seenTxnKeys.has(key)) {
-      seenTxnKeys.add(key);
+
+    const dedupKeys: string[] = [`app_${a.id}`];
+    if (a.razorpayOrderId) dedupKeys.push(`order_${a.razorpayOrderId}`);
+    if (a.clientSubmissionId) dedupKeys.push(`sub_${a.clientSubmissionId}`);
+    if (a.razorpayPaymentId) dedupKeys.push(`pay_${a.razorpayPaymentId}`);
+    const timeMinute = Math.floor(new Date(a.submittedAt || a.updatedAt || new Date()).getTime() / 60000);
+    if (a.userId && a.serviceTitle) {
+      dedupKeys.push(`time_${a.userId}_${a.serviceTitle}_${timeMinute}`);
+    }
+
+    const alreadySeen = dedupKeys.some(k => seenTxnKeys.has(k));
+    if (!alreadySeen) {
+      dedupKeys.forEach(k => seenTxnKeys.add(k));
       const fee = a.feePaid || 50;
       const citizenName = a.user?.profile?.fullName || a.formData?.fullName || a.formData?.applicantName || (a.user?.phone ? `Citizen ${a.user.phone.slice(-4)}` : (a.user?.email ? a.user.email.split('@')[0] : 'Citizen Applicant'));
       const dateIso = (a.submittedAt || a.updatedAt || new Date()).toISOString();
@@ -948,13 +961,23 @@ export async function performApplicationStatusUpdate(params: {
     Rejected: 'REJECTED',
     REJECTED: 'REJECTED',
     in_progress: 'IN_PROGRESS',
+    'in progress': 'IN_PROGRESS',
     'In Progress': 'IN_PROGRESS',
+    processing: 'IN_PROGRESS',
     Processing: 'IN_PROGRESS',
     IN_PROGRESS: 'IN_PROGRESS',
     submitted: 'SUBMITTED',
-    'In Review': 'SUBMITTED',
+    Submitted: 'SUBMITTED',
     SUBMITTED: 'SUBMITTED',
+    'In Review': 'PENDING',
+    'in review': 'PENDING',
+    'Under Review': 'PENDING',
+    'under review': 'PENDING',
+    pending: 'PENDING',
+    Pending: 'PENDING',
+    PENDING: 'PENDING',
     verifying: 'VERIFYING',
+    Verifying: 'VERIFYING',
     VERIFYING: 'VERIFYING',
     completed: 'COMPLETED',
     Completed: 'COMPLETED',

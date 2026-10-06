@@ -46,7 +46,14 @@ export class CreateApplicationDto {
   @IsOptional()
   @IsString()
   razorpaySignature?: string;
+
+  @IsOptional()
+  @IsString()
+  clientSubmissionId?: string;
 }
+
+// ponytail: in-flight submission deduplicator to eliminate concurrent double-tap race conditions
+const inFlightSubmissions = new Map<string, Promise<any>>();
 
 @Injectable()
 export class ApplicationsService {
@@ -63,6 +70,67 @@ export class ApplicationsService {
   }
 
   async createApplication(dto: CreateApplicationDto) {
+    // ponytail: Deduplication key based on authoritative payment/submission identifier
+    const dedupKey = dto.razorpayOrderId
+      ? `order_${dto.razorpayOrderId}`
+      : dto.clientSubmissionId
+      ? `sub_${dto.clientSubmissionId}`
+      : dto.razorpayPaymentId
+      ? `pay_${dto.razorpayPaymentId}`
+      : null;
+
+    if (dedupKey && inFlightSubmissions.has(dedupKey)) {
+      this.logger.log(`[Idempotency] Awaiting in-flight submission for key: ${dedupKey}`);
+      return await inFlightSubmissions.get(dedupKey);
+    }
+
+    const task = this.executeCreateApplication(dto);
+    if (dedupKey) {
+      inFlightSubmissions.set(dedupKey, task);
+      task.finally(() => {
+        inFlightSubmissions.delete(dedupKey);
+      });
+    }
+    return await task;
+  }
+
+  private async executeCreateApplication(dto: CreateApplicationDto) {
+    // 1. Authoritative check: If application with same Razorpay order ID exists, return immediately
+    if (dto.razorpayOrderId) {
+      const existingByOrder = await this.prisma.application.findFirst({
+        where: { razorpayOrderId: dto.razorpayOrderId },
+        include: { user: { include: { profile: true } }, service: true },
+      });
+      if (existingByOrder) {
+        this.logger.log(`[Idempotency] Found existing application #${existingByOrder.refNumber} for razorpayOrderId: ${dto.razorpayOrderId}`);
+        return existingByOrder;
+      }
+    }
+
+    // 2. Authoritative check: If application with same client submission ID exists, return immediately
+    if (dto.clientSubmissionId) {
+      const existingBySub = await this.prisma.application.findFirst({
+        where: { clientSubmissionId: dto.clientSubmissionId },
+        include: { user: { include: { profile: true } }, service: true },
+      });
+      if (existingBySub) {
+        this.logger.log(`[Idempotency] Found existing application #${existingBySub.refNumber} for clientSubmissionId: ${dto.clientSubmissionId}`);
+        return existingBySub;
+      }
+    }
+
+    // 3. Authoritative check: If application with same payment ID exists, return immediately
+    if (dto.razorpayPaymentId) {
+      const existingByPay = await this.prisma.application.findFirst({
+        where: { razorpayPaymentId: dto.razorpayPaymentId },
+        include: { user: { include: { profile: true } }, service: true },
+      });
+      if (existingByPay) {
+        this.logger.log(`[Idempotency] Found existing application #${existingByPay.refNumber} for razorpayPaymentId: ${dto.razorpayPaymentId}`);
+        return existingByPay;
+      }
+    }
+
     const refNumber = this.generateRefNumber();
     const isMongoId = (id?: string) => typeof id === 'string' && /^[0-9a-fA-F]{24}$/.test(id);
 
@@ -176,6 +244,28 @@ export class ApplicationsService {
         };
       });
 
+    // Duplicate prevention: If an application for the exact same service was created within the last 45 seconds by this user, return the existing application
+    const recentThreshold = new Date(Date.now() - 45 * 1000);
+    const existingRecent = await this.prisma.application.findFirst({
+      where: {
+        userId: validUserId,
+        OR: [
+          { serviceTitle: dto.serviceTitle },
+          ...(serviceId ? [{ serviceId }] : []),
+        ],
+        submittedAt: { gte: recentThreshold },
+      },
+      include: {
+        user: { include: { profile: true } },
+        service: true,
+      },
+    });
+
+    if (existingRecent) {
+      this.logger.warn(`Duplicate submission suppressed for user ${validUserId} on service "${dto.serviceTitle}". Returning existing application #${existingRecent.refNumber}`);
+      return existingRecent;
+    }
+
     const application = await this.prisma.application.create({
       data: {
         refNumber,
@@ -187,9 +277,10 @@ export class ApplicationsService {
         officialOfficer: null,
         feePaid: dto.feePaid || 50.0,
         paymentStatus: dto.paymentStatus || 'Success',
-        razorpayOrderId: dto.razorpayOrderId,
-        razorpayPaymentId: dto.razorpayPaymentId,
-        razorpaySignature: dto.razorpaySignature,
+        razorpayOrderId: dto.razorpayOrderId || null,
+        razorpayPaymentId: dto.razorpayPaymentId || null,
+        razorpaySignature: dto.razorpaySignature || null,
+        clientSubmissionId: dto.clientSubmissionId || dto.razorpayOrderId || null,
         formData: dto.formData || {},
         documents: sanitizedDocs,
       },
@@ -272,6 +363,10 @@ export class ApplicationsService {
         Object.values(ApplicationStatus).includes(upper as ApplicationStatus)
       ) {
         whereClause.status = upper as ApplicationStatus;
+      } else if (upper === 'IN_REVIEW' || upper === 'UNDER_REVIEW') {
+        whereClause.status = { in: [ApplicationStatus.PENDING, ApplicationStatus.VERIFYING] };
+      } else if (upper === 'PROCESSING') {
+        whereClause.status = ApplicationStatus.IN_PROGRESS;
       }
     }
 
@@ -409,12 +504,23 @@ export class ApplicationsService {
       rejected: ApplicationStatus.REJECTED,
       IN_PROGRESS: ApplicationStatus.IN_PROGRESS,
       'in progress': ApplicationStatus.IN_PROGRESS,
+      'In Progress': ApplicationStatus.IN_PROGRESS,
+      PROCESSING: ApplicationStatus.IN_PROGRESS,
+      processing: ApplicationStatus.IN_PROGRESS,
       VERIFYING: ApplicationStatus.VERIFYING,
       verifying: ApplicationStatus.VERIFYING,
       SUBMITTED: ApplicationStatus.SUBMITTED,
       submitted: ApplicationStatus.SUBMITTED,
       COMPLETED: ApplicationStatus.COMPLETED,
       completed: ApplicationStatus.COMPLETED,
+      PENDING: ApplicationStatus.PENDING,
+      pending: ApplicationStatus.PENDING,
+      'In Review': ApplicationStatus.PENDING,
+      'in review': ApplicationStatus.PENDING,
+      'Under Review': ApplicationStatus.PENDING,
+      'under review': ApplicationStatus.PENDING,
+      UNDER_REVIEW: ApplicationStatus.PENDING,
+      IN_REVIEW: ApplicationStatus.PENDING,
     };
 
     const targetStatus = validStatusMap[status] || (status as ApplicationStatus);
