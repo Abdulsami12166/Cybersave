@@ -438,7 +438,7 @@ export class ApplicationsService {
         const apps = await Promise.race([
           this.prisma.application.findMany({
             where: whereClause,
-            orderBy: { submittedAt: 'desc' },
+            orderBy: [{ submittedAt: 'desc' }, { id: 'desc' }],
             take: 100,
           }),
           new Promise<any[]>((resolve) => setTimeout(() => resolve([]), 8000)),
@@ -489,7 +489,7 @@ export class ApplicationsService {
             ...whereClause,
             OR: orClauses,
           },
-          orderBy: { submittedAt: 'desc' },
+          orderBy: [{ submittedAt: 'desc' }, { id: 'desc' }],
         }),
         new Promise<any[]>((resolve) => setTimeout(() => resolve([]), 8000)),
       ]);
@@ -505,7 +505,7 @@ export class ApplicationsService {
       const fallbackApps = await Promise.race([
         this.prisma.application.findMany({
           where: whereClause,
-          orderBy: { submittedAt: 'desc' },
+          orderBy: [{ submittedAt: 'desc' }, { id: 'desc' }],
           take: 10,
         }),
         new Promise<any[]>((resolve) => setTimeout(() => resolve([]), 6000)),

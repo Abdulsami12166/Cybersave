@@ -36,7 +36,7 @@ export async function fetchApplicationsWithUsers(where: any = {}, take: number =
     where,
     take,
     ...(skip !== undefined ? { skip } : {}),
-    orderBy: { submittedAt: 'desc' },
+    orderBy: [{ submittedAt: 'desc' }, { id: 'desc' }],
     select: {
       id: true,
       refNumber: true,
@@ -2137,7 +2137,7 @@ export function setupSockets(io: Server) {
             documentUploads: true
           },
           take: 100,
-          orderBy: { updatedAt: 'desc' }
+          orderBy: [{ submittedAt: 'desc' }, { id: 'desc' }]
         }).catch(() => [])
       ]);
 

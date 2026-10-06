@@ -33,7 +33,7 @@ export async function fetchApplicationsWithUsers(where: any = {}, take: number =
     where,
     take,
     ...(skip !== undefined ? { skip } : {}),
-    orderBy: { submittedAt: 'desc' },
+    orderBy: [{ submittedAt: 'desc' }, { id: 'desc' }],
     select: {
       id: true,
       refNumber: true,
@@ -853,14 +853,37 @@ app.post(['/api/admin/applications', '/api/v1/applications', '/api/applications'
 // ─── Payment Endpoints (Razorpay Test Mode Fast Execution) ────────────────────
 app.post(['/api/v1/payment/create-order', '/api/payment/create-order', '/payment/create-order'], async (req: any, res: any) => {
   try {
-    const { amount, receipt } = req.body;
-    if (!amount) {
-      return res.status(400).json({ error: 'Amount is required' });
+    const { amount, receipt, serviceTitle, serviceId } = req.body;
+    let validatedAmount = Number(amount);
+
+    // ponytail: authoritative backend service fee verification (client price cannot be tampered)
+    if (serviceTitle || serviceId) {
+      try {
+        const orConditions: any[] = [];
+        if (serviceId) orConditions.push({ id: serviceId });
+        if (serviceTitle) orConditions.push({ title: { equals: serviceTitle, mode: 'insensitive' } });
+        if (serviceId) orConditions.push({ slug: serviceId });
+
+        if (orConditions.length > 0) {
+          const svc = await prisma.service.findFirst({
+            where: { OR: orConditions },
+          });
+          if (svc && typeof svc.fee === 'number' && svc.fee >= 0) {
+            validatedAmount = svc.fee;
+          }
+        }
+      } catch (svcErr) {
+        // Fall back gracefully if service query is interrupted
+      }
+    }
+
+    if (!validatedAmount && validatedAmount !== 0) {
+      return res.status(400).json({ error: 'Valid amount is required' });
     }
 
     const keyId = process.env.RAZORPAY_KEY_ID || 'rzp_test_TRYEFMkB13HLOJ';
     const keySecret = process.env.RAZORPAY_KEY_SECRET || 'BYhn7iZmm4IRKtwZCxwCK3qk';
-    const amountInPaise = Math.round(Number(amount) * 100);
+    const amountInPaise = Math.round(validatedAmount * 100);
     const orderReceipt = receipt || `rcpt_${Date.now()}`;
 
     // Attempt direct Razorpay API call using HTTP Basic Auth
@@ -2813,7 +2836,7 @@ export async function getFastOperatorData(id?: string) {
         documentUploads: true
       },
       take: 100,
-      orderBy: { updatedAt: 'desc' }
+      orderBy: [{ submittedAt: 'desc' }, { id: 'desc' }]
     }).catch(() => [])
   ]);
 

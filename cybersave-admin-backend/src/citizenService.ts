@@ -119,7 +119,7 @@ export async function fetchCitizenFullDetails(targetId: string): Promise<any | n
         updatedAt: true,
         formData: true,
       },
-      orderBy: { submittedAt: 'desc' },
+      orderBy: [{ submittedAt: 'desc' }, { id: 'desc' }],
       take: 20
     }), 1200, []),
     withTimeout(prisma.aadhaarDocument.findMany({
@@ -687,7 +687,7 @@ export async function fetchCitizensList(params?: { page?: number; limit?: number
 export async function fetchRealTransactionsData() {
   const [apps, walletTxns, refunds] = await Promise.all([
     withTimeout(prisma.application.findMany({
-      orderBy: { submittedAt: 'desc' },
+      orderBy: [{ submittedAt: 'desc' }, { id: 'desc' }],
       take: 100,
       select: {
         id: true,

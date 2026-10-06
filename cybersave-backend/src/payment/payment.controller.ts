@@ -12,12 +12,34 @@ export class PaymentController {
   ) {}
 
   @Post('create-order')
-  async createOrder(@Body() body: { amount: number; receipt: string }) {
-    if (!body.amount) {
+  async createOrder(@Body() body: { amount: number; receipt: string; serviceTitle?: string; serviceId?: string }) {
+    let validatedAmount = Number(body.amount);
+
+    // ponytail: authoritative service fee check from database
+    if (body.serviceTitle || body.serviceId) {
+      try {
+        const svc = await this.prisma.service.findFirst({
+          where: {
+            OR: [
+              ...(body.serviceId ? [{ id: body.serviceId }] : []),
+              ...(body.serviceTitle ? [{ title: { equals: body.serviceTitle, mode: 'insensitive' as const } }] : []),
+              ...(body.serviceId ? [{ slug: body.serviceId }] : []),
+            ],
+          },
+        });
+        if (svc && typeof svc.fee === 'number' && svc.fee >= 0) {
+          validatedAmount = svc.fee;
+        }
+      } catch (svcErr) {
+        // Fall back gracefully if service query is interrupted
+      }
+    }
+
+    if (!validatedAmount && validatedAmount !== 0) {
       throw new BadRequestException('Amount is required');
     }
 
-    const order = await this.paymentService.createOrder(body.amount, body.receipt || `rcpt_${Date.now()}`);
+    const order = await this.paymentService.createOrder(validatedAmount, body.receipt || `rcpt_${Date.now()}`);
 
     return {
       success: true,

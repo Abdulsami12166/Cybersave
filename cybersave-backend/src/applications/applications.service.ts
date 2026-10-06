@@ -393,7 +393,7 @@ export class ApplicationsService {
     if (!userId || userId === 'all' || userId === 'admin' || userId === 'default-user-id') {
       const apps = await this.prisma.application.findMany({
         where: whereClause,
-        orderBy: { submittedAt: 'desc' },
+        orderBy: [{ submittedAt: 'desc' }, { id: 'desc' }],
         take: 100,
         include: {
           service: { select: { id: true, title: true, category: true, fee: true } },
@@ -434,7 +434,7 @@ export class ApplicationsService {
           ...whereClause,
           userId: { in: targetIds },
         },
-        orderBy: { submittedAt: 'desc' },
+        orderBy: [{ submittedAt: 'desc' }, { id: 'desc' }],
         take: 100,
         include: {
           service: { select: { id: true, title: true, category: true, fee: true } },
