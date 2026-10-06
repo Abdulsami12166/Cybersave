@@ -2735,7 +2735,7 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
           priority: t.priority || 'Medium',
           createdOn: t.createdAt ? t.createdAt.toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' }) : 'Today',
           lastUpdated: t.updatedAt ? t.updatedAt.toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' }) : 'Today',
-          assignedTo: t.assignedTo || 'Amit S. (Support Desk)',
+          assignedTo: t.assignedTo || '',
           status: t.status,
           reporter: {
             name: reporterName,
@@ -3227,6 +3227,43 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
       }
     } catch (e) {
       console.error('[AdminGateway] resolve_support_ticket error:', e);
+    }
+  }
+
+  @SubscribeMessage('assign_support_ticket')
+  async handleAssignTicket(
+    @ConnectedSocket() client: Socket,
+    @MessageBody() data: { id: string; assignedTo: string },
+  ) {
+    try {
+      const ticketId = data?.id;
+      const assignedTo = (data?.assignedTo || '').trim();
+      if (!ticketId) return;
+
+      const isMongoId = (idStr?: string) => typeof idStr === 'string' && /^[0-9a-fA-F]{24}$/.test(idStr);
+      const orConditions: any[] = [{ refNumber: ticketId }, { refNumber: `TKT-${ticketId}` }];
+      if (isMongoId(ticketId)) {
+        orConditions.push({ id: ticketId });
+      }
+
+      const ticket = await this.prisma.supportTicket.findFirst({
+        where: { OR: orConditions },
+      });
+      if (!ticket) return;
+
+      const updated = await this.prisma.supportTicket.update({
+        where: { id: ticket.id },
+        data: { assignedTo: assignedTo || null, updatedAt: new Date() },
+      });
+
+      this.server.emit('support_ticket_assigned', {
+        id: updated.id,
+        refNumber: updated.refNumber,
+        assignedTo: updated.assignedTo,
+      });
+      this.server.emit('support_tickets_updated');
+    } catch (e) {
+      console.error('[AdminGateway] assign_support_ticket error:', e);
     }
   }
 

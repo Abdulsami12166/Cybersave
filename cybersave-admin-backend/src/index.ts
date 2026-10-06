@@ -1973,104 +1973,21 @@ app.get(['/api/admin/refunds', '/api/v1/refunds', '/api/refunds'], async (req: a
   }
 });
 
-app.post(['/api/admin/refunds', '/api/v1/refunds', '/api/refunds'], async (req: any, res: any) => {
+app.post(['/api/admin/refunds', '/api/v1/refunds', '/api/refunds', '/refunds'], async (req: any, res: any) => {
   try {
-    const { applicationId, amount, reason, userId, details, destinationAccount } = req.body;
-    
-    let appObj: any = null;
-    if (applicationId) {
-      const isMongo = /^[0-9a-fA-F]{24}$/.test(String(applicationId).trim());
-      appObj = await prisma.application.findFirst({
-        where: isMongo ? { OR: [{ id: String(applicationId).trim() }, { refNumber: String(applicationId).trim() }] } : { refNumber: String(applicationId).trim() }
-      }).catch(() => null);
-    }
-    if (!appObj) {
-      appObj = await prisma.application.findFirst().catch(() => null);
-    }
-
-    if (!appObj) {
-      return res.status(400).json({ error: 'No application available to attach refund' });
-    }
-
-    const refNumber = `REF-2026${Math.floor(100000 + Math.random() * 900000)}`;
-    const finalAmount = Number(amount || appObj.feePaid || 2450);
-
-    const newRefund = await prisma.refundRequest.create({
-      data: {
-        refNumber,
-        applicationId: appObj.id,
-        userId: (userId && /^[0-9a-fA-F]{24}$/.test(userId)) ? userId : appObj.userId,
-        serviceTitle: appObj.serviceTitle || 'Government Service Fee',
-        amount: finalAmount,
-        reason: reason || 'Transaction Payment Refund Request',
-        status: 'PENDING',
-        adminNotes: details || 'Initiated from CyberSave Mobile',
-      },
-      include: {
-        application: {
-          select: {
-            id: true,
-            refNumber: true,
-            serviceTitle: true,
-            status: true,
-            feePaid: true,
-          }
-        },
-        user: {
-          select: {
-            id: true,
-            email: true,
-            phone: true,
-            profile: { select: { fullName: true, phone: true } }
-          }
-        }
-      }
+    const { applicationId, amount, reason, userId, details, proofUrl, serviceTitle, destinationAccount } = req.body;
+    const result = await createRefundAndSupportTicket({
+      applicationId: applicationId || `REF_CLAIM_${Date.now()}`,
+      reason: reason || 'Citizen requested fee refund',
+      details,
+      proofUrl,
+      userId,
+      serviceTitle,
+      amount: amount !== undefined ? Number(amount) : undefined,
+      destinationAccount,
+      io
     });
-
-    // Also create corresponding SupportTicket record for Support Ticket Management
-    const targetUserId = (userId && /^[0-9a-fA-F]{24}$/.test(userId)) ? userId : appObj.userId;
-    const citizenName = newRefund.user?.profile?.fullName || (newRefund.user?.email ? newRefund.user.email.split('@')[0] : 'Citizen Applicant');
-    await prisma.supportTicket.create({
-      data: {
-        refNumber,
-        userId: targetUserId,
-        title: `Refund Claim: ₹${finalAmount} - ${appObj.serviceTitle || 'Government Service Fee'}`,
-        description: `Citizen refund request for Application #${appObj.refNumber || 'N/A'}.\nReason: ${reason || 'Transaction Payment Refund Request'}${details ? '\nDetails: ' + details : ''}`,
-        category: 'Refund Request',
-        priority: 'High',
-        status: 'OPEN',
-        assignedTo: req.body?.assignedTo || '',
-        attachmentUrl: req.body?.proofUrl || null,
-        messages: [
-          {
-            id: `msg-${Date.now()}`,
-            senderId: targetUserId,
-            senderName: citizenName,
-            role: 'CITIZEN',
-            text: `Refund claim of ₹${finalAmount} submitted for Application #${appObj.refNumber || 'N/A'}.\n\nReason: ${reason || 'Transaction Payment Refund Request'}${details ? '\n\nDetails: ' + details : ''}`,
-            attachmentUrl: req.body?.proofUrl || null,
-            time: new Date().toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' }),
-            timestamp: new Date().toISOString()
-          }
-        ]
-      }
-    }).catch(err => console.warn('Could not create support ticket for refund:', err?.message));
-
-    if (io) {
-      io.emit('new_refund_request', newRefund);
-      io.emit('refund_created', newRefund);
-      io.emit('refunds_updated', newRefund);
-      io.emit('new_support_ticket');
-      io.emit('support_tickets_updated');
-      io.emit('transactions_updated');
-      io.emit('dashboard_updated');
-    }
-
-    res.json({
-      success: true,
-      refund: newRefund,
-      message: 'Refund request processed successfully'
-    });
+    res.status(201).json(result);
   } catch (e: any) {
     res.status(500).json({ error: e.message });
   }
@@ -2279,7 +2196,7 @@ app.post(['/api/admin/support/tickets', '/api/v1/support/tickets', '/api/support
         priority: priority.toUpperCase() === 'HIGH' || priority.toUpperCase() === 'CRITICAL' ? 'High' : priority,
         status: 'OPEN',
         attachmentUrl: attachmentUrl || null,
-        assignedTo: 'Amit S. (Support Desk)',
+        assignedTo: req.body?.assignedTo || '',
         messages: [
           {
             id: `msg-${Date.now()}`,
@@ -2576,7 +2493,7 @@ app.post([
         category: 'Citizen Feedback',
         priority: rating <= 2 ? 'High' : (rating === 3 ? 'Medium' : 'Low'),
         status: rating <= 2 ? 'OPEN' : 'RESOLVED',
-        assignedTo: 'Amit S. (Support Desk)',
+        assignedTo: '',
         attachmentUrl: imageUrl || null,
         messages: [
           {
@@ -3811,29 +3728,55 @@ app.get(['/api/admin/support/tickets', '/api/v1/support/tickets', '/api/support/
       })
     ]);
 
+    const refundMap = new Map<string, any>();
+    for (const r of refundRequests) {
+      if (r.refNumber) refundMap.set(String(r.refNumber).toUpperCase(), r);
+      if (r.id) refundMap.set(String(r.id), r);
+      if (r.applicationId) refundMap.set(String(r.applicationId), r);
+      if (r.application?.refNumber) refundMap.set(String(r.application.refNumber).toUpperCase(), r);
+    }
+
     const formatted: any[] = tickets.map(t => {
       const reporterName = t.user?.profile?.fullName || (t.user?.email ? t.user.email.split('@')[0] : 'Citizen User');
       const reporterEmail = t.user?.email || '';
       const reporterId = t.user?.id || t.userId || 'cit-user';
+
+      const isRefund = t.category === 'Refund Request' || String(t.refNumber || '').toUpperCase().startsWith('REF-') || refundMap.has(String(t.refNumber || '').toUpperCase()) || refundMap.has(String(t.id));
+      const tDesc = t.description || '';
+      const linkedRefund = refundMap.get(String(t.refNumber || '').toUpperCase()) || refundMap.get(String(t.id)) || (tDesc ? refundRequests.find((r: any) => tDesc.includes(r.refNumber)) : null);
+
+      const isApproved = linkedRefund?.status === 'APPROVED' || (isRefund && t.status === 'RESOLVED');
+      const isRejected = linkedRefund?.status === 'REJECTED';
+      const effectiveStatus = (isApproved || isRejected || t.status === 'RESOLVED') ? 'RESOLVED' : (t.status || 'OPEN');
+      const effectiveRefundStatus = isApproved ? 'APPROVED' : (isRejected ? 'REJECTED' : (linkedRefund?.status || (isRefund ? 'PENDING' : undefined)));
+
+      const assignedStr = typeof t.assignedTo === 'string' && t.assignedTo.trim() && !t.assignedTo.includes('Amit S. (Support Desk)') ? t.assignedTo.trim() : '';
+
       return {
         id: t.refNumber || `TKT-${t.id.substring(0, 8).toUpperCase()}`,
         rawId: t.id,
         refNumber: t.refNumber,
         title: t.title || 'Citizen Grievance',
         description: t.description || 'Support inquiry registered by citizen',
-        category: t.category || 'Technical Support',
+        category: t.category || (isRefund ? 'Refund Request' : 'Technical Support'),
         priority: t.priority || 'Medium',
-        status: t.status || 'OPEN',
+        status: effectiveStatus,
         createdOn: t.createdAt ? new Date(t.createdAt).toLocaleDateString('en-IN') : 'Today',
         lastUpdated: t.updatedAt ? new Date(t.updatedAt).toLocaleDateString('en-IN') : 'Today',
         createdAt: t.createdAt,
         updatedAt: t.updatedAt,
-        attachmentUrl: t.attachmentUrl || null,
-        assignedTo: typeof t.assignedTo === 'string' && t.assignedTo.trim() ? t.assignedTo : '',
-        assignedOfficer: typeof t.assignedTo === 'string' && t.assignedTo.trim() ? { id: 'agent-01', name: t.assignedTo } : null,
+        attachmentUrl: t.attachmentUrl || linkedRefund?.proofUrl || null,
+        assignedTo: assignedStr,
+        assignedOfficer: assignedStr ? { id: 'agent-01', name: assignedStr } : null,
         reporter: { id: reporterId, name: reporterName, email: reporterEmail, phone: t.user?.phone || t.user?.profile?.phone || '' },
         user: t.user,
         messages: Array.isArray(t.messages) ? t.messages : [],
+        refundAmount: linkedRefund?.amount || (isRefund ? (Number(t.title?.match(/₹(\d+)/)?.[1]) || 50) : undefined),
+        refundStatus: effectiveRefundStatus,
+        refundId: linkedRefund?.id || (isRefund ? t.id : undefined),
+        applicationId: linkedRefund?.applicationId,
+        applicationRef: linkedRefund?.application?.refNumber,
+        serviceTitle: linkedRefund?.serviceTitle || linkedRefund?.application?.serviceTitle,
       };
     });
 
@@ -4010,10 +3953,39 @@ app.post(['/api/admin/support/tickets/:id/resolve', '/api/v1/support/tickets/:id
         return null;
       });
 
+      // Authoritative database update: ticket status = RESOLVED
+      const existingMsgs = Array.isArray(ticket.messages) ? ticket.messages : [];
+      const resolutionMsg = {
+        id: `msg-resolve-${Date.now()}`,
+        senderId: req.body?.adminId || 'admin-system',
+        senderName: `${req.body?.adminName || 'Support Desk Officer'} (Official Resolution)`,
+        role: 'AGENT',
+        text: isReject ? `✕ Refund Claim Declined: ${resolutionSummary}` : `✅ Refund Claim Approved! ₹${Number(refundResult?.refund?.amount || 50).toFixed(2)} has been credited directly into citizen wallet. ${resolutionSummary}`,
+        time: new Date().toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' }),
+        timestamp: new Date().toISOString(),
+        isResolution: true
+      };
+      const updatedMsgs = [...existingMsgs, resolutionMsg];
+
+      await prisma.supportTicket.update({
+        where: { id: ticket.id },
+        data: {
+          status: 'RESOLVED',
+          messages: updatedMsgs,
+          updatedAt: new Date()
+        }
+      }).catch(() => null);
+
+      if (io) {
+        io.emit('support_tickets_updated');
+        io.emit('resolve_ticket_success', { id: ticket.refNumber, rawId: ticket.id, status: 'RESOLVED' });
+      }
+
       const formatted = await formatSupportTicketThread(ticket.id);
       return res.json({
         success: true,
-        ticket: formatted,
+        status: 'RESOLVED',
+        ticket: formatted ? { ...formatted, status: 'RESOLVED', refundStatus: isReject ? 'REJECTED' : 'APPROVED' } : null,
         refund: refundResult?.refund,
         walletCredited: !isReject,
         newBalance: refundResult?.newBalance,
@@ -4207,6 +4179,48 @@ app.post(['/api/admin/support/tickets/:id/reply', '/api/v1/support/tickets/:id/r
     }
 
     res.json({ success: true, ticket: formatted });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.post(['/api/admin/support/tickets/:id/assign', '/api/v1/support/tickets/:id/assign', '/api/support/tickets/:id/assign'], async (req: any, res: any) => {
+  try {
+    const targetId = String(req.params.id || req.body?.id || req.body?.ticketId || '').trim();
+    const assignedTo = String(req.body?.assignedTo || req.body?.operatorName || req.body?.officerName || '').trim();
+    const ticket = await findSupportTicketOrLinked(targetId);
+    if (!ticket) return res.status(404).json({ error: 'Ticket not found' });
+
+    const updated = await prisma.supportTicket.update({
+      where: { id: ticket.id },
+      data: {
+        assignedTo: assignedTo || null,
+        updatedAt: new Date(),
+      }
+    });
+
+    await prisma.auditLog.create({
+      data: {
+        userId: (req.body?.adminId && /^[0-9a-fA-F]{24}$/.test(req.body.adminId)) ? req.body.adminId : null,
+        action: 'SUPPORT_TICKET_ASSIGNED',
+        details: `Ticket #${ticket.refNumber} assigned to: ${assignedTo || 'Unassigned'}`,
+      }
+    }).catch(() => null);
+
+    const formatted = await formatSupportTicketThread(updated.id);
+    if (io) {
+      io.emit('support_tickets_updated');
+      io.emit('support_ticket_assigned', {
+        id: updated.id,
+        refNumber: updated.refNumber,
+        assignedTo: updated.assignedTo,
+        ticket: formatted
+      });
+      io.emit('response_ticket_thread', formatted);
+      io.emit('response_ticket_detail', formatted);
+    }
+
+    res.json({ success: true, ticket: formatted, assignedTo: updated.assignedTo });
   } catch (e: any) {
     res.status(500).json({ error: e.message });
   }

@@ -3279,7 +3279,7 @@ export function setupSockets(io: Server) {
 
           if (isRefundRelated) {
             const isReject = data.isReject === true || data.action === 'REJECT' || data.resolutionCategory === 'Rejected';
-            await processRefundApprovalOrRejection({
+            const refundResult = await processRefundApprovalOrRejection({
               refundIdOrRef: ticket.refNumber || targetId,
               action: isReject ? 'REJECT' : 'APPROVE',
               adminId: data.adminId,
@@ -3288,7 +3288,30 @@ export function setupSockets(io: Server) {
               io
             }).catch(err => {
               console.warn('[Socket resolve_support_ticket] processRefundApprovalOrRejection error:', err);
+              return null;
             });
+
+            // Authoritatively persist RESOLVED status in database
+            const existingMsgs = Array.isArray(ticket.messages) ? ticket.messages : [];
+            const resolutionMsg = {
+              id: `msg-resolve-${Date.now()}`,
+              senderId: data.adminId || 'admin-system',
+              senderName: `${data.adminName || 'Support Desk Officer'} (Official Resolution)`,
+              role: 'AGENT',
+              text: isReject ? `✕ Refund Claim Declined: ${data.resolutionSummary || 'Declined by Administrator'}` : `✅ Refund Claim Approved! ₹${Number(refundResult?.refund?.amount || 50).toFixed(2)} credited to citizen wallet. ${data.resolutionSummary || ''}`,
+              time: new Date().toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' }),
+              timestamp: new Date().toISOString(),
+              isResolution: true
+            };
+
+            await prisma.supportTicket.update({
+              where: { id: ticket.id },
+              data: {
+                status: 'RESOLVED',
+                messages: [...existingMsgs, resolutionMsg],
+                updatedAt: new Date()
+              }
+            }).catch(() => null);
 
             const formatted = await formatSupportTicketThread(ticket.id);
             socket.emit('resolve_ticket_success', formatted);
@@ -3384,6 +3407,46 @@ export function setupSockets(io: Server) {
         }
       } catch (e) {
         console.error('[Socket] resolve_support_ticket error:', e);
+      }
+    });
+
+    socket.on('assign_support_ticket', async (data: any) => {
+      try {
+        const targetId = String(data?.id || data?.ticketId || '').trim();
+        const assignedTo = String(data?.assignedTo || data?.operatorName || data?.officerName || '').trim();
+        if (!targetId) return;
+
+        const ticket = await findSupportTicketOrLinked(targetId);
+        if (!ticket) return;
+
+        const updated = await prisma.supportTicket.update({
+          where: { id: ticket.id },
+          data: {
+            assignedTo: assignedTo || null,
+            updatedAt: new Date(),
+          }
+        });
+
+        await prisma.auditLog.create({
+          data: {
+            userId: (data?.adminId && /^[0-9a-fA-F]{24}$/.test(data.adminId)) ? data.adminId : null,
+            action: 'SUPPORT_TICKET_ASSIGNED',
+            details: `Ticket #${ticket.refNumber} assigned to: ${assignedTo || 'Unassigned'}`,
+          }
+        }).catch(() => null);
+
+        const formatted = await formatSupportTicketThread(updated.id);
+        io.emit('support_tickets_updated');
+        io.emit('support_ticket_assigned', {
+          id: updated.id,
+          refNumber: updated.refNumber,
+          assignedTo: updated.assignedTo,
+          ticket: formatted
+        });
+        io.emit('response_ticket_thread', formatted);
+        io.emit('response_ticket_detail', formatted);
+      } catch (e: any) {
+        console.error('[Socket] assign_support_ticket error:', e.message);
       }
     });
 

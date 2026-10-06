@@ -777,6 +777,53 @@ export class AdminController {
     };
   }
 
+  @Post(['api/v1/support/tickets/:id/assign', 'api/support/tickets/:id/assign', 'support/tickets/:id/assign'])
+  @ApiOperation({ summary: 'Assign a Support Ticket / Grievance to an Officer' })
+  async assignSupportTicketRest(@Param('id') id: string, @Body() body: any) {
+    const cleanId = String(id || '').trim();
+    const assignedTo = String(body?.assignedTo || body?.operatorName || body?.officerName || '').trim();
+    const isMongoId = (s?: string) => typeof s === 'string' && /^[0-9a-fA-F]{24}$/.test(s);
+
+    const orConditions: any[] = [
+      { refNumber: cleanId },
+      { refNumber: `TKT-${cleanId}` },
+      { refNumber: { contains: cleanId, mode: 'insensitive' } },
+    ];
+    if (isMongoId(cleanId)) {
+      orConditions.push({ id: cleanId });
+    }
+
+    const ticket = await this.prisma.supportTicket.findFirst({
+      where: { OR: orConditions },
+    });
+    if (!ticket) {
+      throw new NotFoundException(`Support ticket ${id} not found`);
+    }
+
+    const updated = await this.prisma.supportTicket.update({
+      where: { id: ticket.id },
+      data: {
+        assignedTo: assignedTo || null,
+        updatedAt: new Date(),
+      },
+      include: { user: { include: { profile: true } } },
+    });
+
+    AdminGateway.broadcast('support_ticket_assigned', {
+      id: updated.id,
+      refNumber: updated.refNumber,
+      assignedTo: updated.assignedTo,
+    });
+    AdminGateway.broadcast('support_tickets_updated');
+
+    return {
+      success: true,
+      message: `Ticket #${updated.refNumber} assigned to ${assignedTo || 'Unassigned'}`,
+      ticket: updated,
+      assignedTo: updated.assignedTo,
+    };
+  }
+
   @Get(['api/v1/support/user-tickets', 'api/support/user-tickets', 'support/user-tickets'])
   @ApiOperation({ summary: 'Get Grievances and Admin Replies for Specific Mobile User' })
   async getUserSupportTicketsRest(@Query('userId') userId?: string) {
@@ -2638,7 +2685,7 @@ export class AdminController {
           serviceName: serviceTitle,
           serviceTitle,
           scheme: serviceTitle,
-          operatorName: 'Amit S. (CSC Central)',
+          operatorName: app.officialOfficer || 'CSC Central Desk',
           amount: fee,
           paymentMethod: app.razorpayPaymentId ? 'Razorpay UPI' : 'Govt Portal Online',
           paymentMode: 'Online UPI / Razorpay',
