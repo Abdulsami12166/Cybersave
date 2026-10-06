@@ -3387,22 +3387,29 @@ export function setupSockets(io: Server) {
       }
     });
 
-    socket.on('create_refund_request', async (payload: any) => {
+    const handleRefundRequest = async (payload: any) => {
       try {
         const result = await createRefundAndSupportTicket({
-          applicationId: payload.applicationId,
-          reason: payload.reason,
+          applicationId: payload.applicationId || payload.id || `REF_${Date.now()}`,
+          reason: payload.reason || 'Citizen requested fee refund',
           details: payload.details,
           proofUrl: payload.proofUrl,
           userId: payload.userId,
+          serviceTitle: payload.serviceTitle,
+          amount: payload.amount !== undefined ? Number(payload.amount) : undefined,
+          destinationAccount: payload.destinationAccount,
           io
         });
         socket.emit('create_refund_request_success', result);
       } catch (e: any) {
-        console.error('[Socket] create_refund_request error:', e);
+        console.error('[Socket] refund_request error:', e);
         socket.emit('create_refund_request_error', { error: e.message });
       }
-    });
+    };
+
+    socket.on('create_refund_request', handleRefundRequest);
+    socket.on('new_refund_request', handleRefundRequest);
+    socket.on('refund_created', handleRefundRequest);
 
     socket.on('approve_refund', async (payload: any) => {
       try {

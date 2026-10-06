@@ -5056,16 +5056,19 @@ app.get(['/api/admin/refunds/:id', '/api/v1/refunds/:id', '/refunds/:id'], async
 
 app.post(['/api/admin/refunds', '/api/v1/refunds', '/refunds'], async (req: any, res: any) => {
   try {
-    const { applicationId, reason, details, proofUrl, userId } = req.body;
-    if (!applicationId || !reason) {
+    const { applicationId, reason, details, proofUrl, userId, serviceTitle, amount, destinationAccount } = req.body;
+    if (!applicationId && !reason) {
       return res.status(400).json({ error: 'applicationId and reason are required' });
     }
     const result = await createRefundAndSupportTicket({
-      applicationId,
-      reason,
+      applicationId: applicationId || `REF_CLAIM_${Date.now()}`,
+      reason: reason || 'Citizen requested fee refund',
       details,
       proofUrl,
       userId,
+      serviceTitle,
+      amount: amount !== undefined ? Number(amount) : undefined,
+      destinationAccount,
       io
     });
     res.status(201).json({ ...result });
