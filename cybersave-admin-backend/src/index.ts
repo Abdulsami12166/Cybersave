@@ -536,6 +536,9 @@ app.get(['/api/admin/applications', '/api/v1/applications', '/api/applications']
     const skipCount = page ? (parseInt(page) - 1) * takeCount : 0;
 
     const apps = await fetchApplicationsWithUsers(where, takeCount, skipCount);
+    res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+    res.setHeader('Pragma', 'no-cache');
+    res.setHeader('Expires', '0');
     res.json(apps);
   } catch (e: any) {
     console.error('[GET /api/v1/applications] error:', e);
@@ -813,9 +816,11 @@ app.post(['/api/admin/applications', '/api/v1/applications', '/api/applications'
         }
       };
 
+      invalidateDashboardCache();
       if (io) {
         io.emit('new_application_submitted', socketPayload);
         io.emit('applications_updated', socketPayload);
+        io.emit('dashboard_updated');
         io.emit('application_status_changed', socketPayload);
         io.emit('transactions_updated');
       }
@@ -847,6 +852,23 @@ app.post(['/api/admin/applications', '/api/v1/applications', '/api/applications'
   } catch (e: any) {
     console.error('[POST /api/v1/applications] Error:', e);
     res.status(500).json({ error: e.message || 'Failed to submit application' });
+  }
+});
+
+// Real-time Applications Sync Endpoint for Instant Dashboard Update
+app.post(['/api/admin/applications/sync', '/api/v1/applications/sync', '/applications/sync'], async (req: any, res: any) => {
+  try {
+    const appData = req.body;
+    invalidateDashboardCache();
+    if (io) {
+      io.emit('new_application_submitted', appData);
+      io.emit('applications_updated', appData);
+      io.emit('dashboard_updated');
+      io.emit('transactions_updated');
+    }
+    res.json({ success: true, synced: true });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
   }
 });
 

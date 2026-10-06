@@ -2004,6 +2004,47 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
     }
   }
 
+  @SubscribeMessage('new_application_submitted')
+  async handleNewApplicationSubmitted(
+    @ConnectedSocket() client: Socket,
+    @MessageBody() data: any,
+  ) {
+    try {
+      this.server.emit('new_application_submitted', data);
+      this.server.emit('applications_updated', data);
+      this.server.emit('dashboard_updated');
+    } catch (e) {
+      console.error('[AdminGateway] handleNewApplicationSubmitted error:', e);
+    }
+  }
+
+  @SubscribeMessage('applications_updated')
+  async handleApplicationsUpdated(
+    @ConnectedSocket() client: Socket,
+    @MessageBody() data: any,
+  ) {
+    try {
+      this.server.emit('applications_updated', data);
+      this.server.emit('dashboard_updated');
+    } catch (e) {
+      console.error('[AdminGateway] handleApplicationsUpdated error:', e);
+    }
+  }
+
+  @SubscribeMessage('application_submitted')
+  async handleApplicationSubmitted(
+    @ConnectedSocket() client: Socket,
+    @MessageBody() data: any,
+  ) {
+    try {
+      this.server.emit('new_application_submitted', data);
+      this.server.emit('applications_updated', data);
+      this.server.emit('dashboard_updated');
+    } catch (e) {
+      console.error('[AdminGateway] handleApplicationSubmitted error:', e);
+    }
+  }
+
   @SubscribeMessage('create_application')
   async handleCreateApplication(
     @ConnectedSocket() client: Socket,

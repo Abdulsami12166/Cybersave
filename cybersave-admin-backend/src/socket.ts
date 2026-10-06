@@ -1481,6 +1481,104 @@ export function setupSockets(io: Server) {
       }
     });
 
+    // Real-time Dynamic Application Ingestion and Cluster Broadcasting
+    socket.on('new_application_submitted', async (data: any) => {
+      try {
+        console.log('[Socket] new_application_submitted received from client:', data?.refNumber || data?.id);
+        if ((global as any).__invalidateDashboardCache) {
+          (global as any).__invalidateDashboardCache();
+        }
+
+        let appObj = data;
+
+        // 1. Instant zero-latency broadcast to all connected admin and citizen portals
+        io.emit('new_application_submitted', appObj);
+        io.emit('applications_updated', appObj);
+        io.emit('dashboard_updated');
+        io.emit('application_status_changed', appObj);
+        io.emit('transactions_updated');
+
+        // 2. Background asynchronous enrichment from MongoDB
+        const targetId = data?.id || data?.rawId || data?.dbId || data?.refNumber;
+        if (targetId) {
+          prisma.application.findFirst({
+            where: {
+              OR: [
+                ...( /^[0-9a-fA-F]{24}$/.test(String(targetId)) ? [{ id: String(targetId) }] : [] ),
+                { refNumber: String(targetId) },
+                ...(data?.refNumber ? [{ refNumber: String(data.refNumber) }] : [])
+              ]
+            },
+            include: {
+              user: { include: { profile: true } },
+              service: true,
+              refundRequests: true
+            }
+          }).then((dbApp) => {
+            if (dbApp) {
+              const enriched = {
+                id: dbApp.refNumber || `APP-2026-${dbApp.id.substring(0, 4).toUpperCase()}`,
+                rawId: dbApp.id,
+                dbId: dbApp.id,
+                refNumber: dbApp.refNumber,
+                citizen: dbApp.user?.profile?.fullName || (dbApp.user?.email ? dbApp.user.email.split('@')[0] : 'Citizen User'),
+                citizenName: dbApp.user?.profile?.fullName || (dbApp.user?.email ? dbApp.user.email.split('@')[0] : 'Citizen User'),
+                citizenEmail: dbApp.user?.email || (dbApp.formData as any)?.email || '',
+                citizenPhone: dbApp.user?.phone || dbApp.user?.profile?.phone || (dbApp.formData as any)?.phone || 'N/A',
+                serviceType: dbApp.serviceTitle || dbApp.service?.title || 'Government Service',
+                service: dbApp.serviceTitle || dbApp.service?.title || 'Government Service',
+                priority: 'Medium',
+                status: dbApp.status === 'APPROVED' ? 'Approved' : (dbApp.status === 'COMPLETED' ? 'Completed' : (dbApp.status === 'REJECTED' ? 'Rejected' : ((dbApp.status as any) === 'IN_PROGRESS' || (dbApp.status as any) === 'PROCESSING' ? 'Processing' : (['VERIFYING', 'PENDING', 'UNDER_REVIEW', 'IN_REVIEW', 'REVIEW'].includes(String(dbApp.status || '').toUpperCase()) ? 'In Review' : 'Submitted')))),
+                rawStatus: dbApp.status,
+                assigned: isRealOfficer(dbApp.officialOfficer),
+                submitted: dbApp.submittedAt ? dbApp.submittedAt.toISOString() : new Date().toISOString(),
+                submittedAt: dbApp.submittedAt,
+                updatedAt: dbApp.updatedAt,
+                sla: '24h',
+                amount: dbApp.feePaid || 50,
+                feeAmount: dbApp.feePaid || 50,
+                refundStatus: dbApp.refundRequests?.[0]?.status || null,
+                rejectionReason: dbApp.rejectionReason || '',
+                documents: dbApp.documents,
+                formData: dbApp.formData,
+                user: dbApp.user,
+                rawApp: dbApp
+              };
+              io.emit('new_application_submitted', enriched);
+              io.emit('applications_updated', enriched);
+            }
+          }).catch(() => null);
+        }
+      } catch (err) {
+        console.error('[Socket] new_application_submitted error:', err);
+      }
+    });
+
+    socket.on('applications_updated', async (data?: any) => {
+      try {
+        if ((global as any).__invalidateDashboardCache) {
+          (global as any).__invalidateDashboardCache();
+        }
+        io.emit('applications_updated', data);
+        io.emit('dashboard_updated');
+      } catch (err) {
+        console.error('[Socket] applications_updated relay error:', err);
+      }
+    });
+
+    socket.on('application_submitted', async (data: any) => {
+      try {
+        if ((global as any).__invalidateDashboardCache) {
+          (global as any).__invalidateDashboardCache();
+        }
+        io.emit('new_application_submitted', data);
+        io.emit('applications_updated', data);
+        io.emit('dashboard_updated');
+      } catch (err) {
+        console.error('[Socket] application_submitted error:', err);
+      }
+    });
+
     socket.on('request_application_detail', async (data: { id: string }) => {
       try {
         const idOrRef = data?.id ? String(data.id).trim() : '';
