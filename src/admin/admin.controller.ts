@@ -110,18 +110,27 @@ export class AdminController {
         processedRefs.add(refNum);
 
         const isRefund = t.category === 'Refund Request' || refNum.startsWith('REF-') || refundMap.has(refNum) || refundMap.has(t.id);
-        const isFeedback = t.category === 'Citizen Feedback' || t.category === 'Feedback' || refNum.startsWith('FDB-') || feedbackMap.has(refNum);
+        const isFeedback = !isRefund && (t.category === 'Citizen Feedback' || t.category === 'Feedback' || refNum.startsWith('FDB-') || feedbackMap.has(refNum));
 
-        const linkedRefund = refundMap.get(refNum) || refundMap.get(t.id) || (t.description ? refundRequests.find((r: any) => t.description?.includes(r.refNumber)) : null);
-        const linkedFeedback = feedbackMap.get(refNum) || (t.userId ? feedbacks.find((f: any) => f.userId === t.userId) : null);
+        const linkedRefund = isRefund ? (refundMap.get(refNum) || refundMap.get(t.id) || (t.description ? refundRequests.find((r: any) => t.description?.includes(r.refNumber)) : null)) : null;
+        const linkedFeedback = isFeedback ? (feedbackMap.get(refNum) || feedbackMap.get(t.id) || null) : null;
+
+        let ticketRating: number | undefined = undefined;
+        let feedbackCat: string | undefined = undefined;
+        if (isFeedback) {
+          const tMatch = t.title ? t.title.match(/\((\d)★\)/) : null;
+          ticketRating = linkedFeedback?.rating ?? (tMatch && tMatch[1] ? parseInt(tMatch[1], 10) : 5);
+          feedbackCat = linkedFeedback?.improvementCategory || (t.title?.includes(':') ? t.title.split(':').slice(1).join(':').trim() : 'App Experience');
+        }
 
         formatted.push({
           id: refNum,
           rawId: t.id,
           refNumber: t.refNumber,
+          type: isRefund ? 'REFUND_REQUEST' : (isFeedback ? 'CITIZEN_FEEDBACK' : 'SUPPORT_TICKET'),
           title: t.title,
           description: t.description,
-          category: t.category,
+          category: isRefund ? 'Refund Request' : (isFeedback ? 'Citizen Feedback' : (t.category || 'Technical Support')),
           priority: t.priority,
           createdOn: t.createdAt ? new Date(t.createdAt).toLocaleDateString('en-IN') : new Date().toLocaleDateString('en-IN'),
           lastUpdated: t.updatedAt ? new Date(t.updatedAt).toLocaleDateString('en-IN') : new Date().toLocaleDateString('en-IN'),
@@ -129,7 +138,7 @@ export class AdminController {
           updatedAt: t.updatedAt,
           assignedTo: t.assignedTo || null,
           status: t.status,
-          attachmentUrl: t.attachmentUrl || linkedRefund?.proofUrl || linkedFeedback?.imageUrl || null,
+          attachmentUrl: isRefund ? (t.attachmentUrl || linkedRefund?.proofUrl || null) : (isFeedback ? (t.attachmentUrl || linkedFeedback?.imageUrl || null) : (t.attachmentUrl || null)),
           reporter: {
             id: t.userId || linkedRefund?.userId || linkedFeedback?.userId || '',
             name: u?.profile?.fullName || (u?.email ? u.email.split('@')[0] : 'Citizen User'),
@@ -137,15 +146,15 @@ export class AdminController {
             phone: u?.phone || '',
           },
           messages: Array.isArray(t.messages) ? t.messages : [],
-          refundAmount: linkedRefund?.amount || (isRefund ? 50 : undefined),
-          refundStatus: linkedRefund?.status || (isRefund ? (t.status === 'RESOLVED' ? 'APPROVED' : 'PENDING') : undefined),
-          refundId: linkedRefund?.id || (isRefund ? t.id : undefined),
-          applicationId: linkedRefund?.applicationId || undefined,
-          applicationRef: linkedRefund?.application?.refNumber || undefined,
-          serviceTitle: linkedRefund?.serviceTitle || linkedRefund?.application?.serviceTitle || undefined,
-          rating: linkedFeedback?.rating || (isFeedback ? 5 : undefined),
-          feedbackCategory: linkedFeedback?.improvementCategory || (isFeedback ? 'App Experience' : undefined),
-          feedbackText: linkedFeedback?.feedbackText || undefined,
+          refundAmount: isRefund ? (linkedRefund?.amount || 50) : undefined,
+          refundStatus: isRefund ? (linkedRefund?.status || (t.status === 'RESOLVED' ? 'APPROVED' : 'PENDING')) : undefined,
+          refundId: isRefund ? (linkedRefund?.id || t.id) : undefined,
+          applicationId: isRefund ? (linkedRefund?.applicationId || undefined) : undefined,
+          applicationRef: isRefund ? (linkedRefund?.application?.refNumber || undefined) : undefined,
+          serviceTitle: isRefund ? (linkedRefund?.serviceTitle || linkedRefund?.application?.serviceTitle || undefined) : undefined,
+          rating: isFeedback ? ticketRating : undefined,
+          feedbackCategory: isFeedback ? feedbackCat : undefined,
+          feedbackText: isFeedback ? (linkedFeedback?.feedbackText || t.description || undefined) : undefined,
         });
       }
 
@@ -524,18 +533,112 @@ export class AdminController {
       };
     }
 
+    if (!ticket && !linkedRefund) {
+      const strippedFdb = cleanId.replace(/^FDB-/i, '').trim();
+      let fb: any = null;
+      if (isMongoId(cleanId)) {
+        fb = await (this.prisma as any).feedback.findUnique({
+          where: { id: cleanId },
+          include: { user: { include: { profile: true } } }
+        }).catch(() => null);
+      }
+      if (!fb && /^[0-9a-fA-F]{24}$/.test(strippedFdb)) {
+        fb = await (this.prisma as any).feedback.findUnique({
+          where: { id: strippedFdb },
+          include: { user: { include: { profile: true } } }
+        }).catch(() => null);
+      }
+      if (!fb && strippedFdb) {
+        const recentFbs = await (this.prisma as any).feedback.findMany({
+          take: 100,
+          orderBy: { createdAt: 'desc' },
+          include: { user: { include: { profile: true } } }
+        }).catch(() => []);
+        fb = recentFbs.find((f: any) =>
+          f.id.toUpperCase().endsWith(strippedFdb.toUpperCase()) ||
+          f.id.toUpperCase() === cleanId.toUpperCase() ||
+          `FDB-${f.id.slice(-6).toUpperCase()}` === cleanId.toUpperCase()
+        ) || null;
+      }
+
+      if (fb) {
+        const u = fb.user;
+        const fbRef = `FDB-${fb.id.slice(-6).toUpperCase()}`;
+        return {
+          id: fbRef,
+          rawId: fb.id,
+          refNumber: fbRef,
+          type: 'CITIZEN_FEEDBACK',
+          title: `Citizen Feedback (${fb.rating}★): ${fb.improvementCategory || 'App Experience'}`,
+          description: `"${fb.feedbackText}"`,
+          category: 'Citizen Feedback',
+          priority: fb.rating <= 2 ? 'High' : (fb.rating === 3 ? 'Medium' : 'Low'),
+          createdOn: fb.createdAt ? new Date(fb.createdAt).toLocaleDateString('en-IN') : new Date().toLocaleDateString('en-IN'),
+          lastUpdated: fb.updatedAt ? new Date(fb.updatedAt).toLocaleDateString('en-IN') : new Date().toLocaleDateString('en-IN'),
+          createdAt: fb.createdAt,
+          updatedAt: fb.updatedAt,
+          assignedTo: null,
+          status: fb.rating <= 2 ? 'OPEN' : 'RESOLVED',
+          attachmentUrl: fb.imageUrl || null,
+          rating: fb.rating,
+          feedbackCategory: fb.improvementCategory || 'App Experience',
+          feedbackText: fb.feedbackText,
+          reporter: {
+            id: fb.userId || '',
+            name: u?.profile?.fullName || (u?.email ? u.email.split('@')[0] : 'Citizen User'),
+            email: u?.email || '',
+            phone: u?.phone || '',
+          },
+          messages: [
+            {
+              id: `msg-fb-${fb.id}`,
+              senderId: fb.userId || 'citizen',
+              senderName: u?.profile?.fullName || 'Citizen User',
+              role: 'CITIZEN',
+              text: `Rating: ${'★'.repeat(fb.rating)}${'☆'.repeat(Math.max(0, 5 - fb.rating))} (${fb.rating}/5)\nCategory: ${fb.improvementCategory || 'App Experience'}\n\nFeedback:\n"${fb.feedbackText}"`,
+              attachmentUrl: fb.imageUrl || null,
+              time: fb.createdAt ? new Date(fb.createdAt).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' }) : 'Recent',
+            }
+          ]
+        };
+      }
+    }
+
     if (!ticket) {
       throw new NotFoundException(`Grievance / Ticket ${id} not found`);
     }
 
     const u: any = ticket.user;
+    const isRefund = ticket.category === 'Refund Request' || String(ticket.refNumber || '').startsWith('REF-');
+    const isFeedback = !isRefund && (ticket.category === 'Citizen Feedback' || String(ticket.refNumber || '').startsWith('FDB-'));
+
+    let ticketRating: number | undefined = undefined;
+    let feedbackCat: string | undefined = undefined;
+    let fbImageUrl: string | null = null;
+    if (isFeedback) {
+      const strippedFdb = String(ticket.refNumber || '').replace(/^FDB-/i, '').toLowerCase();
+      let fb: any = null;
+      if (isMongoId(ticket.id)) {
+        fb = await (this.prisma as any).feedback.findUnique({ where: { id: ticket.id } }).catch(() => null);
+      }
+      if (!fb && strippedFdb) {
+        const recentFbs = await (this.prisma as any).feedback.findMany({ take: 100, orderBy: { createdAt: 'desc' } }).catch(() => []);
+        fb = recentFbs.find((f: any) => f.id.toLowerCase().endsWith(strippedFdb) || f.id === ticket.id) || null;
+      }
+      const tMatch = ticket.title ? ticket.title.match(/\((\d)★\)/) : null;
+      ticketRating = fb?.rating ?? (tMatch && tMatch[1] ? parseInt(tMatch[1], 10) : 5);
+      feedbackCat = fb?.improvementCategory || (ticket.title?.includes(':') ? ticket.title.split(':').slice(1).join(':').trim() : 'App Experience');
+      fbImageUrl = fb?.imageUrl || null;
+    }
+
     return {
       id: ticket.refNumber || ticket.id,
       rawId: ticket.id,
       refNumber: ticket.refNumber,
+      type: isRefund ? 'REFUND_REQUEST' : (isFeedback ? 'CITIZEN_FEEDBACK' : 'SUPPORT_TICKET'),
       title: ticket.title,
       description: ticket.description,
-      category: ticket.category,
+      category: isRefund ? 'Refund Request' : (isFeedback ? 'Citizen Feedback' : (ticket.category || 'Technical Support')),
       priority: ticket.priority,
       createdOn: ticket.createdAt ? new Date(ticket.createdAt).toLocaleDateString('en-IN') : new Date().toLocaleDateString('en-IN'),
       lastUpdated: ticket.updatedAt ? new Date(ticket.updatedAt).toLocaleDateString('en-IN') : new Date().toLocaleDateString('en-IN'),
@@ -543,19 +646,23 @@ export class AdminController {
       updatedAt: ticket.updatedAt,
       assignedTo: ticket.assignedTo || null,
       status: ticket.status,
-      attachmentUrl: ticket.attachmentUrl || linkedRefund?.proofUrl || null,
+      attachmentUrl: isRefund ? (ticket.attachmentUrl || linkedRefund?.proofUrl || null) : (isFeedback ? (ticket.attachmentUrl || fbImageUrl || null) : (ticket.attachmentUrl || null)),
       reporter: {
         id: ticket.userId || linkedRefund?.userId || '',
         name: u?.profile?.fullName || (u?.email ? u.email.split('@')[0] : 'Citizen User'),
         email: u?.email || '',
+        phone: u?.phone || '',
       },
       messages: Array.isArray(ticket.messages) ? ticket.messages : [],
-      refundAmount: linkedRefund?.amount || (ticket.category === 'Refund Request' ? 50 : undefined),
-      refundStatus: linkedRefund?.status || (ticket.category === 'Refund Request' ? (ticket.status === 'RESOLVED' ? 'APPROVED' : 'PENDING') : undefined),
-      refundId: linkedRefund?.id || undefined,
-      applicationId: linkedRefund?.applicationId || undefined,
-      applicationRef: linkedRefund?.application?.refNumber || undefined,
-      serviceTitle: linkedRefund?.serviceTitle || linkedRefund?.application?.serviceTitle || undefined,
+      refundAmount: isRefund ? (linkedRefund?.amount || 50) : undefined,
+      refundStatus: isRefund ? (linkedRefund?.status || (ticket.status === 'RESOLVED' ? 'APPROVED' : 'PENDING')) : undefined,
+      refundId: isRefund ? (linkedRefund?.id || ticket.id) : undefined,
+      applicationId: isRefund ? (linkedRefund?.applicationId || undefined) : undefined,
+      applicationRef: isRefund ? (linkedRefund?.application?.refNumber || undefined) : undefined,
+      serviceTitle: isRefund ? (linkedRefund?.serviceTitle || linkedRefund?.application?.serviceTitle || undefined) : undefined,
+      rating: isFeedback ? ticketRating : undefined,
+      feedbackCategory: isFeedback ? feedbackCat : undefined,
+      feedbackText: isFeedback ? ticket.description : undefined,
       resolutionSummary: (ticket as any).resolutionSummary || null,
       resolutionCategory: (ticket as any).resolutionCategory || null,
       rootCause: (ticket as any).rootCause || null,

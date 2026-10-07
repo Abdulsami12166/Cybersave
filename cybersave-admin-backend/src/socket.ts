@@ -361,15 +361,31 @@ export async function formatSupportTicketThread(idOrRef: string) {
 
     // Fallback 2: If not in supportTicket, check if it's Feedback
     const strippedFdb = cleanId.replace(/^FDB-/i, '').trim();
-    const fb = await prisma.feedback.findFirst({
-      where: {
-        OR: [
-          ...(isMongoId ? [{ id: cleanId }] : []),
-          { id: { contains: strippedFdb.toLowerCase(), mode: 'insensitive' } }
-        ]
-      },
-      include: { user: { include: { profile: true } } }
-    });
+    let fb: any = null;
+    if (isMongoId) {
+      fb = await prisma.feedback.findUnique({
+        where: { id: cleanId },
+        include: { user: { include: { profile: true } } }
+      }).catch(() => null);
+    }
+    if (!fb && /^[0-9a-fA-F]{24}$/.test(strippedFdb)) {
+      fb = await prisma.feedback.findUnique({
+        where: { id: strippedFdb },
+        include: { user: { include: { profile: true } } }
+      }).catch(() => null);
+    }
+    if (!fb && strippedFdb) {
+      const recentFbs = await prisma.feedback.findMany({
+        take: 100,
+        orderBy: { createdAt: 'desc' },
+        include: { user: { include: { profile: true } } }
+      }).catch(() => []);
+      fb = recentFbs.find((f: any) =>
+        f.id.toUpperCase().endsWith(strippedFdb.toUpperCase()) ||
+        f.id.toUpperCase() === cleanId.toUpperCase() ||
+        `FDB-${f.id.slice(-6).toUpperCase()}` === cleanId.toUpperCase()
+      ) || null;
+    }
 
     if (fb) {
       const reporterName = fb.user?.profile?.fullName || (fb.user?.email ? fb.user.email.split('@')[0] : 'Citizen User');
@@ -379,6 +395,7 @@ export async function formatSupportTicketThread(idOrRef: string) {
         id: `FDB-${fb.id.slice(-6).toUpperCase()}`,
         rawId: fb.id,
         refNumber: `FDB-${fb.id.slice(-6).toUpperCase()}`,
+        type: 'CITIZEN_FEEDBACK',
         title: `Citizen Feedback (${fb.rating}★): ${fb.improvementCategory || 'App Experience'}`,
         description: `"${fb.feedbackText}"`,
         category: 'Citizen Feedback',
@@ -421,61 +438,80 @@ export async function formatSupportTicketThread(idOrRef: string) {
     return null;
   }
 
-  // If ticket exists, enrich with linked Refund or Feedback metadata if applicable
+  // Strictly isolate linked Refund or Feedback metadata based on ticket identity (never by userId)
   let extraRefundData: any = {};
-  if (ticket.category === 'Refund Request' || ticket.refNumber?.startsWith('REF-') || ticket.title?.includes('Refund')) {
+  const isRefund = ticket.category === 'Refund Request' || String(ticket.refNumber || '').toUpperCase().startsWith('REF-');
+  const isFeedback = !isRefund && (ticket.category === 'Citizen Feedback' || String(ticket.refNumber || '').toUpperCase().startsWith('FDB-'));
+
+  if (isRefund) {
     const linkedRefund = await prisma.refundRequest.findFirst({
       where: {
         OR: [
           { refNumber: ticket.refNumber },
           { id: ticket.id },
-          { refNumber: { contains: strippedId, mode: 'insensitive' } }
+          ...(strippedId ? [{ refNumber: `REF-${strippedId}` }] : [])
         ]
       },
       include: { application: true }
     });
-    if (linkedRefund) {
-      extraRefundData = {
-        refundAmount: linkedRefund.amount,
-        refundStatus: linkedRefund.status,
-        refundId: linkedRefund.id,
-        applicationId: linkedRefund.applicationId,
-        applicationRef: linkedRefund.application?.refNumber,
-        serviceTitle: linkedRefund.serviceTitle || linkedRefund.application?.serviceTitle,
-        attachmentUrl: ticket.attachmentUrl || linkedRefund.proofUrl || null
-      };
-    }
-  } else if (ticket.category === 'Citizen Feedback' || ticket.refNumber?.startsWith('FDB-') || ticket.title?.includes('Feedback')) {
+    const isApproved = linkedRefund?.status === 'APPROVED' || ticket.status === 'RESOLVED';
+    const isRejected = linkedRefund?.status === 'REJECTED';
+    const effectiveStatus = (isApproved || isRejected || ticket.status === 'RESOLVED') ? 'RESOLVED' : (ticket.status || 'OPEN');
+    const effectiveRefundStatus = isApproved ? 'APPROVED' : (isRejected ? 'REJECTED' : (linkedRefund?.status || 'PENDING'));
+
+    extraRefundData = {
+      type: 'REFUND_REQUEST',
+      category: 'Refund Request',
+      status: effectiveStatus,
+      refundAmount: linkedRefund?.amount ?? (Number(ticket.title?.match(/₹(\d+)/)?.[1]) || undefined),
+      refundStatus: effectiveRefundStatus,
+      refundId: linkedRefund?.id || ticket.id,
+      applicationId: linkedRefund?.applicationId || undefined,
+      applicationRef: linkedRefund?.application?.refNumber || undefined,
+      serviceTitle: linkedRefund?.serviceTitle || linkedRefund?.application?.serviceTitle || undefined,
+      attachmentUrl: ticket.attachmentUrl || linkedRefund?.proofUrl || null,
+      rating: undefined,
+      feedbackCategory: undefined,
+      feedbackText: undefined
+    };
+  } else if (isFeedback) {
     const titleMatch = ticket.title?.match(/\((\d)★\)/);
     const parsedStar = titleMatch && titleMatch[1] ? parseInt(titleMatch[1], 10) : undefined;
     const fdbSuffix = (ticket.refNumber || '').replace(/^FDB-/i, '').toLowerCase();
 
     let linkedFb: any = null;
     try {
-      const fbWhere: any = {};
-      const fbOr: any[] = [];
-      if (ticket.userId && /^[0-9a-fA-F]{24}$/.test(String(ticket.userId))) {
-        fbOr.push({ userId: String(ticket.userId) });
-      }
-      if (fbOr.length > 0) {
-        fbWhere.OR = fbOr;
-        linkedFb = await prisma.feedback.findFirst({
-          where: fbWhere,
-          orderBy: { createdAt: 'desc' }
-        });
-      }
-      if (!linkedFb && fdbSuffix) {
-        const allFb = await prisma.feedback.findMany({ take: 20, orderBy: { createdAt: 'desc' } });
-        linkedFb = allFb.find(f => f.id.toLowerCase().endsWith(fdbSuffix));
+      if (fdbSuffix) {
+        const allFb = await prisma.feedback.findMany({ take: 50, orderBy: { createdAt: 'desc' } });
+        linkedFb = allFb.find(f => f.id.toLowerCase().endsWith(fdbSuffix) || f.id === ticket.id);
       }
     } catch (_) {}
 
-
     const realRating = linkedFb?.rating ?? parsedStar ?? 5;
     extraRefundData = {
+      type: 'CITIZEN_FEEDBACK',
+      category: 'Citizen Feedback',
       rating: realRating,
       feedbackCategory: linkedFb?.improvementCategory || (ticket.title?.includes(':') ? ticket.title.split(':').slice(1).join(':').trim() : 'App Experience'),
-      attachmentUrl: ticket.attachmentUrl || linkedFb?.imageUrl || null
+      feedbackText: linkedFb?.feedbackText || ticket.description || undefined,
+      attachmentUrl: ticket.attachmentUrl || linkedFb?.imageUrl || null,
+      refundAmount: undefined,
+      refundStatus: undefined,
+      refundId: undefined,
+      applicationId: undefined,
+      applicationRef: undefined,
+      serviceTitle: undefined
+    };
+  } else {
+    extraRefundData = {
+      type: 'SUPPORT_TICKET',
+      category: ticket.category || 'Technical Support',
+      attachmentUrl: ticket.attachmentUrl || null,
+      rating: undefined,
+      feedbackCategory: undefined,
+      feedbackText: undefined,
+      refundAmount: undefined,
+      refundStatus: undefined
     };
   }
 
@@ -524,7 +560,7 @@ export async function formatSupportTicketThread(idOrRef: string) {
     }
   ];
 
-  const assignedName = typeof ticket.assignedTo === 'string' && ticket.assignedTo.trim() ? ticket.assignedTo : '';
+  const assignedName = typeof ticket.assignedTo === 'string' && ticket.assignedTo.trim() && !ticket.assignedTo.includes('Amit S. (Support Desk)') && !ticket.assignedTo.includes('Pooja V.') ? ticket.assignedTo.trim() : '';
 
   return {
     id: ticket.refNumber || `TKT-${ticket.id.substring(0, 8).toUpperCase()}`,
@@ -532,16 +568,16 @@ export async function formatSupportTicketThread(idOrRef: string) {
     refNumber: ticket.refNumber,
     title: ticket.title || 'Citizen Grievance Support',
     description: ticket.description || 'Support inquiry registered by citizen',
-    category: ticket.category || 'Technical Support',
+    category: extraRefundData.category || ticket.category || 'Technical Support',
     priority: ticket.priority || 'Medium',
-    status: ticket.status || 'OPEN',
+    status: extraRefundData.status || ticket.status || 'OPEN',
     createdOn: ticket.createdAt ? new Date(ticket.createdAt).toLocaleDateString('en-IN') : 'Today',
     lastUpdated: ticket.updatedAt ? new Date(ticket.updatedAt).toLocaleDateString('en-IN') : 'Today',
     createdAt: ticket.createdAt,
     updatedAt: ticket.updatedAt,
-    attachmentUrl: ticket.attachmentUrl || extraRefundData.attachmentUrl || null,
+    attachmentUrl: extraRefundData.attachmentUrl !== undefined ? extraRefundData.attachmentUrl : (ticket.attachmentUrl || null),
     assignedTo: assignedName,
-    assignedOfficer: assignedName ? { id: 'agent-01', name: assignedName } : null,
+    assignedOfficer: assignedName ? { id: 'agent-assigned', name: assignedName } : null,
     reporter: { id: reporterId, name: reporterName, email: reporterEmail, phone: ticket.user?.phone || ticket.user?.profile?.phone || '' },
     user: ticket.user,
     messages,
@@ -2728,6 +2764,114 @@ export function setupSockets(io: Server) {
       }
     });
 
+    socket.on('send_push_notification', async (data: any) => {
+      try {
+        if (!data) return;
+        const targetId = String(data.recipientId || data.userId || data.citNumber || data.citId || 'all').trim();
+        const title = data.title || data.subject || '📢 Cybersave Notification';
+        const body = data.body || data.message || data.content || '';
+
+        let targetUser = await findUserByIdOrCit(targetId, { profile: true }).catch(() => null);
+        if (!targetUser && (data.userEmail || data.email)) {
+          const email = String(data.userEmail || data.email).trim();
+          targetUser = await prisma.user.findFirst({
+            where: { email: { equals: email.toLowerCase(), mode: 'insensitive' } },
+            include: { profile: true }
+          }).catch(() => null);
+        }
+        if (!targetUser && (data.userPhone || data.phone)) {
+          const digits = String(data.userPhone || data.phone).replace(/\D/g, '');
+          if (digits.length >= 7) {
+            targetUser = await prisma.user.findFirst({
+              where: { phone: { contains: digits.slice(-10) } },
+              include: { profile: true }
+            }).catch(() => null);
+          }
+        }
+        if (!targetUser) {
+          targetUser = await prisma.user.findFirst({
+            where: { role: 'USER' },
+            include: { profile: true },
+            orderBy: { createdAt: 'desc' }
+          }).catch(() => null);
+        }
+
+        const effectiveUid = targetUser?.id || (targetId !== 'all' ? targetId : 'all');
+        const citCode = targetUser ? `CIT-${targetUser.id.slice(-6).toUpperCase()}` : (data.citNumber || data.citId || 'CIT-PORTAL');
+
+        // Record in DB if valid user
+        if (targetUser?.id) {
+          await prisma.notification.create({
+            data: {
+              userId: targetUser.id,
+              title,
+              body,
+              type: 'INFO',
+              status: 'SENT'
+            }
+          }).catch(() => null);
+        }
+
+        const payload = {
+          id: data.id || `notif_${Date.now()}`,
+          userId: effectiveUid,
+          dbId: effectiveUid,
+          citId: citCode,
+          citNumber: citCode,
+          userEmail: targetUser?.email || data.userEmail || null,
+          userPhone: targetUser?.phone || data.userPhone || null,
+          userName: targetUser?.profile?.fullName || data.userName || 'Citizen',
+          title,
+          subject: title,
+          body,
+          message: body,
+          content: body,
+          text: body,
+          type: data.type || 'Mobile Push Notification',
+          status: 'SENT',
+          fromAdmin: true,
+          forceNotify: true,
+          isBroadcast: false,
+          source: 'ADMIN_SOCKET_DISPATCH',
+          createdAt: new Date().toISOString()
+        };
+
+        if (targetUser?.id) {
+          io.to(targetUser.id).emit('user_push_notification', payload);
+          io.to(targetUser.id).emit('new_notification', payload);
+          io.to(targetUser.id).emit('receive_global_push', payload);
+          io.to(citCode).emit('user_push_notification', payload);
+        }
+
+        io.emit('user_push_notification', payload);
+        io.emit('new_notification', payload);
+        io.emit('receive_global_push', payload);
+        io.emit('broadcast_notification', payload);
+        io.emit('notifications_updated');
+
+        if (messaging && targetUser?.fcmToken && targetUser.fcmToken.length > 10) {
+          messaging.send({
+            token: targetUser.fcmToken,
+            notification: { title, body },
+            android: {
+              priority: 'high',
+              notification: {
+                channelId: 'cybersave_alerts_channel',
+                priority: 'max',
+                defaultSound: true,
+                defaultVibrateTimings: true,
+                visibility: 'public',
+                icon: 'ic_launcher'
+              }
+            },
+            data: { title, body, userId: effectiveUid, citNumber: citCode }
+          }).catch(() => null);
+        }
+      } catch (err) {
+        console.error('[Socket] send_push_notification error:', err);
+      }
+    });
+
     socket.on('request_support_tickets', async () => {
       try {
         const [tickets, refundRequests, feedbacks] = await Promise.all([
@@ -2748,55 +2892,85 @@ export function setupSockets(io: Server) {
           })
         ]);
 
+        const refundMap = new Map<string, any>();
+        for (const r of refundRequests) {
+          if (r.refNumber) refundMap.set(String(r.refNumber).toUpperCase(), r);
+          if (r.id) refundMap.set(String(r.id), r);
+        }
+
+        const feedbackMap = new Map<string, any>();
+        for (const f of feedbacks) {
+          if (f.id) feedbackMap.set(String(f.id), f);
+          const fdbRef = `FDB-${f.id.slice(-6).toUpperCase()}`;
+          feedbackMap.set(fdbRef, f);
+        }
+
         const formatted: any[] = tickets.map(t => {
           const reporterName = t.user?.profile?.fullName || (t.user?.email ? t.user.email.split('@')[0] : 'Citizen User');
           const reporterEmail = t.user?.email || '';
           const reporterId = t.user?.id || t.userId || 'citizen';
-          const assignedName = typeof t.assignedTo === 'string' && t.assignedTo.trim() ? t.assignedTo : '';
+          const assignedStr = typeof t.assignedTo === 'string' && t.assignedTo.trim() && !t.assignedTo.includes('Amit S. (Support Desk)') && !t.assignedTo.includes('Pooja V.') ? t.assignedTo.trim() : '';
+
+          const refUpper = String(t.refNumber || '').toUpperCase();
+          const isRefund = t.category === 'Refund Request' || refUpper.startsWith('REF-') || refundMap.has(refUpper) || refundMap.has(String(t.id));
+          const isFeedback = !isRefund && (t.category === 'Citizen Feedback' || refUpper.startsWith('FDB-') || feedbackMap.has(refUpper) || feedbackMap.has(String(t.id)));
+
+          const linkedRefund = isRefund ? (refundMap.get(refUpper) || refundMap.get(String(t.id)) || null) : null;
+          const linkedFb = isFeedback ? (feedbackMap.get(refUpper) || feedbackMap.get(String(t.id)) || null) : null;
+
+          const isApproved = linkedRefund?.status === 'APPROVED' || (isRefund && t.status === 'RESOLVED');
+          const isRejected = linkedRefund?.status === 'REJECTED';
+          const effectiveStatus = (isApproved || isRejected || t.status === 'RESOLVED') ? 'RESOLVED' : (t.status || 'OPEN');
+          const effectiveRefundStatus = isApproved ? 'APPROVED' : (isRejected ? 'REJECTED' : (linkedRefund?.status || (isRefund ? 'PENDING' : undefined)));
 
           let ticketRating: number | undefined = undefined;
           let feedbackCat: string | undefined = undefined;
-          if (t.category === 'Citizen Feedback' || t.refNumber?.startsWith('FDB-') || t.title?.includes('Feedback')) {
+          if (isFeedback) {
             const titleMatch = t.title?.match(/\((\d)★\)/);
-            if (titleMatch && titleMatch[1]) {
-              ticketRating = parseInt(titleMatch[1], 10);
-            }
-            if (t.title?.includes(':')) {
-              feedbackCat = t.title.split(':').slice(1).join(':').trim();
-            }
+            ticketRating = linkedFb?.rating ?? (titleMatch && titleMatch[1] ? parseInt(titleMatch[1], 10) : 5);
+            feedbackCat = linkedFb?.improvementCategory || (t.title?.includes(':') ? t.title.split(':').slice(1).join(':').trim() : 'App Experience');
           }
 
           return {
             id: t.refNumber || `TKT-${t.id.substring(0, 8).toUpperCase()}`,
             rawId: t.id,
             refNumber: t.refNumber,
+            type: isRefund ? 'REFUND_REQUEST' : (isFeedback ? 'CITIZEN_FEEDBACK' : 'SUPPORT_TICKET'),
             title: t.title,
             description: t.description,
-            category: t.category,
+            category: isRefund ? 'Refund Request' : (isFeedback ? 'Citizen Feedback' : (t.category || 'Technical Support')),
             priority: t.priority,
-            rating: ticketRating,
-            feedbackCategory: feedbackCat,
+            status: effectiveStatus,
             createdOn: t.createdAt ? t.createdAt.toLocaleDateString('en-IN') : 'Today',
             lastUpdated: t.updatedAt ? t.updatedAt.toLocaleDateString('en-IN') : 'Today',
             createdAt: t.createdAt,
             updatedAt: t.updatedAt,
-            assignedTo: assignedName,
-            assignedOfficer: assignedName ? { id: 'agent-01', name: assignedName } : null,
+            assignedTo: assignedStr,
+            assignedOfficer: assignedStr ? { id: 'agent-assigned', name: assignedStr } : null,
             reporter: { id: reporterId, name: reporterName, email: reporterEmail, phone: t.user?.phone || t.user?.profile?.phone || '' },
             user: t.user,
-            status: t.status,
-            attachmentUrl: t.attachmentUrl,
+            attachmentUrl: isRefund ? (t.attachmentUrl || linkedRefund?.proofUrl || null) : (isFeedback ? (t.attachmentUrl || linkedFb?.imageUrl || null) : (t.attachmentUrl || null)),
             messages: t.messages || [],
+            // Strictly isolated refund fields:
+            refundAmount: isRefund ? (linkedRefund?.amount ?? (Number(t.title?.match(/₹(\d+)/)?.[1]) || 50)) : undefined,
+            refundStatus: isRefund ? effectiveRefundStatus : undefined,
+            refundId: isRefund ? (linkedRefund?.id || t.id) : undefined,
+            applicationId: isRefund ? linkedRefund?.applicationId : undefined,
+            applicationRef: isRefund ? linkedRefund?.application?.refNumber : undefined,
+            serviceTitle: isRefund ? (linkedRefund?.serviceTitle || linkedRefund?.application?.serviceTitle) : undefined,
+            // Strictly isolated feedback fields:
+            rating: isFeedback ? ticketRating : undefined,
+            feedbackCategory: isFeedback ? feedbackCat : undefined,
+            feedbackText: isFeedback ? (linkedFb?.feedbackText || t.description || undefined) : undefined,
           };
         });
 
-
         const existingRefs = new Set(formatted.map(t => String(t.refNumber || t.id).toUpperCase()));
 
-        // Merge Refund Requests
+        // Merge unlinked Refund Requests
         for (const r of refundRequests) {
           const rRef = String(r.refNumber || `REF-${r.id.slice(-6)}`).toUpperCase();
-          if (!existingRefs.has(rRef)) {
+          if (!existingRefs.has(rRef) && !existingRefs.has(r.id.toUpperCase())) {
             existingRefs.add(rRef);
             const reporterName = r.user?.profile?.fullName || (r.user?.email ? r.user.email.split('@')[0] : 'Citizen Applicant');
             const reporterEmail = r.user?.email || '';
@@ -2808,6 +2982,7 @@ export function setupSockets(io: Server) {
               id: r.refNumber,
               rawId: r.id,
               refNumber: r.refNumber,
+              type: 'REFUND_REQUEST',
               title: `Refund Claim: ₹${r.amount} - ${r.serviceTitle || r.application?.serviceTitle || 'Government Service Fee'}`,
               description: `Citizen requested refund for Application #${r.application?.refNumber || 'N/A'}.\nReason: ${r.reason}${r.details ? '\nDetails: ' + r.details : ''}`,
               category: 'Refund Request',
@@ -2864,14 +3039,10 @@ export function setupSockets(io: Server) {
           }
         }
 
-        // Merge Citizen Feedbacks
+        // Merge unlinked Citizen Feedbacks
         for (const f of feedbacks) {
           const fbRef = `FDB-${f.id.slice(-6).toUpperCase()}`;
-          const existing = formatted.find(t => String(t.refNumber || t.id).toUpperCase() === fbRef || String(t.rawId || '').toUpperCase() === f.id.toUpperCase());
-          if (existing) {
-            existing.rating = f.rating;
-            existing.feedbackCategory = f.improvementCategory;
-          } else if (!existingRefs.has(fbRef) && !existingRefs.has(f.id.toUpperCase())) {
+          if (!existingRefs.has(fbRef) && !existingRefs.has(f.id.toUpperCase())) {
             existingRefs.add(fbRef);
             const reporterName = f.user?.profile?.fullName || (f.user?.email ? f.user.email.split('@')[0] : 'Citizen User');
             const reporterEmail = f.user?.email || '';
@@ -2881,6 +3052,7 @@ export function setupSockets(io: Server) {
               id: fbRef,
               rawId: f.id,
               refNumber: fbRef,
+              type: 'CITIZEN_FEEDBACK',
               title: `Citizen Feedback (${f.rating}★): ${f.improvementCategory || 'App Experience'}`,
               description: `"${f.feedbackText}"`,
               category: 'Citizen Feedback',
@@ -2897,6 +3069,7 @@ export function setupSockets(io: Server) {
               user: f.user,
               rating: f.rating,
               feedbackCategory: f.improvementCategory,
+              feedbackText: f.feedbackText,
               messages: [
                 {
                   id: `msg-fb-${f.id}`,
