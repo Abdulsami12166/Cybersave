@@ -1788,7 +1788,7 @@ app.post(['/api/v1/services', '/api/services'], async (req: any, res: any) => {
     const configurationPayload = {
       serviceCode,
       serviceType: data.serviceType || 'Online',
-      processingSla: data.processingSla || data.tat || '24 Hours',
+      processingSla: data.tat || data.processingTime || data.processingSla || '24 Hours',
       priorityLevel: data.priorityLevel || 'Medium',
       autoApproval: data.autoApproval !== undefined ? Boolean(data.autoApproval) : true,
       targetProcessingTime: data.targetProcessingTime || '18 Hours',
@@ -1805,7 +1805,7 @@ app.post(['/api/v1/services', '/api/services'], async (req: any, res: any) => {
       category: data.category || 'Government',
       department: data.department || data.departmentRole || 'General Administration',
       fee: feeVal,
-      processingTime: data.processingSla || data.tat || data.processingTime || '24 Hours',
+      processingTime: data.tat || data.processingTime || data.processingSla || '24 Hours',
       subServices: data.subServices || [],
       formDataSchema: {
         formElements: formElementsList,
@@ -1855,12 +1855,13 @@ app.put(['/api/v1/services/:id', '/api/services/:id'], async (req: any, res: any
 
     const resolvedIcon = data.iconUrl || data.imageUrl || data.iconName || target.iconName || 'file-document-outline';
 
+    const effectiveTat = data.tat || data.processingTime || data.processingSla;
     const existingConfig = ((target.formDataSchema as any)?.configuration) || {};
     const updatedConfig = {
       ...existingConfig,
       ...(data.serviceCode ? { serviceCode: data.serviceCode } : {}),
       ...(data.serviceType ? { serviceType: data.serviceType } : {}),
-      ...(data.processingSla ? { processingSla: data.processingSla } : {}),
+      ...(effectiveTat ? { processingSla: effectiveTat } : {}),
       ...(data.priorityLevel ? { priorityLevel: data.priorityLevel } : {}),
       ...(data.autoApproval !== undefined ? { autoApproval: Boolean(data.autoApproval) } : {}),
       ...(data.targetProcessingTime ? { targetProcessingTime: data.targetProcessingTime } : {}),
@@ -1918,14 +1919,20 @@ app.put(['/api/v1/services/:id', '/api/services/:id'], async (req: any, res: any
         category: data.category || target.category,
         department: data.department || data.departmentRole || target.department,
         fee: feeVal,
-        processingTime: data.processingSla || data.tat || data.processingTime || target.processingTime,
+        processingTime: effectiveTat || target.processingTime,
         subServices: data.subServices !== undefined ? data.subServices : target.subServices,
         formDataSchema: {
           formElements: formElementsList,
           configuration: updatedConfig
         },
         requiredDocs: normalizedDocs,
-        pricingConfig: data.pricing || data.pricingConfig || { ...((target.pricingConfig as any) || {}), fee: feeVal, iconUrl: data.iconUrl || data.imageUrl },
+        pricingConfig: {
+          ...((data.pricing || data.pricingConfig || (target.pricingConfig as any)) || {}),
+          fee: feeVal,
+          tat: effectiveTat || target.processingTime,
+          processingTime: effectiveTat || target.processingTime,
+          iconUrl: data.iconUrl || data.imageUrl
+        },
         iconName: resolvedIcon,
         colorHex: data.colorHex || target.colorHex,
         isActive: data.status ? data.status === 'Active' : (data.isActive !== undefined ? data.isActive : target.isActive),
@@ -1961,6 +1968,7 @@ app.patch(['/api/v1/services/:id', '/api/services/:id'], async (req: any, res: a
         ...(data.department ? { department: data.department } : {}),
         ...(data.fee !== undefined ? { fee: typeof data.fee === 'number' ? data.fee : parseFloat(data.fee) } : {}),
         ...(data.subServices !== undefined ? { subServices: data.subServices } : {}),
+        ...(data.tat || data.processingTime || data.processingSla ? { processingTime: data.tat || data.processingTime || data.processingSla } : {}),
         ...(data.iconName || data.iconUrl ? { iconName: data.iconUrl || data.iconName } : {}),
         ...(data.isActive !== undefined ? { isActive: data.isActive } : {}),
       }

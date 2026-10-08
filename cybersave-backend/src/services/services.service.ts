@@ -204,7 +204,10 @@ export class ServicesService implements OnModuleInit {
     if (data.displayName !== undefined) pricingObj.displayName = data.displayName;
     if (data.shortDescription !== undefined) pricingObj.shortDescription = data.shortDescription;
     if (data.detailedDescription !== undefined) pricingObj.detailedDescription = data.detailedDescription;
-    if (data.isPublished !== undefined) pricingObj.isPublished = Boolean(data.isPublished);
+    if (data.tat !== undefined) pricingObj.tat = data.tat;
+    if (data.tat !== undefined || data.processingTime !== undefined) {
+      pricingObj.processingTime = data.tat || data.processingTime;
+    }
 
     const eligibilityValue = data.eligibility
       ? (Array.isArray(data.eligibility) ? data.eligibility : [data.eligibility])
@@ -218,7 +221,7 @@ export class ServicesService implements OnModuleInit {
         category: data.category || existing.category,
         department: data.department || data.departmentRole || existing.department,
         fee: feeVal,
-        processingTime: data.processingTime || data.tat || existing.processingTime,
+        processingTime: data.tat || data.processingTime || data.processingSla || existing.processingTime,
         eligibility: eligibilityValue,
         requiredDocs: data.requiredDocs || data.documents || (existing.requiredDocs as any) || [],
         subServices: data.subServices || (existing.subServices as any) || [],
@@ -327,7 +330,7 @@ export class ServicesService implements OnModuleInit {
         category: data.category || 'Government',
         department: data.department || data.departmentRole || 'General Administration',
         fee: feeVal,
-        processingTime: data.processingTime || '7-15 Days',
+        processingTime: data.tat || data.processingTime || data.processingSla || '7-15 Days',
         eligibility: data.eligibility || ['Citizen of India', 'Valid ID verification credentials'],
         requiredDocs: data.requiredDocs || data.documents || defaultDocs,
         subServices: data.subServices || [],
@@ -344,7 +347,7 @@ export class ServicesService implements OnModuleInit {
         category: data.category || 'Government',
         department: data.department || data.departmentRole || 'General Administration',
         fee: feeVal,
-        processingTime: data.processingTime || '7-15 Days',
+        processingTime: data.tat || data.processingTime || data.processingSla || '7-15 Days',
         eligibility: data.eligibility || ['Citizen of India', 'Valid ID verification credentials'],
         requiredDocs: data.requiredDocs || data.documents || defaultDocs,
         subServices: data.subServices || [],
