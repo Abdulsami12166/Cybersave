@@ -151,21 +151,16 @@ export class ApplicationsService {
       : null;
 
     if (!matchedUser) {
-      matchedUser = await this.prisma.user.findFirst({
-        include: { profile: true },
-      }).catch(() => null);
-    }
-
-    if (!matchedUser) {
-      const citizenEmail = dto.formData?.email || (validUserId && validUserId.includes('@') ? validUserId : `citizen_${Date.now()}@cybersave.app`);
+      const citizenEmail = dto.formData?.email || (validUserId && validUserId.includes('@') ? validUserId.trim().toLowerCase() : `citizen_${Date.now()}@cybersave.app`);
       matchedUser = await this.prisma.user.create({
         data: {
+          ...(validUserId && isMongoId(validUserId) ? { id: validUserId } : {}),
           email: citizenEmail,
           phone: dto.formData?.phone || (validUserId && /^\+?[0-9]{10,13}$/.test(validUserId) ? validUserId : '+91 98765 43210'),
           role: 'USER',
           profile: {
             create: {
-              fullName: dto.formData?.fullName || 'Citizen Applicant',
+              fullName: dto.formData?.fullName || dto.formData?.applicantName || 'Citizen Applicant',
               email: citizenEmail,
               phone: dto.formData?.phone || '+91 98765 43210',
               state: dto.formData?.stateName || dto.formData?.state || 'Delhi',
