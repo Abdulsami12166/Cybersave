@@ -671,7 +671,7 @@ export class AdminController {
       },
       messages: Array.isArray(ticket.messages) ? ticket.messages : [],
       refundAmount: isRefund ? (linkedRefund?.amount || 50) : undefined,
-      refundStatus: isRefund ? (linkedRefund?.status || (ticket.status === 'RESOLVED' ? 'APPROVED' : 'PENDING')) : undefined,
+      refundStatus: isRefund ? (linkedRefund?.status || (ticket.status === 'DECLINED' || ticket.status === 'REJECTED' ? 'REJECTED' : ticket.status === 'RESOLVED' || ticket.status === 'APPROVED' ? 'APPROVED' : 'PENDING')) : undefined,
       refundId: isRefund ? (linkedRefund?.id || ticket.id) : undefined,
       applicationId: isRefund ? (linkedRefund?.applicationId || undefined) : undefined,
       applicationRef: isRefund ? (linkedRefund?.application?.refNumber || undefined) : undefined,
@@ -721,6 +721,17 @@ export class AdminController {
       ticket?.title?.toLowerCase().includes('refund claim') ||
       ticket?.title?.toLowerCase().includes('refund request');
 
+    const isReject =
+      body.isReject === true ||
+      body.action === 'REJECT' ||
+      body.action === 'DECLINE' ||
+      body.status === 'DECLINED' ||
+      body.status === 'REJECTED' ||
+      resolutionCategory === 'Rejected' ||
+      resolutionCategory === 'Declined' ||
+      (typeof resolutionSummary === 'string' &&
+        (resolutionSummary.toLowerCase().includes('declined') || resolutionSummary.toLowerCase().includes('rejected')));
+
     let processedRefundObj: any = null;
 
     if (isRefundTicket) {
@@ -741,77 +752,127 @@ export class AdminController {
       if (refund) {
         const refundAmount = Number(refund.amount) || 50.0;
 
-        // Idempotent wallet credit: only credit if status is still PENDING
-        if (refund.status === 'PENDING') {
-          // 1. Update refund request
-          const updatedRefund = await this.prisma.refundRequest.update({
-            where: { id: refund.id },
-            data: {
-              status: 'APPROVED',
-              processedBy: actingName,
-              processedAt: now,
-              adminNotes: resolutionSummary || `Refund approved by ${actingName}`,
-              journey: [
-                { title: 'Refund Initiated', desc: 'Citizen requested fee refund', time: refund.createdAt ? new Date(refund.createdAt).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' }) : 'Initiated', state: 'done' },
-                { title: 'Processing by Authority', desc: `Verified and authorized by ${actingName}`, time: now.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' }), state: 'done' },
-                { title: 'Credited to Wallet', desc: `₹${refundAmount.toFixed(2)} credited directly into citizen wallet`, time: now.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' }), state: 'done' },
-              ] as any,
-            },
-            include: { user: { include: { profile: true } }, application: true },
-          });
-          processedRefundObj = updatedRefund;
+        if (isReject) {
+          // ─── DECLINE REFUND: Do NOT credit wallet ───
+          if (refund.status === 'PENDING') {
+            const updatedRefund = await this.prisma.refundRequest.update({
+              where: { id: refund.id },
+              data: {
+                status: 'REJECTED',
+                processedBy: actingName,
+                processedAt: now,
+                adminNotes: resolutionSummary || `Refund claim declined by ${actingName}`,
+                journey: [
+                  { title: 'Refund Initiated', desc: 'Citizen requested fee refund', time: refund.createdAt ? new Date(refund.createdAt).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' }) : 'Initiated', state: 'done' },
+                  { title: 'Claim Reviewed', desc: `Reviewed and declined by ${actingName}`, time: now.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' }), state: 'done' },
+                  { title: 'Refund Declined', desc: resolutionSummary || 'Claim does not meet refund criteria', time: now.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' }), state: 'error' },
+                ] as any,
+              },
+              include: { user: { include: { profile: true } }, application: true },
+            });
+            processedRefundObj = updatedRefund;
 
-          // 2. Update application
-          if (refund.applicationId) {
-            await this.prisma.application.update({
-              where: { id: refund.applicationId },
-              data: { refundStatus: 'APPROVED', paymentStatus: 'Refunded' },
+            if (refund.applicationId) {
+              await this.prisma.application.update({
+                where: { id: refund.applicationId },
+                data: { refundStatus: 'REJECTED' },
+              }).catch(() => null);
+            }
+
+            const notif = await this.prisma.notification.create({
+              data: {
+                userId: refund.userId,
+                title: 'Refund Claim Declined',
+                body: `Your refund claim for application #${refund.application?.refNumber || 'N/A'} was declined. Reason: ${resolutionSummary || 'Claim does not meet eligibility requirements.'}`,
+                type: 'INFO',
+                status: 'SENT',
+                sentAt: now,
+              },
             }).catch(() => null);
+
+            AdminGateway.emitToUser(refund.userId, 'refund_rejected', { refund: updatedRefund, notification: notif });
+            if (notif) AdminGateway.emitToUser(refund.userId, 'notification_received', notif);
+            AdminGateway.broadcast('refund_rejected', updatedRefund);
+            AdminGateway.broadcast('refunds_updated', updatedRefund);
+            AdminGateway.broadcast('applications_updated');
+          } else {
+            processedRefundObj = refund;
           }
+        } else {
+          // ─── APPROVE REFUND: Credit citizen wallet ───
+          if (refund.status === 'PENDING') {
+            // 1. Update refund request
+            const updatedRefund = await this.prisma.refundRequest.update({
+              where: { id: refund.id },
+              data: {
+                status: 'APPROVED',
+                processedBy: actingName,
+                processedAt: now,
+                adminNotes: resolutionSummary || `Refund approved by ${actingName}`,
+                journey: [
+                  { title: 'Refund Initiated', desc: 'Citizen requested fee refund', time: refund.createdAt ? new Date(refund.createdAt).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' }) : 'Initiated', state: 'done' },
+                  { title: 'Processing by Authority', desc: `Verified and authorized by ${actingName}`, time: now.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' }), state: 'done' },
+                  { title: 'Credited to Wallet', desc: `₹${refundAmount.toFixed(2)} credited directly into citizen wallet`, time: now.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' }), state: 'done' },
+                ] as any,
+              },
+              include: { user: { include: { profile: true } }, application: true },
+            });
+            processedRefundObj = updatedRefund;
 
-          // 3. Credit user's wallet
-          let wallet = await this.prisma.wallet.findUnique({ where: { userId: refund.userId } });
-          if (!wallet) {
-            wallet = await this.prisma.wallet.create({ data: { userId: refund.userId, balance: 0.0 } });
+            // 2. Update application
+            if (refund.applicationId) {
+              await this.prisma.application.update({
+                where: { id: refund.applicationId },
+                data: { refundStatus: 'APPROVED', paymentStatus: 'Refunded' },
+              }).catch(() => null);
+            }
+
+            // 3. Credit user's wallet
+            let wallet = await this.prisma.wallet.findUnique({ where: { userId: refund.userId } });
+            if (!wallet) {
+              wallet = await this.prisma.wallet.create({ data: { userId: refund.userId, balance: 0.0 } });
+            }
+            const newBalance = Number((wallet.balance + refundAmount).toFixed(2));
+            await this.prisma.wallet.update({ where: { id: wallet.id }, data: { balance: newBalance } });
+
+            // 4. Create wallet transaction
+            const txn = await this.prisma.walletTransaction.create({
+              data: {
+                walletId: wallet.id,
+                userId: refund.userId,
+                type: 'CREDIT',
+                title: `Refund: ${refund.serviceTitle || refund.application?.serviceTitle || 'Government Service Fee'}`,
+                subtitle: `Application #${refund.application?.refNumber || 'N/A'}`,
+                amount: refundAmount,
+                refId: refund.refNumber,
+                status: 'SUCCESS',
+              },
+            });
+
+            // 5. Notify citizen
+            const notif = await this.prisma.notification.create({
+              data: {
+                userId: refund.userId,
+                title: 'Refund Credited to Wallet',
+                body: `Your refund of ₹${refundAmount.toFixed(2)} for application #${refund.application?.refNumber || 'N/A'} (${refund.serviceTitle || 'Government Service'}) has been credited to your CyberSave wallet.`,
+                type: 'PAYMENT',
+                status: 'SENT',
+                sentAt: now,
+              },
+            });
+
+            // Broadcast events
+            AdminGateway.emitToUser(refund.userId, 'wallet_updated', { balance: newBalance, transaction: txn });
+            AdminGateway.emitToUser(refund.userId, 'refund_approved', { refund: updatedRefund, amount: refundAmount, newBalance, notification: notif });
+            AdminGateway.emitToUser(refund.userId, 'notification_received', notif);
+            AdminGateway.broadcast('refund_approved', updatedRefund);
+            AdminGateway.broadcast('refunds_updated', updatedRefund);
+            AdminGateway.broadcast('wallet_transactions_updated');
+            AdminGateway.broadcast('transactions_updated');
+            AdminGateway.broadcast('applications_updated');
+          } else {
+            processedRefundObj = refund;
           }
-          const newBalance = Number((wallet.balance + refundAmount).toFixed(2));
-          await this.prisma.wallet.update({ where: { id: wallet.id }, data: { balance: newBalance } });
-
-          // 4. Create wallet transaction
-          const txn = await this.prisma.walletTransaction.create({
-            data: {
-              walletId: wallet.id,
-              userId: refund.userId,
-              type: 'CREDIT',
-              title: `Refund: ${refund.serviceTitle || refund.application?.serviceTitle || 'Government Service Fee'}`,
-              subtitle: `Application #${refund.application?.refNumber || 'N/A'}`,
-              amount: refundAmount,
-              refId: refund.refNumber,
-              status: 'SUCCESS',
-            },
-          });
-
-          // 5. Notify citizen
-          const notif = await this.prisma.notification.create({
-            data: {
-              userId: refund.userId,
-              title: 'Refund Credited to Wallet',
-              body: `Your refund of ₹${refundAmount.toFixed(2)} for application #${refund.application?.refNumber || 'N/A'} (${refund.serviceTitle || 'Government Service'}) has been credited to your CyberSave wallet.`,
-              type: 'PAYMENT',
-              status: 'SENT',
-              sentAt: now,
-            },
-          });
-
-          // Broadcast events
-          AdminGateway.emitToUser(refund.userId, 'wallet_updated', { balance: newBalance, transaction: txn });
-          AdminGateway.emitToUser(refund.userId, 'refund_approved', { refund: updatedRefund, amount: refundAmount, newBalance, notification: notif });
-          AdminGateway.emitToUser(refund.userId, 'notification_received', notif);
-          AdminGateway.broadcast('refund_approved', updatedRefund);
-          AdminGateway.broadcast('refunds_updated', updatedRefund);
-          AdminGateway.broadcast('wallet_transactions_updated');
-          AdminGateway.broadcast('transactions_updated');
-          AdminGateway.broadcast('applications_updated');
         }
       }
     }
@@ -820,13 +881,14 @@ export class AdminController {
       if (processedRefundObj) {
         return {
           success: true,
-          message: `Refund claim #${cleanId} approved and credited to wallet.`,
+          message: isReject ? `Refund claim #${cleanId} declined.` : `Refund claim #${cleanId} approved and credited to wallet.`,
           refund: processedRefundObj,
         };
       }
       throw new NotFoundException(`Grievance / Ticket ${id} not found`);
     }
 
+    const ticketFinalStatus = isReject ? 'DECLINED' : 'RESOLVED';
     const existingMsgs = Array.isArray(ticket.messages) ? (ticket.messages as any[]) : [];
     const resolutionMsg = {
       id: `msg-resolve-${Date.now()}`,
@@ -834,7 +896,9 @@ export class AdminController {
       senderName: `${actingName} (Resolution)`,
       role: 'AGENT',
       text: isRefundTicket
-        ? `✅ Refund Claim Approved! ₹${Number(processedRefundObj?.amount || 50).toFixed(2)} has been credited directly to your CyberSave wallet. ${resolutionSummary || 'Refund processed.'}`
+        ? (isReject
+            ? `✕ Refund Claim Declined: ${resolutionSummary || 'Claim does not meet refund eligibility criteria.'}`
+            : `✅ Refund Claim Approved! ₹${Number(processedRefundObj?.amount || 50).toFixed(2)} has been credited directly to your CyberSave wallet. ${resolutionSummary || 'Refund processed.'}`)
         : `✅ Ticket Resolved — ${resolutionSummary || 'Issue has been resolved.'}`,
       time: nowTimeStr,
       timestamp: now.toISOString(),
@@ -846,19 +910,19 @@ export class AdminController {
       where: { id: ticket.id },
       data: {
         messages: updatedMsgs as any,
-        status: 'RESOLVED',
+        status: ticketFinalStatus,
         updatedAt: now,
       },
       include: { user: { include: { profile: true } } },
     });
 
-    // Notify citizen if non-refund (refund already notified with payment notification)
+    // Notify citizen if non-refund (refund already notified)
     if (!isRefundTicket && notifyCitizen !== false && ticket.userId) {
       await this.prisma.notification.create({
         data: {
           userId: ticket.userId,
-          title: `Ticket #${ticket.refNumber} Resolved`,
-          body: resolutionSummary || 'Your support ticket has been resolved.',
+          title: `Ticket #${ticket.refNumber} ${isReject ? 'Declined' : 'Resolved'}`,
+          body: resolutionSummary || (isReject ? 'Your support ticket has been declined.' : 'Your support ticket has been resolved.'),
           type: 'INFO',
           status: 'SENT',
           sentAt: now,

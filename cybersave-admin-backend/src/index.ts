@@ -2175,7 +2175,7 @@ app.all(['/api/admin/refunds/:id/reject', '/api/v1/refunds/:id/reject'], async (
         ]
       },
       data: {
-        status: 'RESOLVED',
+        status: 'DECLINED',
         updatedAt: new Date()
       }
     }).catch(() => null);
@@ -4089,7 +4089,7 @@ app.post(['/api/admin/support/tickets/:id/resolve', '/api/v1/support/tickets/:id
       targetId.toUpperCase().startsWith('REF-');
 
     if (isRefundRelated) {
-      const isReject = req.body?.isReject === true || req.body?.action === 'REJECT' || req.body?.resolutionCategory === 'Rejected';
+      const isReject = req.body?.isReject === true || req.body?.action === 'REJECT' || req.body?.action === 'DECLINE' || req.body?.status === 'DECLINED' || req.body?.status === 'REJECTED' || req.body?.resolutionCategory === 'Rejected';
       const resolutionSummary = req.body?.resolutionSummary || (isReject ? 'Declined by Administrator' : 'Refund approved and credited to wallet');
       const refundResult = await processRefundApprovalOrRejection({
         refundIdOrRef: ticket.refNumber || targetId,
@@ -4103,7 +4103,8 @@ app.post(['/api/admin/support/tickets/:id/resolve', '/api/v1/support/tickets/:id
         return null;
       });
 
-      // Authoritative database update: ticket status = RESOLVED
+      // Authoritative database update: ticket status = DECLINED / RESOLVED
+      const finalStatus = isReject ? 'DECLINED' : 'RESOLVED';
       const existingMsgs = Array.isArray(ticket.messages) ? ticket.messages : [];
       const resolutionMsg = {
         id: `msg-resolve-${Date.now()}`,
@@ -4120,7 +4121,7 @@ app.post(['/api/admin/support/tickets/:id/resolve', '/api/v1/support/tickets/:id
       await prisma.supportTicket.update({
         where: { id: ticket.id },
         data: {
-          status: 'RESOLVED',
+          status: finalStatus,
           messages: updatedMsgs,
           updatedAt: new Date()
         }
@@ -4128,14 +4129,14 @@ app.post(['/api/admin/support/tickets/:id/resolve', '/api/v1/support/tickets/:id
 
       if (io) {
         io.emit('support_tickets_updated');
-        io.emit('resolve_ticket_success', { id: ticket.refNumber, rawId: ticket.id, status: 'RESOLVED' });
+        io.emit('resolve_ticket_success', { id: ticket.refNumber, rawId: ticket.id, status: finalStatus });
       }
 
       const formatted = await formatSupportTicketThread(ticket.id);
       return res.json({
         success: true,
-        status: 'RESOLVED',
-        ticket: formatted ? { ...formatted, status: 'RESOLVED', refundStatus: isReject ? 'REJECTED' : 'APPROVED' } : null,
+        status: finalStatus,
+        ticket: formatted ? { ...formatted, status: finalStatus, refundStatus: isReject ? 'REJECTED' : 'APPROVED' } : null,
         refund: refundResult?.refund,
         walletCredited: !isReject,
         newBalance: refundResult?.newBalance,

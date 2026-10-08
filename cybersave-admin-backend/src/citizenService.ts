@@ -1779,7 +1779,7 @@ export async function processRefundApprovalOrRejection(params: {
       await prisma.supportTicket.update({
         where: { id: ticketMatch.id },
         data: {
-          status: 'RESOLVED',
+          status: 'DECLINED',
           messages: [...existingMsgs, resolutionMsg],
           updatedAt: now
         }

@@ -300,7 +300,7 @@ export async function formatSupportTicketThread(idOrRef: string) {
         description: `Citizen requested refund for Application #${refund.application?.refNumber || 'N/A'}.\nReason: ${refund.reason}${refund.details ? '\nDetails: ' + refund.details : ''}`,
         category: 'Refund Request',
         priority: 'High',
-        status: isApproved ? 'RESOLVED' : (isRejected ? 'RESOLVED' : 'OPEN'),
+        status: isApproved ? 'RESOLVED' : (isRejected ? 'DECLINED' : 'OPEN'),
         createdOn: refund.createdAt ? new Date(refund.createdAt).toLocaleDateString('en-IN') : 'Today',
         lastUpdated: refund.updatedAt ? new Date(refund.updatedAt).toLocaleDateString('en-IN') : 'Today',
         createdAt: refund.createdAt,
@@ -454,10 +454,10 @@ export async function formatSupportTicketThread(idOrRef: string) {
       },
       include: { application: true }
     });
-    const isApproved = linkedRefund?.status === 'APPROVED' || ticket.status === 'RESOLVED';
-    const isRejected = linkedRefund?.status === 'REJECTED';
-    const effectiveStatus = (isApproved || isRejected || ticket.status === 'RESOLVED') ? 'RESOLVED' : (ticket.status || 'OPEN');
-    const effectiveRefundStatus = isApproved ? 'APPROVED' : (isRejected ? 'REJECTED' : (linkedRefund?.status || 'PENDING'));
+    const isDeclined = ticket.status === 'DECLINED' || ticket.status === 'REJECTED' || linkedRefund?.status === 'REJECTED';
+    const isApproved = !isDeclined && (linkedRefund?.status === 'APPROVED' || ticket.status === 'RESOLVED' || ticket.status === 'APPROVED');
+    const effectiveStatus = isDeclined ? 'DECLINED' : (isApproved ? 'RESOLVED' : (ticket.status || 'OPEN'));
+    const effectiveRefundStatus = isDeclined ? 'REJECTED' : (isApproved ? 'APPROVED' : (linkedRefund?.status || 'PENDING'));
 
     extraRefundData = {
       type: 'REFUND_REQUEST',
@@ -3571,7 +3571,7 @@ export function setupSockets(io: Server) {
             targetId.toUpperCase().startsWith('REF-');
 
           if (isRefundRelated) {
-            const isReject = data.isReject === true || data.action === 'REJECT' || data.resolutionCategory === 'Rejected';
+            const isReject = data.isReject === true || data.action === 'REJECT' || data.action === 'DECLINE' || data.status === 'DECLINED' || data.status === 'REJECTED' || data.resolutionCategory === 'Rejected';
             const refundResult = await processRefundApprovalOrRejection({
               refundIdOrRef: ticket.refNumber || targetId,
               action: isReject ? 'REJECT' : 'APPROVE',
@@ -3584,7 +3584,8 @@ export function setupSockets(io: Server) {
               return null;
             });
 
-            // Authoritatively persist RESOLVED status in database
+            // Authoritatively persist DECLINED / RESOLVED status in database
+            const finalStatus = isReject ? 'DECLINED' : 'RESOLVED';
             const existingMsgs = Array.isArray(ticket.messages) ? ticket.messages : [];
             const resolutionMsg = {
               id: `msg-resolve-${Date.now()}`,
@@ -3600,7 +3601,7 @@ export function setupSockets(io: Server) {
             await prisma.supportTicket.update({
               where: { id: ticket.id },
               data: {
-                status: 'RESOLVED',
+                status: finalStatus,
                 messages: [...existingMsgs, resolutionMsg],
                 updatedAt: new Date()
               }
