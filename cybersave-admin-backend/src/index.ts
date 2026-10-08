@@ -2242,6 +2242,50 @@ app.post(['/api/admin/support/tickets', '/api/v1/support/tickets', '/api/support
     const citizenName = matchedUser?.profile?.fullName || reporterName || 'Citizen User';
     const citizenEmail = matchedUser?.email || reporterEmail || '';
 
+    // Deduplication check: return existing ticket if created in the last 10 seconds
+    const tenSecondsAgo = new Date(Date.now() - 10000);
+    const existingTicket = await prisma.supportTicket.findFirst({
+      where: {
+        title: finalTitle,
+        category,
+        createdAt: { gte: tenSecondsAgo },
+        ...(matchedUser?.id ? { userId: matchedUser.id } : {}),
+      },
+      include: {
+        user: { select: { id: true, email: true, phone: true, profile: true } }
+      }
+    }).catch(() => null);
+
+    if (existingTicket) {
+      const formattedExisting = {
+        id: existingTicket.refNumber,
+        rawId: existingTicket.id,
+        refNumber: existingTicket.refNumber,
+        title: existingTicket.title,
+        description: existingTicket.description,
+        category: existingTicket.category,
+        priority: existingTicket.priority,
+        status: existingTicket.status,
+        assignedTo: existingTicket.assignedTo,
+        attachmentUrl: existingTicket.attachmentUrl,
+        createdOn: existingTicket.createdAt.toLocaleDateString('en-IN'),
+        lastUpdated: existingTicket.updatedAt.toLocaleDateString('en-IN'),
+        createdAt: existingTicket.createdAt,
+        updatedAt: existingTicket.updatedAt,
+        reporter: {
+          name: citizenName,
+          email: citizenEmail,
+        },
+        messages: (existingTicket as any).messages || [],
+      };
+      return res.status(200).json({
+        success: true,
+        ticket: formattedExisting,
+        refNumber: existingTicket.refNumber,
+        id: existingTicket.id,
+      });
+    }
+
     const newTicket = await prisma.supportTicket.create({
       data: {
         refNumber,

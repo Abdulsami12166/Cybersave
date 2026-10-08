@@ -2893,7 +2893,7 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
                 senderId: f.user?.id || f.userId || 'citizen',
                 senderName: reporterName,
                 role: 'CITIZEN',
-                text: `Rating: ${'★'.repeat(f.rating)}${'☆'.repeat(Math.max(0, 5 - f.rating))} (${f.rating}/5)\nCategory: ${fb.improvementCategory || 'App Experience'}\n\nFeedback:\n"${f.feedbackText}"`,
+                text: `Rating: ${'★'.repeat(f.rating)}${'☆'.repeat(Math.max(0, 5 - f.rating))} (${f.rating}/5)\nCategory: ${(f as any).improvementCategory || 'App Experience'}\n\nFeedback:\n"${f.feedbackText}"`,
                 attachmentUrl: f.imageUrl || null,
                 time: f.createdAt ? new Date(f.createdAt).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' }) : 'Recent',
                 timestamp: f.createdAt ? new Date(f.createdAt).toISOString() : new Date().toISOString(),
@@ -2936,6 +2936,19 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
     },
   ) {
     try {
+      const fifteenSecondsAgo = new Date(Date.now() - 15000);
+      const existingTicket = await this.prisma.supportTicket.findFirst({
+        where: {
+          category: data.category,
+          createdAt: { gte: fifteenSecondsAgo },
+        },
+      }).catch(() => null);
+
+      if (existingTicket) {
+        client.emit('create_support_ticket_success');
+        return;
+      }
+
       const adminUser = await this.prisma.user.findFirst({
         where: { role: 'ADMIN' },
       });

@@ -3803,6 +3803,19 @@ export function setupSockets(io: Server) {
 
     socket.on('create_support_ticket', async (data: { title: string, category: string, priority: string, description: string, attachmentUrl?: string }) => {
       try {
+        const fifteenSecondsAgo = new Date(Date.now() - 15000);
+        const existingTicket = await prisma.supportTicket.findFirst({
+          where: {
+            category: data.category || 'Technical Support',
+            createdAt: { gte: fifteenSecondsAgo },
+          },
+        }).catch(() => null);
+
+        if (existingTicket) {
+          socket.emit('create_support_ticket_success');
+          return;
+        }
+
         const randomNum = Math.floor(100000 + Math.random() * 900000);
         const refNumber = `TKT-${randomNum}`;
         const newTicket = await prisma.supportTicket.create({

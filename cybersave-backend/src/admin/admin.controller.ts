@@ -316,6 +316,22 @@ export class AdminController {
       },
     ];
 
+    // Deduplication guard: if an identical ticket was submitted in the last 10 seconds, return the existing ticket
+    const tenSecondsAgo = new Date(Date.now() - 10000);
+    const existingTicket = await this.prisma.supportTicket.findFirst({
+      where: {
+        title: finalTitle,
+        category: category || 'General Support',
+        createdAt: { gte: tenSecondsAgo },
+        ...(resolvedUserId ? { userId: resolvedUserId } : {}),
+      },
+      include: { user: { include: { profile: true } } },
+    }).catch(() => null);
+
+    if (existingTicket) {
+      return { success: true, ticket: existingTicket };
+    }
+
     const ticket = await this.prisma.supportTicket.create({
       data: {
         refNumber: `TKT-${Math.floor(100000 + Math.random() * 900000)}`,

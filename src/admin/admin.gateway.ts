@@ -2942,6 +2942,19 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
     },
   ) {
     try {
+      const fifteenSecondsAgo = new Date(Date.now() - 15000);
+      const existingTicket = await this.prisma.supportTicket.findFirst({
+        where: {
+          category: data.category,
+          createdAt: { gte: fifteenSecondsAgo },
+        },
+      }).catch(() => null);
+
+      if (existingTicket) {
+        client.emit('create_support_ticket_success');
+        return;
+      }
+
       const adminUser = await this.prisma.user.findFirst({
         where: { role: 'ADMIN' },
       });
