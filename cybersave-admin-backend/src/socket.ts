@@ -3435,14 +3435,36 @@ export function setupSockets(io: Server) {
             message: newMsg,
             ticket: formatted
           });
+          let createdDbNotif: any = null;
+          try {
+            let notifUserId = (ticket.userId && /^[0-9a-fA-F]{24}$/.test(ticket.userId)) ? ticket.userId : null;
+            if (!notifUserId) {
+              const anyUser = await prisma.user.findFirst({ select: { id: true } });
+              notifUserId = anyUser?.id || null;
+            }
+            if (notifUserId) {
+              createdDbNotif = await prisma.notification.create({
+                data: {
+                  userId: notifUserId,
+                  title: `Support Message from ${senderName}`,
+                  body: `Ticket #${ticket.refNumber}: "${(newMsg.text || 'Citizen message').slice(0, 80)}"`,
+                  type: 'INFO',
+                  status: 'PENDING',
+                }
+              });
+              io.emit('notifications_updated');
+            }
+          } catch (_) {}
+
           io.emit('support_message_notification', {
-            id: `notif-${Date.now()}`,
+            id: createdDbNotif?.id || `notif-${Date.now()}`,
             ticketId: ticket.refNumber,
             ticketMongoId: ticket.id,
             senderName: senderName,
             text: newMsg.text,
             time: newMsg.time,
             timestamp: newMsg.timestamp,
+            path: `/support/${ticket.id}`,
           });
           io.emit('response_ticket_thread', formatted);
           io.emit('response_ticket_detail', formatted);

@@ -132,12 +132,18 @@ export class ServicesService implements OnModuleInit {
         new Promise<any[]>((resolve) => setTimeout(() => resolve([]), 3500)),
       ]);
 
-      // Return ONLY real database records. The previous hardcoded fallback
-      // (srv_aadhaar / srv_pan / ...) violated the status toggle contract: an
-      // admin could deactivate every real service and citizens would still see
-      // phantom active services that no longer exist in the database. An empty
-      // or slow database must render as an empty catalog — never fake data.
-      return services || [];
+      // Return ONLY real database records.
+      return (services || []).map((s: any) => {
+        const formElements = Array.isArray(s.formDataSchema)
+          ? s.formDataSchema
+          : (Array.isArray(s.formDataSchema?.formElements)
+            ? s.formDataSchema.formElements
+            : (Array.isArray(s.formElements) ? s.formElements : []));
+        return {
+          ...s,
+          formElements,
+        };
+      });
     } catch (error: any) {
       this.logger.warn(`Database query fallback for services: ${error?.message}`);
       return [];
@@ -146,16 +152,30 @@ export class ServicesService implements OnModuleInit {
 
   async getServiceByIdOrSlug(idOrSlug: string) {
     try {
+      let found: any = null;
       const isMongoId = /^[0-9a-fA-F]{24}$/.test(idOrSlug);
       if (isMongoId) {
-        const byId = await this.prisma.service.findUnique({ where: { id: idOrSlug } });
-        if (byId) return byId;
+        found = await this.prisma.service.findUnique({ where: { id: idOrSlug } });
       }
-      return await this.prisma.service.findFirst({
-        where: {
-          OR: [{ slug: idOrSlug }, { title: { equals: idOrSlug, mode: 'insensitive' } }],
-        },
-      });
+      if (!found) {
+        found = await this.prisma.service.findFirst({
+          where: {
+            OR: [{ slug: idOrSlug }, { title: { equals: idOrSlug, mode: 'insensitive' } }],
+          },
+        });
+      }
+      if (found) {
+        const formElements = Array.isArray(found.formDataSchema)
+          ? found.formDataSchema
+          : (Array.isArray(found.formDataSchema?.formElements)
+            ? found.formDataSchema.formElements
+            : (Array.isArray(found.formElements) ? found.formElements : []));
+        return {
+          ...found,
+          formElements,
+        };
+      }
+      return null;
     } catch (error) {
       return null;
     }

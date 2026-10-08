@@ -1201,9 +1201,21 @@ export function formatServiceResponse(s: any): any {
       })
     : [];
 
+  const formElementsList = Array.isArray(formDataSchema)
+    ? formDataSchema
+    : (Array.isArray(formDataSchema?.formElements)
+        ? formDataSchema.formElements
+        : (Array.isArray(s.formElements) ? s.formElements : []));
+
   return {
     ...s,
     name: s.title,
+    formElements: formElementsList,
+    formDataSchema: {
+      ...(typeof formDataSchema === 'object' && !Array.isArray(formDataSchema) ? formDataSchema : {}),
+      formElements: formElementsList,
+      configuration: config,
+    },
     serviceCode: config.serviceCode || s.slug || `SRV-${(s.id || '').slice(-6).toUpperCase()}`,
     serviceType: config.serviceType || 'Online',
     processingSla: config.processingSla || s.processingTime || '24 Hours',

@@ -1765,9 +1765,25 @@ app.post(['/api/v1/services', '/api/services'], async (req: any, res: any) => {
           { id: 5, name: 'Confirmation & Output', description: 'Citizen notification loop via email/SMS and digital receipt generation.', status: 'pending' },
         ];
 
-    const formElementsList = Array.isArray(data.formElements) 
+    const rawElements = Array.isArray(data.formElements) 
       ? data.formElements 
-      : (Array.isArray(data.formDataSchema?.formElements) ? data.formDataSchema.formElements : []);
+      : (Array.isArray(data.formDataSchema?.formElements) 
+          ? data.formDataSchema.formElements 
+          : (Array.isArray(data.formDataSchema) ? data.formDataSchema : []));
+
+    const formElementsList = rawElements.map((f: any, idx: number) => ({
+      id: f.id || `field_${idx + 1}_${(f.label || 'input').toLowerCase().replace(/[^a-z0-9]+/g, '_')}`,
+      label: f.label || `Field ${idx + 1}`,
+      type: f.type || 'Text Input',
+      placeholder: f.placeholder || '',
+      required: f.required !== false,
+      validationRule: f.validationRule || 'None',
+      options: typeof f.options === 'string' ? f.options : (Array.isArray(f.options) ? f.options.join(', ') : ''),
+      section: f.section || 'General',
+      hint: f.hint || '',
+      defaultValue: f.defaultValue || '',
+      order: typeof f.order === 'number' ? f.order : idx,
+    }));
 
     const configurationPayload = {
       serviceCode,
@@ -1855,9 +1871,27 @@ app.put(['/api/v1/services/:id', '/api/services/:id'], async (req: any, res: any
       ...(data.isDraft !== undefined ? { isDraft: Boolean(data.isDraft) } : {}),
     };
 
-    const formElementsList = Array.isArray(data.formElements)
+    const rawElements = Array.isArray(data.formElements)
       ? data.formElements
-      : (Array.isArray(data.formDataSchema?.formElements) ? data.formDataSchema.formElements : (Array.isArray(target.formDataSchema) ? target.formDataSchema : (target.formDataSchema as any)?.formElements || []));
+      : (Array.isArray(data.formDataSchema?.formElements)
+          ? data.formDataSchema.formElements
+          : (Array.isArray(data.formDataSchema)
+              ? data.formDataSchema
+              : (Array.isArray(target.formDataSchema) ? target.formDataSchema : (target.formDataSchema as any)?.formElements || [])));
+
+    const formElementsList = rawElements.map((f: any, idx: number) => ({
+      id: f.id || `field_${idx + 1}_${(f.label || 'input').toLowerCase().replace(/[^a-z0-9]+/g, '_')}`,
+      label: f.label || `Field ${idx + 1}`,
+      type: f.type || 'Text Input',
+      placeholder: f.placeholder || '',
+      required: f.required !== false,
+      validationRule: f.validationRule || 'None',
+      options: typeof f.options === 'string' ? f.options : (Array.isArray(f.options) ? f.options.join(', ') : ''),
+      section: f.section || 'General',
+      hint: f.hint || '',
+      defaultValue: f.defaultValue || '',
+      order: typeof f.order === 'number' ? f.order : idx,
+    }));
 
     const rawDocs = data.documents !== undefined ? data.documents : (data.requiredDocs !== undefined ? data.requiredDocs : target.requiredDocs);
     const normalizedDocs = Array.isArray(rawDocs) ? rawDocs.map((d: any, idx: number) => {
@@ -2389,14 +2423,36 @@ app.post(['/api/v1/support/user-reply', '/api/support/user-reply'], async (req: 
         message: newMsg,
         ticket: updated
       });
+      let createdDbNotif: any = null;
+      try {
+        let notifUserId = (ticket.userId && /^[0-9a-fA-F]{24}$/.test(ticket.userId)) ? ticket.userId : null;
+        if (!notifUserId) {
+          const anyUser = await prisma.user.findFirst({ select: { id: true } });
+          notifUserId = anyUser?.id || null;
+        }
+        if (notifUserId) {
+          createdDbNotif = await prisma.notification.create({
+            data: {
+              userId: notifUserId,
+              title: `Support Message from ${senderName}`,
+              body: `Ticket #${ticket.refNumber}: "${(newMsg.text || 'Citizen message').slice(0, 80)}"`,
+              type: 'INFO',
+              status: 'PENDING',
+            }
+          });
+          io.emit('notifications_updated');
+        }
+      } catch (_) {}
+
       io.emit('support_message_notification', {
-        id: `notif-${Date.now()}`,
+        id: createdDbNotif?.id || `notif-${Date.now()}`,
         ticketId: ticket.refNumber,
         ticketMongoId: ticket.id,
         senderName: senderName,
         text: newMsg.text,
         time: newMsg.time,
         timestamp: newMsg.timestamp,
+        path: `/support/${ticket.id}`,
       });
     }
 
