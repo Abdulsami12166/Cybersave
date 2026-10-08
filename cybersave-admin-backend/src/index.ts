@@ -2577,12 +2577,29 @@ app.post([
       }
     }
 
+    const effectiveFeedbackText = feedbackText || 'Smooth service experience on CyberSave application.';
+
+    // Strict deduplication check: if identical feedback submitted in the last 60 seconds, return existing without duplicating
+    const sixtySecondsAgo = new Date(Date.now() - 60000);
+    const existingFeedback = await prisma.feedback.findFirst({
+      where: {
+        ...(matchedUserId ? { userId: matchedUserId } : {}),
+        rating,
+        feedbackText: effectiveFeedbackText,
+        createdAt: { gte: sixtySecondsAgo },
+      },
+    }).catch(() => null);
+
+    if (existingFeedback) {
+      return res.status(200).json({ success: true, feedback: existingFeedback, duplicatePrevented: true });
+    }
+
     const feedback = await prisma.feedback.create({
       data: {
         userId: matchedUserId,
         rating,
         improvementCategory,
-        feedbackText: feedbackText || 'Smooth service experience on CyberSave application.',
+        feedbackText: effectiveFeedbackText,
         imageUrl,
       }
     });
@@ -4048,17 +4065,59 @@ app.get(['/api/admin/support/tickets', '/api/v1/support/tickets', '/api/support/
       }
     }
 
-    // Sort all tickets descending by createdAt
-    formatted.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+    // Deduplicate tickets to prevent duplicates from repeating
+    const deduplicated: any[] = [];
+    const seenTicketKeys = new Set<string>();
 
-    const totalTickets = formatted.length;
-    const openTickets = formatted.filter(t => t.status === 'OPEN').length;
-    const inProgress = formatted.filter(t => t.status === 'IN_PROGRESS').length;
-    const resolved = formatted.filter(t => t.status === 'RESOLVED').length;
+    for (const item of formatted) {
+      const ref = String(item.refNumber || item.id || '').toUpperCase();
+
+      // 1. Drop epoch-timestamped ghost tickets (TKT-17... or TKT-18...)
+      if (/^TKT-\d{13}$/.test(ref)) {
+        continue;
+      }
+
+      // 2. Drop duplicate citizen feedback
+      if (item.type === 'CITIZEN_FEEDBACK' || item.category === 'Citizen Feedback' || ref.startsWith('FDB-')) {
+        const repId = item.reporter?.id || item.user?.id || item.userId || 'cit';
+        const rating = item.rating || 5;
+        const textKey = (item.feedbackText || item.description || '').replace(/[^a-zA-Z0-9]/g, '').toLowerCase().slice(0, 30);
+        const fbKey = `fb_${repId}_${rating}_${textKey}`;
+        if (seenTicketKeys.has(fbKey)) {
+          continue;
+        }
+        seenTicketKeys.add(fbKey);
+      }
+
+      // 3. Drop tickets with identical reference number or ID
+      if (seenTicketKeys.has(ref)) {
+        continue;
+      }
+      seenTicketKeys.add(ref);
+
+      // 4. Drop duplicate support tickets (same reporter and same title)
+      const repId = item.reporter?.id || item.user?.id || item.userId || 'cit';
+      const titleKey = (item.title || '').replace(/[^a-zA-Z0-9]/g, '').toLowerCase().slice(0, 30);
+      const generalKey = `tkt_${repId}_${titleKey}`;
+      if (seenTicketKeys.has(generalKey)) {
+        continue;
+      }
+      seenTicketKeys.add(generalKey);
+
+      deduplicated.push(item);
+    }
+
+    // Sort all tickets descending by createdAt
+    deduplicated.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+
+    const totalTickets = deduplicated.length;
+    const openTickets = deduplicated.filter(t => t.status === 'OPEN').length;
+    const inProgress = deduplicated.filter(t => t.status === 'IN_PROGRESS').length;
+    const resolved = deduplicated.filter(t => t.status === 'RESOLVED').length;
 
     res.json({
       stats: { totalTickets, openTickets, inProgress, resolved },
-      tickets: formatted
+      tickets: deduplicated
     });
   } catch (e: any) {
     res.status(500).json({ error: e.message });

@@ -1191,13 +1191,34 @@ export class AdminController {
       : null;
     const citizenName = userObj?.profile?.fullName || (userObj?.email ? userObj.email.split('@')[0] : 'Citizen User');
 
+    const effectiveFeedbackText = cleanText || 'Smooth service experience on CyberSave application.';
+
+    // Strict deduplication check: if identical feedback submitted in the last 60 seconds, return existing without duplicating
+    const sixtySecondsAgo = new Date(Date.now() - 60000);
+    const existingFeedback = await (this.prisma as any).feedback.findFirst({
+      where: {
+        ...(resolvedUserId ? { userId: resolvedUserId } : {}),
+        rating: numericRating,
+        feedbackText: effectiveFeedbackText,
+        createdAt: { gte: sixtySecondsAgo },
+      },
+    }).catch(() => null);
+
+    if (existingFeedback) {
+      return {
+        success: true,
+        message: 'Feedback recorded successfully (duplicate prevented).',
+        feedback: existingFeedback,
+      };
+    }
+
     // 1. Create Feedback record in DB
     const feedback = await (this.prisma as any).feedback.create({
       data: {
         userId: resolvedUserId,
         rating: numericRating,
         improvementCategory: improvementCategory || 'App Experience',
-        feedbackText: cleanText || 'Smooth service experience on CyberSave application.',
+        feedbackText: effectiveFeedbackText,
         imageUrl: finalImageUrl,
       },
     });

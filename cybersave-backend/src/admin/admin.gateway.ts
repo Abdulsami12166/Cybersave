@@ -2903,12 +2903,54 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
         }
       }
 
-      formatted.sort((a, b) => new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime());
+      // Deduplicate tickets to prevent duplicates from repeating
+      const deduplicated: any[] = [];
+      const seenTicketKeys = new Set<string>();
 
-      const totalTickets = formatted.length;
-      const openTickets = formatted.filter((t) => t.status === 'OPEN').length;
-      const inProgress = formatted.filter((t) => t.status === 'IN_PROGRESS').length;
-      const resolved = formatted.filter((t) => t.status === 'RESOLVED').length;
+      for (const item of formatted) {
+        const ref = String(item.refNumber || item.id || '').toUpperCase();
+
+        // 1. Drop epoch-timestamped ghost tickets (TKT-17... or TKT-18...)
+        if (/^TKT-\d{13}$/.test(ref)) {
+          continue;
+        }
+
+        // 2. Drop duplicate citizen feedback
+        if (item.type === 'CITIZEN_FEEDBACK' || item.category === 'Citizen Feedback' || ref.startsWith('FDB-')) {
+          const repId = item.reporter?.id || item.user?.id || item.userId || 'cit';
+          const rating = item.rating || 5;
+          const textKey = (item.feedbackText || item.description || '').replace(/[^a-zA-Z0-9]/g, '').toLowerCase().slice(0, 30);
+          const fbKey = `fb_${repId}_${rating}_${textKey}`;
+          if (seenTicketKeys.has(fbKey)) {
+            continue;
+          }
+          seenTicketKeys.add(fbKey);
+        }
+
+        // 3. Drop tickets with identical reference number or ID
+        if (seenTicketKeys.has(ref)) {
+          continue;
+        }
+        seenTicketKeys.add(ref);
+
+        // 4. Drop duplicate support tickets (same reporter and same title)
+        const repId = item.reporter?.id || item.user?.id || item.userId || 'cit';
+        const titleKey = (item.title || '').replace(/[^a-zA-Z0-9]/g, '').toLowerCase().slice(0, 30);
+        const generalKey = `tkt_${repId}_${titleKey}`;
+        if (seenTicketKeys.has(generalKey)) {
+          continue;
+        }
+        seenTicketKeys.add(generalKey);
+
+        deduplicated.push(item);
+      }
+
+      deduplicated.sort((a, b) => new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime());
+
+      const totalTickets = deduplicated.length;
+      const openTickets = deduplicated.filter((t) => t.status === 'OPEN').length;
+      const inProgress = deduplicated.filter((t) => t.status === 'IN_PROGRESS').length;
+      const resolved = deduplicated.filter((t) => t.status === 'RESOLVED').length;
 
       client.emit('response_support_tickets', {
         stats: {
@@ -2917,7 +2959,7 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
           inProgress,
           resolved,
         },
-        tickets: formatted,
+        tickets: deduplicated,
       });
     } catch (e) {
       console.error('[AdminGateway] request_support_tickets error:', e);
@@ -2936,16 +2978,21 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
     },
   ) {
     try {
-      const fifteenSecondsAgo = new Date(Date.now() - 15000);
+      // 1. Strict deduplication check: if a ticket with this title or created recently exists, do NOT duplicate
+      const twoMinutesAgo = new Date(Date.now() - 120000);
       const existingTicket = await this.prisma.supportTicket.findFirst({
         where: {
-          category: data.category,
-          createdAt: { gte: fifteenSecondsAgo },
+          OR: [
+            { title: data?.title },
+            { title: { startsWith: data?.title || 'Unknown' } },
+            { createdAt: { gte: twoMinutesAgo } },
+          ],
         },
       }).catch(() => null);
 
       if (existingTicket) {
         client.emit('create_support_ticket_success');
+        this.server.emit('support_tickets_updated');
         return;
       }
 
@@ -2954,15 +3001,16 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
       });
       await this.prisma.supportTicket.create({
         data: {
-          refNumber: `TKT-${Date.now()}`,
-          title: `${data.title} - ${data.description}`.substring(0, 100),
-          category: data.category,
-          priority: data.priority,
+          refNumber: `TKT-${Math.floor(100000 + Math.random() * 900000)}`,
+          title: data?.title || 'Citizen Support Ticket',
+          category: data?.category || 'Technical Support',
+          priority: data?.priority || 'Medium',
           status: 'OPEN',
           userId: adminUser?.id || '',
         },
       });
       client.emit('create_support_ticket_success');
+      this.server.emit('support_tickets_updated');
     } catch (e) {
       console.error('[AdminGateway] create_support_ticket error:', e);
     }
