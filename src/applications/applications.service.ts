@@ -150,21 +150,16 @@ export class ApplicationsService {
       : null;
 
     if (!matchedUser) {
-      matchedUser = await this.prisma.user.findFirst({
-        include: { profile: true },
-      }).catch(() => null);
-    }
-
-    if (!matchedUser) {
-      const citizenEmail = dto.formData?.email || (validUserId && validUserId.includes('@') ? validUserId : `citizen_${Date.now()}@cybersave.app`);
+      const citizenEmail = dto.formData?.email || (validUserId && validUserId.includes('@') ? validUserId.trim().toLowerCase() : `citizen_${Date.now()}@cybersave.app`);
       matchedUser = await this.prisma.user.create({
         data: {
+          ...(validUserId && isMongoId(validUserId) ? { id: validUserId } : {}),
           email: citizenEmail,
           phone: dto.formData?.phone || (validUserId && /^\+?[0-9]{10,13}$/.test(validUserId) ? validUserId : '+91 98765 43210'),
           role: 'USER',
           profile: {
             create: {
-              fullName: dto.formData?.fullName || 'Citizen Applicant',
+              fullName: dto.formData?.fullName || dto.formData?.applicantName || 'Citizen Applicant',
               email: citizenEmail,
               phone: dto.formData?.phone || '+91 98765 43210',
               state: dto.formData?.stateName || dto.formData?.state || 'Delhi',
@@ -500,21 +495,9 @@ export class ApplicationsService {
       }
     }
 
-    // Fallback: Return latest active applications so mobile citizen always sees real operational data
-    try {
-      const fallbackApps = await Promise.race([
-        this.prisma.application.findMany({
-          where: whereClause,
-          orderBy: [{ submittedAt: 'desc' }, { id: 'desc' }],
-          take: 10,
-        }),
-        new Promise<any[]>((resolve) => setTimeout(() => resolve([]), 6000)),
-      ]);
-      const enrichedFallback = await enrichAppsFast(fallbackApps);
-      return sanitizeApps(enrichedFallback);
-    } catch {
-      return [];
-    }
+    // STRICT DATA ISOLATION: A user query must ONLY return applications belonging to this user!
+    // Never fall back to returning another citizen's applications.
+    return [];
   }
 
   async getApplicationById(id: string) {
