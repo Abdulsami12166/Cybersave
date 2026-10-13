@@ -29,18 +29,33 @@ export class UsersService {
 
     await this.prisma.user.update({
       where: { id: userId },
-      data: { deletedAt: new Date() },
+      data: {
+        deletedAt: new Date(),
+        status: 'DELETED',
+        isOnline: false,
+      },
     });
 
     // Record audit log
     await this.prisma.auditLog.create({
       data: {
         userId,
-        action: 'USER_SOFT_DELETE',
-        details: 'User account soft deleted by owner',
+        action: 'USER_DELETED',
+        details: 'User account permanently deleted by owner from mobile settings',
       },
     });
 
-    return { message: 'Account successfully deactivated.' };
+    try {
+      const { AdminGateway } = require('../admin/admin.gateway');
+      AdminGateway.broadcast('user_status_changed', {
+        userId,
+        status: 'DELETED',
+        isOnline: false,
+        lastSeenAt: new Date().toISOString(),
+      });
+      AdminGateway.broadcast('users_updated');
+    } catch (_) {}
+
+    return { message: 'Account successfully deleted.' };
   }
 }

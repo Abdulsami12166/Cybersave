@@ -90,6 +90,8 @@ model Profile {
   dob         String?
   gender      String?
   addresses   Json?
+  aadhaarNumber String?
+  panNumber     String?
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 

@@ -12,12 +12,22 @@ export class ProfileService {
   ) {}
 
   async update(userId: string, updateProfileDto: UpdateProfileDto) {
+    const profileData: any = { ...updateProfileDto };
+    delete profileData.aadhaar;
+    delete profileData.pan;
+    if (updateProfileDto.aadhaarNumber || updateProfileDto.aadhaar) {
+      profileData.aadhaarNumber = (updateProfileDto.aadhaarNumber || updateProfileDto.aadhaar || '').trim();
+    }
+    if (updateProfileDto.panNumber || updateProfileDto.pan) {
+      profileData.panNumber = (updateProfileDto.panNumber || updateProfileDto.pan || '').trim();
+    }
+
     const updatedProfile = await this.prisma.profile.upsert({
       where: { userId },
-      update: updateProfileDto,
+      update: profileData,
       create: {
         userId,
-        ...updateProfileDto,
+        ...profileData,
       },
     });
 
@@ -51,11 +61,15 @@ export class ProfileService {
       AdminGateway.broadcast('user_updated', {
         userId,
         profile: updatedProfile,
+        aadhaar: updatedProfile.aadhaarNumber,
+        pan: updatedProfile.panNumber,
       });
       AdminGateway.broadcast('user_detail_updated', {
         ...updatedProfile,
         id: userId,
         dbId: userId,
+        aadhaar: updatedProfile.aadhaarNumber,
+        pan: updatedProfile.panNumber,
       });
       AdminGateway.broadcast('users_updated');
     } catch (e) {}

@@ -589,14 +589,12 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
           id: `CIT-${u.id.substring(0, 5).toUpperCase()}`,
           dbId: u.id,
           fullName: u.profile?.fullName || (u.email ? u.email.split('@')[0] : 'Citizen'),
-          aadhaar: u.profile?.dob
-            ? '****' + Math.floor(1000 + Math.random() * 9000)
-            : 'Not Given',
+          aadhaar: u.profile?.aadhaarNumber || (u.profile?.dob ? `•••• •••• ${u.id.slice(-4)}` : 'Not Given'),
           mobile: u.phone || u.profile?.phone || 'N/A',
           email: u.email || 'N/A',
           district: u.profile?.district || 'Central Delhi, DL',
           servicesUsed: u.applications?.length || 0,
-          status: u.status === 'BLOCKED' ? 'Blocked' : (u.status || 'Verified'),
+          status: (u.deletedAt || u.status === 'DELETED') ? 'Deleted' : (u.status === 'BLOCKED' ? 'Blocked' : (u.status || 'Verified')),
           avatarUrl: u.profile?.avatarUrl || null,
           isOnline,
           lastActive,
@@ -1495,7 +1493,7 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
       state,
       pinCode,
       joinedDate: u.createdAt ? new Date(u.createdAt).toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' }) : 'Joined recently',
-      status: u.status === 'BLOCKED' ? 'Blocked' : (u.status || 'Verified'),
+      status: (u.deletedAt || u.status === 'DELETED') ? 'Deleted' : (u.status === 'BLOCKED' ? 'Blocked' : (u.status || 'Verified')),
       avatarUrl: profile.avatarUrl || null,
       isOnline,
       lastActive,
@@ -4022,23 +4020,41 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
     @MessageBody() data: { userId?: string },
   ) {
     try {
-      let resolvedUserId = data?.userId;
+      let resolvedUserId = (data?.userId || '').trim();
       if (!resolvedUserId) {
-        resolvedUserId = AdminGateway.socketToUser.get(client.id);
+        resolvedUserId = AdminGateway.socketToUser.get(client.id) || '';
       }
       if (!resolvedUserId) {
         client.emit('response_user_tickets', { success: true, tickets: [] });
         return;
       }
 
+      const isMongoId = (s?: string) => typeof s === 'string' && /^[0-9a-fA-F]{24}$/.test(s);
+      let targetMongoId = '';
+      if (isMongoId(resolvedUserId)) {
+        targetMongoId = resolvedUserId;
+      } else {
+        const userRec = await this.prisma.user.findFirst({
+          where: { OR: [{ email: resolvedUserId }, { phone: resolvedUserId }] },
+          select: { id: true },
+        }).catch(() => null);
+        if (userRec?.id) targetMongoId = userRec.id;
+      }
+
+      if (!targetMongoId) {
+        client.emit('response_user_tickets', { success: true, tickets: [] });
+        return;
+      }
+
       const tickets = await this.prisma.supportTicket.findMany({
-        where: { userId: resolvedUserId },
+        where: { userId: targetMongoId },
         orderBy: { createdAt: 'desc' },
       });
 
       client.emit('response_user_tickets', { success: true, tickets });
     } catch (err: any) {
       console.error('[AdminGateway] request_user_tickets error:', err);
+      client.emit('response_user_tickets', { success: true, tickets: [] });
     }
   }
 }

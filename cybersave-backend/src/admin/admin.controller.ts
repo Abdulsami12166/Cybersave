@@ -1034,8 +1034,11 @@ export class AdminController {
       if (userRecord) resolvedUserId = userRecord.id;
     }
 
-    const orClauses: any[] = [{ userId: resolvedUserId }];
-    if (userRecord?.id && userRecord.id !== resolvedUserId) {
+    const orClauses: any[] = [];
+    if (isMongoId(resolvedUserId)) {
+      orClauses.push({ userId: resolvedUserId });
+    }
+    if (userRecord?.id && userRecord.id !== resolvedUserId && isMongoId(userRecord.id)) {
       orClauses.push({ userId: userRecord.id });
     }
     if (userRecord?.email) {
@@ -1043,6 +1046,10 @@ export class AdminController {
     }
     if (userRecord?.phone) {
       orClauses.push({ user: { phone: userRecord.phone } });
+    }
+
+    if (orClauses.length === 0) {
+      return { success: true, tickets: [], count: 0 };
     }
 
     const tickets = await this.prisma.supportTicket.findMany({
@@ -1841,7 +1848,9 @@ export class AdminController {
       throw new NotFoundException(`Citizen ${id} not found`);
     }
 
-    const { fullName, phone, email, address, district, state, pinCode, dob, gender, status } = body;
+    const { fullName, phone, email, address, district, state, pinCode, dob, gender, status, aadhaar, pan, aadhaarNumber, panNumber } = body;
+    const finalAadhaar = aadhaarNumber || aadhaar;
+    const finalPan = panNumber || pan;
 
     // Update user record
     await this.prisma.user.update({
@@ -1867,6 +1876,8 @@ export class AdminController {
           pinCode: pinCode ?? u.profile.pinCode,
           dob: dob ?? u.profile.dob,
           gender: gender ?? u.profile.gender,
+          aadhaarNumber: finalAadhaar !== undefined ? finalAadhaar : u.profile.aadhaarNumber,
+          panNumber: finalPan !== undefined ? finalPan : u.profile.panNumber,
         },
       });
     } else {
@@ -1882,6 +1893,8 @@ export class AdminController {
           pinCode: pinCode || '',
           dob: dob || '',
           gender: gender || '',
+          aadhaarNumber: finalAadhaar || '',
+          panNumber: finalPan || '',
         },
       });
     }

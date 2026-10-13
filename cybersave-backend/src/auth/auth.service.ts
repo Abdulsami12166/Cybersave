@@ -565,7 +565,23 @@ export class AuthService {
   async getLoginHistory(userId?: string) {
     try {
       const logs = await this.prisma.auditLog.findMany({
-        where: userId && /^[0-9a-fA-F]{24}$/.test(userId) ? { userId } : {},
+        where: {
+          ...(userId && /^[0-9a-fA-F]{24}$/.test(userId) ? { userId } : {}),
+          action: {
+            in: [
+              'USER_LOGIN',
+              'USER_LOGOUT',
+              'LOGIN',
+              'LOGOUT',
+              'BIOMETRIC_LOGIN',
+              'OTP_LOGIN',
+              'APP_OPENED',
+              'APP_CLOSED',
+              'SESSION_START',
+              'SESSION_END',
+            ],
+          },
+        },
         orderBy: { createdAt: 'desc' },
         take: 30,
       });

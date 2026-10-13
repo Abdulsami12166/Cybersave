@@ -10,7 +10,7 @@ import { JwtAuthGuard } from '../common/guards/jwt.guard';
 import { GetUser } from '../common/decorators/user.decorator';
 
 @ApiTags('User Account')
-@Controller('api/v1/user')
+@Controller(['api/v1/user', 'user', 'api/v1/auth', 'auth'])
 @UseGuards(JwtAuthGuard)
 @ApiBearerAuth()
 export class UsersController {
@@ -24,9 +24,9 @@ export class UsersController {
     return this.usersService.findOne(userId);
   }
 
-  @Delete('deactivate')
-  @ApiOperation({ summary: 'Soft delete current user account' })
-  @ApiResponse({ status: 200, description: 'Account deactivated' })
+  @Delete(['deactivate', 'account'])
+  @ApiOperation({ summary: 'Delete current user account permanently' })
+  @ApiResponse({ status: 200, description: 'Account deleted' })
   @ApiResponse({ status: 401, description: 'Unauthorized' })
   async deactivate(@GetUser('sub') userId: string) {
     return this.usersService.softDelete(userId);
