@@ -1484,13 +1484,13 @@ export function setupSockets(io: Server) {
           return sub >= today;
         }).length;
 
-        const submitted = allDbApps.filter(a => String(a.status || '').toUpperCase() === 'SUBMITTED').length;
-        const underReview = allDbApps.filter(a => ['VERIFYING', 'PENDING', 'UNDER_REVIEW', 'IN_REVIEW', 'REVIEW'].includes(String(a.status || '').toUpperCase())).length;
+        const submitted = totalApps;
+        const underReview = allDbApps.filter(a => ['SUBMITTED', 'VERIFYING', 'PENDING', 'UNDER_REVIEW', 'IN_REVIEW', 'REVIEW'].includes(String(a.status || '').toUpperCase())).length;
         const processing = allDbApps.filter(a => ['IN_PROGRESS', 'PROCESSING'].includes(String(a.status || '').toUpperCase())).length;
-        const approved = allDbApps.filter(a => String(a.status || '').toUpperCase() === 'APPROVED').length;
-        const completedTotal = allDbApps.filter(a => String(a.status || '').toUpperCase() === 'COMPLETED').length;
-        const pending = submitted + underReview;
+        const approved = allDbApps.filter(a => ['APPROVED', 'COMPLETED'].includes(String(a.status || '').toUpperCase())).length;
         const completedToday = allDbApps.filter(a => ['APPROVED', 'COMPLETED'].includes(String(a.status || '').toUpperCase()) && new Date(a.updatedAt || a.submittedAt || Date.now()) >= today).length;
+        const completedTotal = completedToday;
+        const pending = underReview;
 
         const apps = await fetchApplicationsWithUsers({}, limit, skip);
 
@@ -1522,7 +1522,7 @@ export function setupSockets(io: Server) {
 
         socket.emit('response_applications_data', {
           stats: { totalApps, todayApps, pending, processing, completed: completedToday },
-          pipeline: { submitted, underReview, processing, approved, completed: completedTotal },
+          pipeline: { submitted, underReview, processing, approved, completed: completedToday },
           applications: formattedApps
         });
       } catch(e: any) {

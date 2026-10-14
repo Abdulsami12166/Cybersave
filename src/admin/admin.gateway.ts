@@ -1568,20 +1568,18 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
 
       const totalApps = allApps.length;
       const todayApps = allApps.filter((a) => new Date(a.submittedAt) >= today).length;
-      const submitted = allApps.filter((a) => String(a.status || '').toUpperCase() === 'SUBMITTED').length;
-      const underReview = allApps.filter((a) => ['VERIFYING', 'PENDING', 'UNDER_REVIEW', 'IN_REVIEW', 'REVIEW'].includes(String(a.status || '').toUpperCase()) && String(a.status || '').toUpperCase() !== 'SUBMITTED').length;
+      const submitted = totalApps; // submitted = no of applications who submits application
+      const underReview = allApps.filter((a) => ['SUBMITTED', 'VERIFYING', 'PENDING', 'UNDER_REVIEW', 'IN_REVIEW', 'REVIEW'].includes(String(a.status || '').toUpperCase())).length; // under review = pending review
       const processing = allApps.filter((a) => ['IN_PROGRESS', 'PROCESSING'].includes(String(a.status || '').toUpperCase())).length;
-      const approved = allApps.filter((a) => String(a.status || '').toUpperCase() === 'APPROVED').length;
-      const completed = allApps.filter((a) => String(a.status || '').toUpperCase() === 'COMPLETED').length;
-      const pending = submitted + underReview;
-
-      // Completed Today: Regardless of which date the application arrived, if approved or completed today, count it dynamically!
+      const approved = allApps.filter((a) => ['APPROVED', 'COMPLETED'].includes(String(a.status || '').toUpperCase())).length;
       const completedToday = allApps.filter((a) => {
         const st = String(a.status || '').toUpperCase();
         if (st !== 'APPROVED' && st !== 'COMPLETED') return false;
         const d = new Date(a.updatedAt || a.submittedAt);
         return d >= today;
       }).length;
+      const completed = completedToday; // approved application today how much application approved = completed
+      const pending = underReview;
 
       const userIds: string[] = Array.from(new Set(allApps.map((a) => a.userId).filter(Boolean))) as string[];
       const [users, profiles] = await Promise.all([
