@@ -656,7 +656,7 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
         const cleanId = realId.startsWith('CIT-') ? realId.replace('CIT-', '').toUpperCase() : realId.toUpperCase();
         const candidates = await this.prisma.user.findMany({
           where: { role: 'USER' },
-          select: { id: true, email: true, phone: true },
+          include: { profile: true },
         });
 
         const match = candidates.find((x) => {
@@ -665,10 +665,16 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
             x.id === realId ||
             xId === cleanId ||
             xId.endsWith(cleanId) ||
+            xId.slice(-6) === cleanId ||
+            xId.slice(-5) === cleanId ||
             xId.startsWith(cleanId) ||
             xId.includes(cleanId) ||
+            (cleanId.length >= 5 && xId.includes(cleanId)) ||
             (x.email && x.email.toLowerCase() === realId.toLowerCase()) ||
-            (x.phone && x.phone === realId)
+            (x.phone && (x.phone === realId || x.phone.replace(/\D/g, '').endsWith(cleanId.replace(/\D/g, '')))) ||
+            (x.profile?.phone && (x.profile.phone === realId || x.profile.phone.replace(/\D/g, '').endsWith(cleanId.replace(/\D/g, '')))) ||
+            (x.profile?.email && x.profile.email.toLowerCase() === realId.toLowerCase()) ||
+            (x.profile?.fullName && x.profile.fullName.toLowerCase() === realId.toLowerCase())
           );
         });
 
@@ -683,13 +689,6 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
       if (!u) {
         u = await this.prisma.user.findFirst({
           where: { OR: [{ id: realId }, { email: realId }, { phone: realId }] },
-          include: userInclude,
-        });
-      }
-
-      if (!u) {
-        u = await this.prisma.user.findFirst({
-          where: { role: 'USER' },
           include: userInclude,
         });
       }
@@ -737,8 +736,12 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
             xId.slice(-5) === cleanId ||
             xId.startsWith(cleanId) ||
             xId.includes(cleanId) ||
+            (cleanId.length >= 5 && xId.includes(cleanId)) ||
             (x.email && x.email.toLowerCase() === id.toLowerCase()) ||
-            (x.phone && x.phone === id)
+            (x.phone && (x.phone === id || x.phone.replace(/\D/g, '').endsWith(cleanId.replace(/\D/g, '')))) ||
+            (x.profile?.phone && (x.profile.phone === id || x.profile.phone.replace(/\D/g, '').endsWith(cleanId.replace(/\D/g, '')))) ||
+            (x.profile?.email && x.profile.email.toLowerCase() === id.toLowerCase()) ||
+            (x.profile?.fullName && x.profile.fullName.toLowerCase() === id.toLowerCase())
           );
         }) || null;
       }

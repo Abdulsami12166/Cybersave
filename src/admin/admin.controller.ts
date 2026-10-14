@@ -1761,7 +1761,7 @@ export class AdminController {
       const cleanId = id.startsWith('CIT-') ? id.replace('CIT-', '').toUpperCase() : id.toUpperCase();
       const candidates = await this.prisma.user.findMany({
         where: { role: 'USER' },
-        select: { id: true, email: true, phone: true },
+        include: { profile: true },
       });
 
       const match = candidates.find((x) => {
@@ -1770,10 +1770,16 @@ export class AdminController {
           x.id === id ||
           xId === cleanId ||
           xId.endsWith(cleanId) ||
+          xId.slice(-6) === cleanId ||
+          xId.slice(-5) === cleanId ||
           xId.startsWith(cleanId) ||
           xId.includes(cleanId) ||
+          (cleanId.length >= 5 && xId.includes(cleanId)) ||
           (x.email && x.email.toLowerCase() === id.toLowerCase()) ||
-          (x.phone && x.phone === id)
+          (x.phone && (x.phone === id || x.phone.replace(/\D/g, '').endsWith(cleanId.replace(/\D/g, '')))) ||
+          (x.profile?.phone && (x.profile.phone === id || x.profile.phone.replace(/\D/g, '').endsWith(cleanId.replace(/\D/g, '')))) ||
+          (x.profile?.email && x.profile.email.toLowerCase() === id.toLowerCase()) ||
+          (x.profile?.fullName && x.profile.fullName.toLowerCase() === id.toLowerCase())
         );
       });
 
@@ -1790,13 +1796,6 @@ export class AdminController {
         where: {
           OR: [{ id }, { email: id }, { phone: id }],
         },
-        include: userInclude,
-      });
-    }
-
-    if (!u) {
-      u = await this.prisma.user.findFirst({
-        where: { role: 'USER' },
         include: userInclude,
       });
     }
