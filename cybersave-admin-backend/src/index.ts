@@ -1282,13 +1282,19 @@ app.get(['/api/admin/users/:id', '/api/v1/users/:id'], async (req: any, res: any
 app.put(['/api/admin/users/:id', '/api/v1/users/:id'], async (req: any, res: any) => {
   try {
     const id = req.params.id;
-    const { fullName, phone, email, address, district, state, pinCode, dob, gender } = req.body;
+    const { fullName, phone, email, address, district, state, pinCode, dob, gender, fatherName, aadhaar, aadhaarNumber, pan, panNumber } = req.body;
     let u = await findUserByIdOrCit(id);
     if (!u) return res.status(404).json({ error: 'Citizen not found' });
 
+    const finalPhone = phone || req.body.mobile || u.phone;
+    const finalEmail = email || u.email;
+    const finalFatherName = fatherName !== undefined ? fatherName : (req.body.father_name !== undefined ? req.body.father_name : undefined);
+    const finalAadhaar = aadhaarNumber || aadhaar;
+    const finalPan = panNumber || pan;
+
     await prisma.user.update({
       where: { id: u.id },
-      data: { phone: phone || u.phone, email: email || u.email }
+      data: { phone: finalPhone, email: finalEmail }
     });
 
     const existingProf = await prisma.profile.findFirst({ where: { userId: u.id } });
@@ -1297,14 +1303,17 @@ app.put(['/api/admin/users/:id', '/api/v1/users/:id'], async (req: any, res: any
         where: { id: existingProf.id },
         data: {
           fullName: fullName ?? existingProf.fullName,
-          phone: phone ?? existingProf.phone,
-          email: email ?? existingProf.email,
+          phone: finalPhone ?? existingProf.phone,
+          email: finalEmail ?? existingProf.email,
           address: address ?? existingProf.address,
           district: district ?? existingProf.district,
           state: state ?? existingProf.state,
           pinCode: pinCode ?? existingProf.pinCode,
           dob: dob ?? existingProf.dob,
           gender: gender ?? existingProf.gender,
+          fatherName: finalFatherName !== undefined ? finalFatherName : (existingProf as any).fatherName,
+          aadhaarNumber: finalAadhaar !== undefined ? finalAadhaar : (existingProf as any).aadhaarNumber,
+          panNumber: finalPan !== undefined ? finalPan : (existingProf as any).panNumber,
         }
       });
     } else {
@@ -1312,20 +1321,33 @@ app.put(['/api/admin/users/:id', '/api/v1/users/:id'], async (req: any, res: any
         data: {
           userId: u.id,
           fullName: fullName || 'Citizen User',
-          phone: phone || u.phone || '',
-          email: email || u.email || '',
+          phone: finalPhone || '',
+          email: finalEmail || '',
           address: address || '',
           district: district || '',
           state: state || '',
           pinCode: pinCode || '',
           dob: dob || '',
           gender: gender || '',
+          fatherName: finalFatherName || '',
+          aadhaarNumber: finalAadhaar || '',
+          panNumber: finalPan || '',
         }
       });
     }
 
+    invalidateCitizenDetailsCache(u.id);
+    invalidateCitizensListCache();
+
     const updated = await fetchCitizenFullDetails(u.id);
-    res.json({ success: true, user: updated });
+
+    io.emit('response_user_detail', updated);
+    io.emit('user_detail_updated', updated);
+    io.emit('user_profile_updated', { userId: u.id, ...updated });
+    io.emit('user_updated', { userId: u.id, ...updated });
+    io.emit('users_updated');
+
+    res.json({ success: true, user: updated, citizen: updated });
   } catch (e: any) {
     res.status(500).json({ error: e.message });
   }

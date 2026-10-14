@@ -708,17 +708,30 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
     @MessageBody() data: any,
   ) {
     try {
-      const { id, fullName, phone, email, address, district, state, pinCode, dob, gender, status } = data;
+      const { id, fullName, phone, email, address, district, state, pinCode, dob, gender, status, fatherName, aadhaar, aadhaarNumber, pan, panNumber } = data;
       const isMongoId = (s?: string) => typeof s === 'string' && /^[0-9a-fA-F]{24}$/.test(s);
       let u: any = null;
 
       if (isMongoId(id)) {
         u = await this.prisma.user.findUnique({ where: { id }, include: { profile: true } });
       }
-      if (!u && id?.startsWith('CIT-')) {
-        const shortId = id.replace('CIT-', '').toUpperCase();
+      if (!u && id) {
+        const cleanId = id.startsWith('CIT-') ? id.replace('CIT-', '').toUpperCase() : id.toUpperCase();
         const allUsers = await this.prisma.user.findMany({ where: { role: 'USER' }, include: { profile: true } });
-        u = allUsers.find((x) => x.id.substring(0, 5).toUpperCase() === shortId) || null;
+        u = allUsers.find((x) => {
+          const xId = x.id.toUpperCase();
+          return (
+            x.id === id ||
+            xId === cleanId ||
+            xId.endsWith(cleanId) ||
+            xId.slice(-6) === cleanId ||
+            xId.slice(-5) === cleanId ||
+            xId.startsWith(cleanId) ||
+            xId.includes(cleanId) ||
+            (x.email && x.email.toLowerCase() === id.toLowerCase()) ||
+            (x.phone && x.phone === id)
+          );
+        }) || null;
       }
       if (!u && id) {
         u = await this.prisma.user.findFirst({ where: { OR: [{ id }, { email: id }, { phone: id }] }, include: { profile: true } });
@@ -729,11 +742,17 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
         return;
       }
 
+      const finalPhone = phone || data.mobile || u.phone;
+      const finalEmail = email || u.email;
+      const finalFatherName = fatherName !== undefined ? fatherName : (data.father_name !== undefined ? data.father_name : undefined);
+      const finalAadhaar = aadhaarNumber || aadhaar;
+      const finalPan = panNumber || pan;
+
       await this.prisma.user.update({
         where: { id: u.id },
         data: {
-          email: email || u.email,
-          phone: phone || u.phone,
+          email: finalEmail,
+          phone: finalPhone,
           status: status || u.status,
         },
       });
@@ -743,14 +762,17 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
           where: { id: u.profile.id },
           data: {
             fullName: fullName ?? u.profile.fullName,
-            phone: phone ?? u.profile.phone,
-            email: email ?? u.profile.email,
+            phone: finalPhone ?? u.profile.phone,
+            email: finalEmail ?? u.profile.email,
             address: address ?? u.profile.address,
             district: district ?? u.profile.district,
             state: state ?? u.profile.state,
             pinCode: pinCode ?? u.profile.pinCode,
             dob: dob ?? u.profile.dob,
             gender: gender ?? u.profile.gender,
+            fatherName: finalFatherName !== undefined ? finalFatherName : (u.profile as any).fatherName,
+            aadhaarNumber: finalAadhaar !== undefined ? finalAadhaar : (u.profile as any).aadhaarNumber,
+            panNumber: finalPan !== undefined ? finalPan : (u.profile as any).panNumber,
           },
         });
       } else {
@@ -758,14 +780,17 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
           data: {
             userId: u.id,
             fullName: fullName || 'Citizen User',
-            phone: phone || u.phone || '',
-            email: email || u.email || '',
+            phone: finalPhone || '',
+            email: finalEmail || '',
             address: address || '',
             district: district || '',
             state: state || '',
             pinCode: pinCode || '',
             dob: dob || '',
             gender: gender || '',
+            fatherName: finalFatherName || '',
+            aadhaarNumber: finalAadhaar || '',
+            panNumber: finalPan || '',
           },
         });
       }
@@ -796,7 +821,10 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
       client.emit('update_citizen_success', formatted);
       AdminGateway.broadcast('response_user_detail', formatted);
       AdminGateway.broadcast('user_detail_updated', formatted);
-    } catch (e) {
+      AdminGateway.broadcast('user_profile_updated', { userId: u.id, ...formatted });
+      AdminGateway.broadcast('user_updated', { userId: u.id, profile: updated?.profile, ...formatted });
+      AdminGateway.broadcast('users_updated');
+    } catch (e: any) {
       console.error('[AdminGateway] update_citizen_profile error:', e);
       client.emit('update_citizen_error', { message: e.message });
     }
@@ -1010,7 +1038,7 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
     let dob = profile.dob || u.aadhaarDocs?.[0]?.dateOfBirth || firstAppForm.dob || '';
     let gender = profile.gender || u.aadhaarDocs?.[0]?.gender || firstAppForm.gender || '';
     let aadhaar = profile.aadhaarNumber || u.aadhaarDocs?.[0]?.referenceId || firstAppForm.aadhaar || firstAppForm.aadhaarNumber || '';
-    let pan = profile.pan || firstAppForm.pan || firstAppForm.panNumber || '';
+    let pan = profile.panNumber || profile.pan || firstAppForm.pan || firstAppForm.panNumber || '';
     let mobile = u.phone || profile.phone || firstAppForm.phone || '';
     let email = u.email || profile.email || firstAppForm.email || '';
     let address = profile.address || u.aadhaarDocs?.[0]?.address || firstAppForm.address || '';
@@ -1486,7 +1514,10 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
       gender,
       aadhaar,
       pan,
+      aadhaarNumber: profile.aadhaarNumber || aadhaar,
+      panNumber: profile.panNumber || pan,
       mobile,
+      phone: mobile,
       email,
       address,
       district,

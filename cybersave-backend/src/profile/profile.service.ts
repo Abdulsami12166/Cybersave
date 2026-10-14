@@ -37,6 +37,7 @@ export class ProfileService {
       'pinCode',
       'dob',
       'gender',
+      'fatherName',
       'aadhaarNumber',
       'panNumber',
       'addresses',
@@ -98,6 +99,12 @@ export class ProfileService {
     // Real-time broadcast to Admin Panel & Mobile
     try {
       AdminGateway.broadcast('user_updated', {
+        userId: targetUserId,
+        profile: updatedProfile,
+        aadhaar: updatedProfile.aadhaarNumber,
+        pan: updatedProfile.panNumber,
+      });
+      AdminGateway.broadcast('user_profile_updated', {
         userId: targetUserId,
         profile: updatedProfile,
         aadhaar: updatedProfile.aadhaarNumber,

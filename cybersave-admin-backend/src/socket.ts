@@ -1132,7 +1132,7 @@ export function setupSockets(io: Server) {
 
     socket.on('update_citizen_profile', async (data: any) => {
       try {
-        const { id, fullName, phone, email, address, district, state, pinCode, dob, gender, status } = data;
+        const { id, fullName, phone, email, address, district, state, pinCode, dob, gender, status, fatherName, aadhaar, aadhaarNumber, pan, panNumber } = data;
         let u = await findUserByIdOrCit(id);
 
         if (!u) {
@@ -1140,11 +1140,17 @@ export function setupSockets(io: Server) {
           return;
         }
 
+        const finalPhone = phone || data.mobile || u.phone;
+        const finalEmail = email || u.email;
+        const finalFatherName = fatherName !== undefined ? fatherName : (data.father_name !== undefined ? data.father_name : undefined);
+        const finalAadhaar = aadhaarNumber || aadhaar;
+        const finalPan = panNumber || pan;
+
         await prisma.user.update({
           where: { id: u.id },
           data: {
-            email: email || u.email,
-            phone: phone || u.phone,
+            email: finalEmail,
+            phone: finalPhone,
             status: status || u.status,
           },
         });
@@ -1155,14 +1161,17 @@ export function setupSockets(io: Server) {
             where: { id: existingProf.id },
             data: {
               fullName: fullName ?? existingProf.fullName,
-              phone: phone ?? existingProf.phone,
-              email: email ?? existingProf.email,
+              phone: finalPhone ?? existingProf.phone,
+              email: finalEmail ?? existingProf.email,
               address: address ?? existingProf.address,
               district: district ?? existingProf.district,
               state: state ?? existingProf.state,
               pinCode: pinCode ?? existingProf.pinCode,
               dob: dob ?? existingProf.dob,
               gender: gender ?? existingProf.gender,
+              fatherName: finalFatherName !== undefined ? finalFatherName : (existingProf as any).fatherName,
+              aadhaarNumber: finalAadhaar !== undefined ? finalAadhaar : (existingProf as any).aadhaarNumber,
+              panNumber: finalPan !== undefined ? finalPan : (existingProf as any).panNumber,
             },
           });
         } else {
@@ -1170,14 +1179,17 @@ export function setupSockets(io: Server) {
             data: {
               userId: u.id,
               fullName: fullName || 'Citizen User',
-              phone: phone || u.phone || '',
-              email: email || u.email || '',
+              phone: finalPhone || '',
+              email: finalEmail || '',
               address: address || '',
               district: district || '',
               state: state || '',
               pinCode: pinCode || '',
               dob: dob || '',
               gender: gender || '',
+              fatherName: finalFatherName || '',
+              aadhaarNumber: finalAadhaar || '',
+              panNumber: finalPan || '',
             },
           });
         }
@@ -1190,14 +1202,20 @@ export function setupSockets(io: Server) {
           },
         }).catch(() => null);
 
+        invalidateCitizenDetailsCache(u.id);
+        invalidateCitizensListCache();
+
         const formatted = await fetchCitizenFullDetails(u.id);
         socket.emit('update_citizen_success', formatted);
         io.emit('response_user_detail', formatted);
         io.emit('user_detail_updated', formatted);
+        io.emit('user_profile_updated', { userId: u.id, ...formatted });
+        io.emit('user_updated', { userId: u.id, ...formatted });
         
         // Also refresh list
         const usersData = await fetchCitizensList();
         io.emit('response_users_data', usersData);
+        io.emit('users_updated');
       } catch (e: any) {
         console.error('[Socket] update_citizen_profile error:', e);
         socket.emit('update_citizen_error', { message: e.message });

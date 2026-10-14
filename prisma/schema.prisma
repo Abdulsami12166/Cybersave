@@ -90,6 +90,7 @@ model Profile {
   pinCode     String?
   dob         String?
   gender      String?
+  fatherName  String?
   aadhaarNumber String?
   panNumber     String?
   addresses   Json?

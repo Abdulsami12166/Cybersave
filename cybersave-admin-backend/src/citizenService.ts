@@ -127,8 +127,16 @@ const citizenDetailsCache = new Map<string, { data: any; timestamp: number }>();
 export function invalidateCitizenDetailsCache(userId?: string) {
   if (userId) {
     citizenDetailsCache.delete(userId);
-    const short = userId.slice(-6).toUpperCase();
-    citizenDetailsCache.delete(`CIT-${short}`);
+    const short6 = userId.slice(-6).toUpperCase();
+    const short5 = userId.slice(-5).toUpperCase();
+    citizenDetailsCache.delete(`CIT-${short6}`);
+    citizenDetailsCache.delete(`CIT-${short5}`);
+    // Also remove any entries matching userId
+    for (const key of citizenDetailsCache.keys()) {
+      if (key.includes(userId) || (userId.length >= 5 && key.includes(short5))) {
+        citizenDetailsCache.delete(key);
+      }
+    }
   } else {
     citizenDetailsCache.clear();
   }
@@ -244,7 +252,7 @@ export async function fetchCitizenFullDetails(targetId: string): Promise<any | n
   const dob = profile?.dob || aadhaarDocs?.[0]?.dateOfBirth || firstAppForm.dob || firstAppForm.dateOfBirth || '-';
   const gender = profile?.gender || aadhaarDocs?.[0]?.gender || firstAppForm.gender || '-';
   const aadhaar = profAny?.aadhaarNumber || aadhaarDocs?.[0]?.referenceId || firstAppForm.aadhaar || firstAppForm.aadhaarNumber || (profile?.dob ? `•••• •••• ${user.id.slice(-4)}` : '-');
-  const pan = profAny?.pan || firstAppForm.pan || firstAppForm.panNumber || '-';
+  const pan = profAny?.panNumber || profAny?.pan || firstAppForm.pan || firstAppForm.panNumber || '-';
   const mobile = user.phone || profile?.phone || firstAppForm.phone || firstAppForm.mobile || '-';
   const email = user.email || profile?.email || firstAppForm.email || '-';
   const address = profile?.address || aadhaarDocs?.[0]?.address || firstAppForm.address || '-';
@@ -563,6 +571,9 @@ export async function fetchCitizenFullDetails(targetId: string): Promise<any | n
     gender,
     aadhaar,
     pan,
+    aadhaarNumber: profAny?.aadhaarNumber || aadhaar,
+    panNumber: profAny?.panNumber || pan,
+    profile: profile || profAny,
     mobile,
     phone: mobile,
     email,
@@ -691,7 +702,8 @@ export async function fetchCitizensList(params?: { page?: number; limit?: number
     const email = u.email || prof.email || 'citizen.helpdesk@cybersave.in';
     const phone = u.phone || prof.phone || '+91 98450 12893';
     const district = prof.district || 'Central District';
-    const aadhaar = prof.dob ? `•••• •••• ${u.id.slice(-4)}` : `•••• •••• ${u.id.slice(-4)}`;
+    const aadhaar = prof.aadhaarNumber ? `•••• •••• ${prof.aadhaarNumber.slice(-4)}` : (prof.dob ? `•••• •••• ${u.id.slice(-4)}` : `•••• •••• ${u.id.slice(-4)}`);
+    const pan = prof.panNumber || prof.pan || '-';
 
     const isRecent = u.lastSeenAt ? new Date(u.lastSeenAt) >= twoMinutesAgo : false;
     const isOnlineNow = ((u.isOnline === true && isRecent) || isRecent) && String(u.status || '').toUpperCase() !== 'BLOCKED';
@@ -704,6 +716,10 @@ export async function fetchCitizensList(params?: { page?: number; limit?: number
       phone,
       district,
       aadhaar,
+      pan,
+      aadhaarNumber: prof.aadhaarNumber || null,
+      panNumber: prof.panNumber || null,
+      profile: prof,
       servicesUsed: u.applications?.length || 0,
       status: (u.status === 'BLOCKED' || u.status === 'SUSPENDED') ? 'Blocked' : ((u.status === 'PENDING' || u.status === 'UNVERIFIED') ? 'Pending' : 'Verified'),
       isOnline: isOnlineNow,

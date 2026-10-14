@@ -1827,10 +1827,27 @@ export class AdminController {
     if (isMongoId(id)) {
       u = await this.prisma.user.findUnique({ where: { id }, include: { profile: true } });
     }
-    if (!u && id.startsWith('CIT-')) {
-      const shortId = id.replace('CIT-', '').toUpperCase();
-      const allUsers = await this.prisma.user.findMany({ where: { role: 'USER' }, include: { profile: true } });
-      u = allUsers.find((x) => x.id.substring(0, 5).toUpperCase() === shortId) || null;
+    if (!u) {
+      const cleanId = id.startsWith('CIT-') ? id.replace('CIT-', '').toUpperCase() : id.toUpperCase();
+      const candidates = await this.prisma.user.findMany({
+        where: { role: 'USER' },
+        include: { profile: true },
+      });
+
+      u = candidates.find((x) => {
+        const xId = x.id.toUpperCase();
+        return (
+          x.id === id ||
+          xId === cleanId ||
+          xId.endsWith(cleanId) ||
+          xId.slice(-6) === cleanId ||
+          xId.slice(-5) === cleanId ||
+          xId.startsWith(cleanId) ||
+          xId.includes(cleanId) ||
+          (x.email && x.email.toLowerCase() === id.toLowerCase()) ||
+          (x.phone && x.phone === id)
+        );
+      }) || null;
     }
     if (!u) {
       u = await this.prisma.user.findFirst({ where: { OR: [{ email: id }, { phone: id }] }, include: { profile: true } });
@@ -1840,14 +1857,19 @@ export class AdminController {
       throw new NotFoundException(`Citizen ${id} not found`);
     }
 
-    const { fullName, phone, email, address, district, state, pinCode, dob, gender, status } = body;
+    const { fullName, phone, email, address, district, state, pinCode, dob, gender, status, fatherName, aadhaar, aadhaarNumber, pan, panNumber } = body;
+    const finalPhone = phone || body.mobile || u.phone;
+    const finalEmail = email || u.email;
+    const finalFatherName = fatherName !== undefined ? fatherName : (body.father_name !== undefined ? body.father_name : undefined);
+    const finalAadhaar = aadhaarNumber || aadhaar;
+    const finalPan = panNumber || pan;
 
     // Update user record
     await this.prisma.user.update({
       where: { id: u.id },
       data: {
-        email: email || u.email,
-        phone: phone || u.phone,
+        email: finalEmail,
+        phone: finalPhone,
         status: status || u.status,
       },
     });
@@ -1858,14 +1880,17 @@ export class AdminController {
         where: { id: u.profile.id },
         data: {
           fullName: fullName ?? u.profile.fullName,
-          phone: phone ?? u.profile.phone,
-          email: email ?? u.profile.email,
+          phone: finalPhone ?? u.profile.phone,
+          email: finalEmail ?? u.profile.email,
           address: address ?? u.profile.address,
           district: district ?? u.profile.district,
           state: state ?? u.profile.state,
           pinCode: pinCode ?? u.profile.pinCode,
           dob: dob ?? u.profile.dob,
           gender: gender ?? u.profile.gender,
+          fatherName: finalFatherName !== undefined ? finalFatherName : (u.profile as any).fatherName,
+          aadhaarNumber: finalAadhaar !== undefined ? finalAadhaar : (u.profile as any).aadhaarNumber,
+          panNumber: finalPan !== undefined ? finalPan : (u.profile as any).panNumber,
         },
       });
     } else {
@@ -1873,14 +1898,17 @@ export class AdminController {
         data: {
           userId: u.id,
           fullName: fullName || 'Citizen User',
-          phone: phone || u.phone || '',
-          email: email || u.email || '',
+          phone: finalPhone || '',
+          email: finalEmail || '',
           address: address || '',
           district: district || '',
           state: state || '',
           pinCode: pinCode || '',
           dob: dob || '',
           gender: gender || '',
+          fatherName: finalFatherName || '',
+          aadhaarNumber: finalAadhaar || '',
+          panNumber: finalPan || '',
         },
       });
     }
@@ -1900,13 +1928,26 @@ export class AdminController {
         applications: { include: { service: true }, orderBy: { submittedAt: 'desc' } },
         aadhaarDocs: true,
         auditLogs: { orderBy: { createdAt: 'desc' }, take: 15 },
+        feedbacks: { orderBy: { createdAt: 'desc' } },
+        wallet: { include: { transactions: { orderBy: { createdAt: 'desc' }, take: 50 } } },
+        refundRequests: { orderBy: { createdAt: 'desc' } },
       },
     });
+
+    const allAdmins = await this.prisma.user.findMany({ where: { role: 'ADMIN' }, include: { profile: true } });
+    const formatted = AdminGateway.instance ? AdminGateway.instance.formatCitizenPayload(updatedUser, allAdmins) : this.formatCitizenData(updatedUser);
+
+    AdminGateway.broadcast('response_user_detail', formatted);
+    AdminGateway.broadcast('user_detail_updated', formatted);
+    AdminGateway.broadcast('user_profile_updated', { userId: u.id, ...formatted });
+    AdminGateway.broadcast('user_updated', { userId: u.id, profile: updatedUser?.profile, ...formatted });
+    AdminGateway.broadcast('users_updated');
 
     return {
       success: true,
       message: 'Citizen profile updated successfully',
-      citizen: this.formatCitizenData(updatedUser),
+      citizen: formatted,
+      user: formatted,
     };
   }
 
