@@ -592,14 +592,20 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
           }
         }
 
+        const uAadhaar = u.profile?.aadhaarNumber
+          ? (u.profile.aadhaarNumber.length >= 4 ? `•••• •••• ${u.profile.aadhaarNumber.slice(-4)}` : u.profile.aadhaarNumber)
+          : (u.profile?.dob ? `•••• •••• ${u.id.slice(-4)}` : 'Not Given');
+
         return {
           id: `CIT-${u.id.substring(0, 5).toUpperCase()}`,
           dbId: u.id,
           fullName: u.profile?.fullName || (u.email ? u.email.split('@')[0] : 'Citizen'),
-          aadhaar: u.profile?.dob
-            ? '****' + Math.floor(1000 + Math.random() * 9000)
-            : 'Not Given',
+          aadhaar: uAadhaar,
+          aadhaarNumber: u.profile?.aadhaarNumber || '',
+          pan: u.profile?.panNumber || '',
+          panNumber: u.profile?.panNumber || '',
           mobile: u.phone || u.profile?.phone || 'N/A',
+          phone: u.phone || u.profile?.phone || 'N/A',
           email: u.email || 'N/A',
           district: u.profile?.district || 'Central Delhi, DL',
           servicesUsed: u.applications?.length || 0,
@@ -754,17 +760,40 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
         return;
       }
 
-      const finalPhone = phone || data.mobile || u.phone;
-      const finalEmail = email || u.email;
-      const finalFatherName = fatherName !== undefined ? fatherName : (data.father_name !== undefined ? data.father_name : undefined);
-      const finalAadhaar = aadhaarNumber || aadhaar;
-      const finalPan = panNumber || pan;
+      let cleanEmail = u.email;
+      const requestedEmail = email !== undefined ? email : data.gmail;
+      if (requestedEmail !== undefined && requestedEmail !== null) {
+        const trimmedEmail = String(requestedEmail).trim().toLowerCase();
+        if (trimmedEmail && trimmedEmail !== (u.email || '').toLowerCase()) {
+          const existing = await this.prisma.user.findUnique({ where: { email: trimmedEmail } }).catch(() => null);
+          if (existing && existing.id !== u.id) {
+            client.emit('update_citizen_error', { message: `Email address '${trimmedEmail}' is already registered to another account.` });
+            return;
+          }
+          cleanEmail = trimmedEmail;
+        } else if (!trimmedEmail) {
+          cleanEmail = u.email;
+        }
+      }
+
+      const finalPhone = (phone || data.mobile || u.phone || '').trim();
+      const finalFullName = fullName !== undefined ? String(fullName).trim() : (u.profile?.fullName || '');
+      const finalFatherName = fatherName !== undefined ? String(fatherName).trim() : (data.father_name !== undefined ? String(data.father_name).trim() : (u.profile?.fatherName || ''));
+
+      let rawAadhaar = aadhaarNumber !== undefined ? aadhaarNumber : aadhaar;
+      let finalAadhaar = rawAadhaar !== undefined ? String(rawAadhaar).trim() : (u.profile?.aadhaarNumber || '');
+      if (finalAadhaar.includes('••••') || finalAadhaar.includes('XXXX')) {
+        finalAadhaar = u.profile?.aadhaarNumber || finalAadhaar;
+      }
+
+      let rawPan = panNumber !== undefined ? panNumber : pan;
+      let finalPan = rawPan !== undefined ? String(rawPan).trim().toUpperCase() : (u.profile?.panNumber || '');
 
       await this.prisma.user.update({
         where: { id: u.id },
         data: {
-          email: finalEmail,
-          phone: finalPhone,
+          email: cleanEmail,
+          phone: finalPhone || u.phone,
           status: status || u.status,
         },
       });
@@ -773,36 +802,36 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
         await this.prisma.profile.update({
           where: { id: u.profile.id },
           data: {
-            fullName: fullName ?? u.profile.fullName,
-            phone: finalPhone ?? u.profile.phone,
-            email: finalEmail ?? u.profile.email,
-            address: address ?? u.profile.address,
-            district: district ?? u.profile.district,
-            state: state ?? u.profile.state,
-            pinCode: pinCode ?? u.profile.pinCode,
-            dob: dob ?? u.profile.dob,
-            gender: gender ?? u.profile.gender,
-            fatherName: finalFatherName !== undefined ? finalFatherName : (u.profile as any).fatherName,
-            aadhaarNumber: finalAadhaar !== undefined ? finalAadhaar : (u.profile as any).aadhaarNumber,
-            panNumber: finalPan !== undefined ? finalPan : (u.profile as any).panNumber,
+            fullName: finalFullName,
+            phone: finalPhone || u.profile.phone,
+            email: cleanEmail,
+            address: address !== undefined ? String(address).trim() : u.profile.address,
+            district: district !== undefined ? String(district).trim() : u.profile.district,
+            state: state !== undefined ? String(state).trim() : u.profile.state,
+            pinCode: pinCode !== undefined ? String(pinCode).trim() : u.profile.pinCode,
+            dob: dob !== undefined ? String(dob).trim() : u.profile.dob,
+            gender: gender !== undefined ? String(gender).trim() : u.profile.gender,
+            fatherName: finalFatherName,
+            aadhaarNumber: finalAadhaar,
+            panNumber: finalPan,
           },
         });
       } else {
         await this.prisma.profile.create({
           data: {
             userId: u.id,
-            fullName: fullName || 'Citizen User',
+            fullName: finalFullName || 'Citizen User',
             phone: finalPhone || '',
-            email: finalEmail || '',
-            address: address || '',
-            district: district || '',
-            state: state || '',
-            pinCode: pinCode || '',
-            dob: dob || '',
-            gender: gender || '',
-            fatherName: finalFatherName || '',
-            aadhaarNumber: finalAadhaar || '',
-            panNumber: finalPan || '',
+            email: cleanEmail || '',
+            address: address ? String(address).trim() : '',
+            district: district ? String(district).trim() : '',
+            state: state ? String(state).trim() : '',
+            pinCode: pinCode ? String(pinCode).trim() : '',
+            dob: dob ? String(dob).trim() : '',
+            gender: gender ? String(gender).trim() : '',
+            fatherName: finalFatherName,
+            aadhaarNumber: finalAadhaar,
+            panNumber: finalPan,
           },
         });
       }
@@ -811,7 +840,7 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
         data: {
           userId: u.id,
           action: 'CITIZEN_PROFILE_UPDATED',
-          details: `Admin updated citizen profile information`,
+          details: `Admin updated citizen profile information: ${finalFullName}`,
         },
       }).catch(() => null);
 
@@ -830,11 +859,35 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
 
       const allAdmins = await this.prisma.user.findMany({ where: { role: 'ADMIN' }, include: { profile: true } });
       const formatted = this.formatCitizenPayload(updated, allAdmins);
-      client.emit('update_citizen_success', formatted);
-      AdminGateway.broadcast('response_user_detail', formatted);
-      AdminGateway.broadcast('user_detail_updated', formatted);
-      AdminGateway.broadcast('user_profile_updated', { userId: u.id, ...formatted });
-      AdminGateway.broadcast('user_updated', { userId: u.id, profile: updated?.profile, ...formatted });
+      const syncPayload = {
+        ...formatted,
+        userId: u.id,
+        id: u.id,
+        dbId: u.id,
+        email: cleanEmail,
+        phone: finalPhone || u.phone,
+        mobile: finalPhone || u.phone,
+        fullName: finalFullName,
+        name: finalFullName,
+        fatherName: finalFatherName,
+        aadhaar: finalAadhaar,
+        aadhaarNumber: finalAadhaar,
+        pan: finalPan,
+        panNumber: finalPan,
+        dob: dob !== undefined ? String(dob).trim() : updated?.profile?.dob,
+        gender: gender !== undefined ? String(gender).trim() : updated?.profile?.gender,
+        address: address !== undefined ? String(address).trim() : updated?.profile?.address,
+        district: district !== undefined ? String(district).trim() : updated?.profile?.district,
+        state: state !== undefined ? String(state).trim() : updated?.profile?.state,
+        pinCode: pinCode !== undefined ? String(pinCode).trim() : updated?.profile?.pinCode,
+        profile: updated?.profile,
+      };
+
+      client.emit('update_citizen_success', syncPayload);
+      AdminGateway.broadcast('response_user_detail', syncPayload);
+      AdminGateway.broadcast('user_detail_updated', syncPayload);
+      AdminGateway.broadcast('user_profile_updated', syncPayload);
+      AdminGateway.broadcast('user_updated', syncPayload);
       AdminGateway.broadcast('users_updated');
     } catch (e: any) {
       console.error('[AdminGateway] update_citizen_profile error:', e);
