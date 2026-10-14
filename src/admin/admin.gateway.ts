@@ -782,12 +782,17 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
 
       let rawAadhaar = aadhaarNumber !== undefined ? aadhaarNumber : aadhaar;
       let finalAadhaar = rawAadhaar !== undefined ? String(rawAadhaar).trim() : (u.profile?.aadhaarNumber || '');
-      if (finalAadhaar.includes('••••') || finalAadhaar.includes('XXXX')) {
-        finalAadhaar = u.profile?.aadhaarNumber || finalAadhaar;
+      if (finalAadhaar.includes('••••') || finalAadhaar.includes('XXXX') || finalAadhaar.startsWith('****')) {
+        finalAadhaar = (u.profile?.aadhaarNumber && !u.profile.aadhaarNumber.includes('••••') && !u.profile.aadhaarNumber.includes('XXXX'))
+          ? u.profile.aadhaarNumber
+          : '';
       }
 
       let rawPan = panNumber !== undefined ? panNumber : pan;
       let finalPan = rawPan !== undefined ? String(rawPan).trim().toUpperCase() : (u.profile?.panNumber || '');
+      if (finalPan === '-' || finalPan === 'N/A' || finalPan === 'NOT GIVEN' || finalPan === 'UNDEFINED' || finalPan === 'NULL') {
+        finalPan = '';
+      }
 
       await this.prisma.user.update({
         where: { id: u.id },
@@ -880,7 +885,11 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
         district: district !== undefined ? String(district).trim() : updated?.profile?.district,
         state: state !== undefined ? String(state).trim() : updated?.profile?.state,
         pinCode: pinCode !== undefined ? String(pinCode).trim() : updated?.profile?.pinCode,
-        profile: updated?.profile,
+        profile: {
+          ...(updated?.profile || {}),
+          aadhaarNumber: finalAadhaar,
+          panNumber: finalPan,
+        },
       };
 
       client.emit('update_citizen_success', syncPayload);
@@ -1127,10 +1136,6 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
       if (!district || district === '-') district = form.district || form.districtName || '';
       if (!state || state === '-') state = form.state || form.stateName || '';
       if (!pinCode) pinCode = form.pinCode || form.pincode || form.field_3_pin_code || '';
-    }
-
-    if (!aadhaar && (dob || mobile)) {
-      aadhaar = `•••• •••• ${u.id.slice(-4)}`;
     }
 
     // Clean up demo/garbage values
@@ -1588,6 +1593,11 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
       district,
       state,
       pinCode,
+      profile: {
+        ...(u.profile || {}),
+        aadhaarNumber: profile.aadhaarNumber || aadhaar,
+        panNumber: profile.panNumber || pan,
+      },
       joinedDate: u.createdAt ? new Date(u.createdAt).toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' }) : 'Joined recently',
       status: u.status === 'BLOCKED' ? 'Blocked' : (u.status || 'Verified'),
       avatarUrl: profile.avatarUrl || null,

@@ -1880,12 +1880,17 @@ export class AdminController {
 
     let rawAadhaar = aadhaarNumber !== undefined ? aadhaarNumber : aadhaar;
     let finalAadhaar = rawAadhaar !== undefined ? String(rawAadhaar).trim() : (u.profile?.aadhaarNumber || '');
-    if (finalAadhaar.includes('••••') || finalAadhaar.includes('XXXX')) {
-      finalAadhaar = u.profile?.aadhaarNumber || finalAadhaar;
+    if (finalAadhaar.includes('••••') || finalAadhaar.includes('XXXX') || finalAadhaar.startsWith('****')) {
+      finalAadhaar = (u.profile?.aadhaarNumber && !u.profile.aadhaarNumber.includes('••••') && !u.profile.aadhaarNumber.includes('XXXX'))
+        ? u.profile.aadhaarNumber
+        : '';
     }
 
     let rawPan = panNumber !== undefined ? panNumber : pan;
     let finalPan = rawPan !== undefined ? String(rawPan).trim().toUpperCase() : (u.profile?.panNumber || '');
+    if (finalPan === '-' || finalPan === 'N/A' || finalPan === 'NOT GIVEN' || finalPan === 'UNDEFINED' || finalPan === 'NULL') {
+      finalPan = '';
+    }
 
     // Update user record
     await this.prisma.user.update({
@@ -1982,7 +1987,11 @@ export class AdminController {
       district: district !== undefined ? String(district).trim() : updatedUser?.profile?.district,
       state: state !== undefined ? String(state).trim() : updatedUser?.profile?.state,
       pinCode: pinCode !== undefined ? String(pinCode).trim() : updatedUser?.profile?.pinCode,
-      profile: updatedUser?.profile,
+      profile: {
+        ...(updatedUser?.profile || {}),
+        aadhaarNumber: finalAadhaar,
+        panNumber: finalPan,
+      },
     };
 
     AdminGateway.broadcast('response_user_detail', syncPayload);
@@ -2472,7 +2481,7 @@ export class AdminController {
     const fatherName = profile.fatherName || firstAppForm.fatherName || firstAppForm.father_name || '';
     const dob = profile.dob || u.aadhaarDocs?.[0]?.dateOfBirth || firstAppForm.dob || '';
     const gender = profile.gender || u.aadhaarDocs?.[0]?.gender || firstAppForm.gender || '';
-    const aadhaar = profile.aadhaarNumber || u.aadhaarDocs?.[0]?.referenceId || firstAppForm.aadhaar || firstAppForm.aadhaarNumber || (profile.dob ? `•••• •••• ${u.id.slice(-4)}` : '');
+    const aadhaar = profile.aadhaarNumber || u.aadhaarDocs?.[0]?.referenceId || firstAppForm.aadhaar || firstAppForm.aadhaarNumber || '';
     const pan = profile.panNumber || profile.pan || firstAppForm.pan || firstAppForm.panNumber || '';
     const mobile = u.phone || profile.phone || firstAppForm.phone || '';
     const email = u.email || profile.email || firstAppForm.email || '';
@@ -2728,7 +2737,11 @@ export class AdminController {
       district,
       state,
       pinCode,
-      profile: u.profile,
+      profile: {
+        ...(u.profile || {}),
+        aadhaarNumber: profile.aadhaarNumber || aadhaar,
+        panNumber: profile.panNumber || pan,
+      },
       joinedDate: u.createdAt ? new Date(u.createdAt).toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' }) : 'Joined recently',
       status: u.status === 'BLOCKED' ? 'Blocked' : (u.status || 'Verified'),
       avatarUrl: profile.avatarUrl || null,
