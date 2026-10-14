@@ -23,6 +23,22 @@ export class ApplicationsController {
     return this.applicationsService.getUserApplications(userId, status);
   }
 
+  @Post(['bulk-approve', 'bulk_approve'])
+  async bulkApprovePost(
+    @Body() body: { applicationIds: string[]; adminId?: string; adminEmail?: string; adminName?: string; adminRole?: string },
+  ) {
+    const ids = Array.isArray(body?.applicationIds) ? body.applicationIds : [];
+    return this.applicationsService.bulkApprove(ids, body);
+  }
+
+  @Put(['bulk-approve', 'bulk_approve'])
+  async bulkApprovePut(
+    @Body() body: { applicationIds: string[]; adminId?: string; adminEmail?: string; adminName?: string; adminRole?: string },
+  ) {
+    const ids = Array.isArray(body?.applicationIds) ? body.applicationIds : [];
+    return this.applicationsService.bulkApprove(ids, body);
+  }
+
   @Get(':id/certificate')
   async getCertificateDetails(@Param('id') id: string) {
     return this.applicationsService.getCertificateDetails(id);

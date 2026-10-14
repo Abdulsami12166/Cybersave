@@ -98,4 +98,22 @@ export class UpdateProfileDto {
   @ApiProperty({ description: 'Saved addresses list', required: false })
   @IsOptional()
   addresses?: any;
+
+  @ApiProperty({ description: 'Aadhaar Card Number', required: false })
+  @IsString()
+  @IsOptional()
+  aadhaarNumber?: string;
+
+  @ApiProperty({ description: 'PAN Card Number', required: false })
+  @IsString()
+  @IsOptional()
+  panNumber?: string;
+
+  @IsString()
+  @IsOptional()
+  aadhaar?: string;
+
+  @IsString()
+  @IsOptional()
+  pan?: string;
 }

@@ -1026,4 +1026,30 @@ export class ApplicationsService {
 
     doc.end();
   }
+
+  async bulkApprove(
+    applicationIds: string[],
+    adminInfo?: { adminId?: string; adminEmail?: string; adminName?: string; adminRole?: string },
+  ) {
+    const results: any[] = [];
+    for (const id of applicationIds) {
+      if (!id) continue;
+      try {
+        const updated = await this.updateStatus(id, 'APPROVED', undefined, adminInfo);
+        if (updated) results.push(updated);
+      } catch (err: any) {
+        this.logger.warn(`Bulk approve single application notice for ID "${id}": ${err?.message}`);
+      }
+    }
+    try {
+      AdminGateway.broadcast('applications_updated');
+      AdminGateway.broadcast('dashboard_updated');
+      AdminGateway.broadcast('transactions_updated');
+    } catch (_) {}
+    return {
+      success: true,
+      count: results.length,
+      approvedIds: results.map((r) => r.id || r.refNumber),
+    };
+  }
 }

@@ -1588,19 +1588,17 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
           priority: 'Medium',
           rawStatus: a.status,
           status:
-            a.status === 'SUBMITTED'
-              ? 'In Review'
-              : a.status === 'VERIFYING'
-                ? 'Pending'
-                : a.status === 'IN_PROGRESS'
-                  ? 'Processing'
-                  : a.status === 'APPROVED'
-                    ? 'Approved'
-                    : a.status === 'COMPLETED'
-                      ? 'Completed'
-                      : a.status === 'REJECTED'
-                        ? 'Rejected'
-                        : 'Pending',
+            (a.status as any) === 'SUBMITTED'
+              ? 'Submitted'
+              : (a.status === 'VERIFYING' || a.status === 'PENDING')
+                ? 'In Review'
+                : a.status === 'APPROVED'
+                  ? 'Approved'
+                  : a.status === 'COMPLETED'
+                    ? 'Completed'
+                    : a.status === 'REJECTED'
+                      ? 'Rejected'
+                      : 'Submitted',
           assigned: a.officialOfficer || 'Auto Assigned (SDM)',
           submitted: a.submittedAt ? a.submittedAt.toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' }) : 'Today',
           submittedAtFull: a.submittedAt ? a.submittedAt.toLocaleString('en-IN', { dateStyle: 'medium', timeStyle: 'short' }) : new Date().toLocaleString('en-IN'),
@@ -1692,7 +1690,10 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
         'VERIFYING': 'VERIFYING',
         'submitted': 'SUBMITTED',
         'Submitted': 'SUBMITTED',
-        'In Review': 'SUBMITTED',
+        'In Review': 'VERIFYING',
+        'in review': 'VERIFYING',
+        'Under Review': 'VERIFYING',
+        'under review': 'VERIFYING',
         'SUBMITTED': 'SUBMITTED',
         'completed': 'COMPLETED',
         'Completed': 'COMPLETED',
@@ -1770,9 +1771,47 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
           rejectionReason: updated.rejectionReason,
         });
       }
-    } catch (e) {
+    } catch (e: any) {
       console.error('[AdminGateway] update_application_status error:', e);
       client.emit('update_application_status_error', { error: e.message });
+    }
+  }
+
+  @SubscribeMessage('bulk_approve_applications')
+  async handleBulkApprove(
+    @ConnectedSocket() client: Socket,
+    @MessageBody() data: { applicationIds: string[]; adminName?: string; adminEmail?: string; adminRole?: string },
+  ) {
+    try {
+      const ids = Array.isArray(data?.applicationIds) ? data.applicationIds : [];
+      const isMongoId = (s?: string) => typeof s === 'string' && /^[0-9a-fA-F]{24}$/.test(s);
+      for (const targetId of ids) {
+        if (!targetId) continue;
+        const orConditions: any[] = [{ refNumber: targetId }];
+        if (isMongoId(targetId)) orConditions.push({ id: targetId });
+
+        const app = await this.prisma.application.findFirst({ where: { OR: orConditions } });
+        if (app) {
+          await this.prisma.application.update({
+            where: { id: app.id },
+            data: { status: 'APPROVED' as any, updatedAt: new Date() },
+          });
+          await AdminGateway.logActivity(this.prisma, {
+            userId: (data as any)?.adminId,
+            userEmail: data?.adminEmail || 'admin@cybersave.com',
+            userName: data?.adminName || 'Principal Verification Officer (SDM)',
+            action: 'APPLICATION_APPROVED',
+            details: `Application #${app.refNumber} bulk approved by ${data?.adminName || 'Admin'}`,
+          }).catch(() => null);
+        }
+      }
+      this.server.emit('applications_updated');
+      this.server.emit('dashboard_updated');
+      this.server.emit('transactions_updated');
+      client.emit('bulk_approve_success', { count: ids.length });
+    } catch (err: any) {
+      console.error('[AdminGateway] bulk_approve_applications error:', err);
+      client.emit('bulk_approve_error', { error: err?.message });
     }
   }
 

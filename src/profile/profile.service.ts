@@ -12,12 +12,59 @@ export class ProfileService {
   ) {}
 
   async update(userId: string, updateProfileDto: UpdateProfileDto) {
+    // 1. Resolve valid MongoDB ObjectId for user
+    let targetUserId = userId;
+    const isMongoId = (s?: string) => typeof s === 'string' && /^[0-9a-fA-F]{24}$/.test(s);
+    if (!isMongoId(targetUserId)) {
+      try {
+        const u = await this.prisma.user.findFirst({
+          where: { OR: [{ email: targetUserId }, { phone: targetUserId }, { keycloakId: targetUserId }] },
+          select: { id: true },
+        });
+        if (u?.id) targetUserId = u.id;
+      } catch (_) {}
+    }
+
+    // 2. Strict whitelist of Profile schema fields to prevent Prisma 500 Unknown Argument errors
+    const allowedKeys = [
+      'fullName',
+      'phone',
+      'email',
+      'avatarUrl',
+      'address',
+      'district',
+      'state',
+      'pinCode',
+      'dob',
+      'gender',
+      'aadhaarNumber',
+      'panNumber',
+      'addresses',
+    ];
+
+    const profileData: any = {};
+    for (const key of allowedKeys) {
+      if ((updateProfileDto as any)[key] !== undefined) {
+        profileData[key] = (updateProfileDto as any)[key];
+      }
+    }
+
+    // Handle aadhaar / pan aliases
+    const aadhaarVal = updateProfileDto.aadhaarNumber || updateProfileDto.aadhaar;
+    if (aadhaarVal !== undefined && aadhaarVal !== null) {
+      profileData.aadhaarNumber = String(aadhaarVal).trim();
+    }
+    const panVal = updateProfileDto.panNumber || updateProfileDto.pan;
+    if (panVal !== undefined && panVal !== null) {
+      profileData.panNumber = String(panVal).trim();
+    }
+
     const updatedProfile = await this.prisma.profile.upsert({
-      where: { userId },
-      update: updateProfileDto,
+      where: { userId: targetUserId },
+      update: profileData,
       create: {
-        userId,
-        ...updateProfileDto,
+        userId: targetUserId,
+        ...profileData,
       },
     });
 
@@ -31,31 +78,37 @@ export class ProfileService {
     if (Object.keys(userUpdateData).length > 0) {
       try {
         await this.prisma.user.update({
-          where: { id: userId },
+          where: { id: targetUserId },
           data: userUpdateData,
         });
       } catch (e) {}
     }
 
     // Record audit log
-    await this.prisma.auditLog.create({
-      data: {
-        userId,
-        action: 'UPDATE_PROFILE',
-        details: 'User updated profile information / address',
-      },
-    });
+    try {
+      await this.prisma.auditLog.create({
+        data: {
+          userId: targetUserId,
+          action: 'UPDATE_PROFILE',
+          details: 'User updated profile information / address',
+        },
+      });
+    } catch (_) {}
 
     // Real-time broadcast to Admin Panel & Mobile
     try {
       AdminGateway.broadcast('user_updated', {
-        userId,
+        userId: targetUserId,
         profile: updatedProfile,
+        aadhaar: updatedProfile.aadhaarNumber,
+        pan: updatedProfile.panNumber,
       });
       AdminGateway.broadcast('user_detail_updated', {
         ...updatedProfile,
-        id: userId,
-        dbId: userId,
+        id: targetUserId,
+        dbId: targetUserId,
+        aadhaar: updatedProfile.aadhaarNumber,
+        pan: updatedProfile.panNumber,
       });
       AdminGateway.broadcast('users_updated');
     } catch (e) {}

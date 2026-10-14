@@ -90,10 +90,11 @@ model Profile {
   pinCode     String?
   dob         String?
   gender      String?
+  aadhaarNumber String?
+  panNumber     String?
   addresses   Json?
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
-
 }
 
 model Service {
