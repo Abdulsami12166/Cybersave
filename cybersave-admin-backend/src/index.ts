@@ -1394,12 +1394,34 @@ app.post(['/api/admin/users/:id/block', '/api/v1/users/:id/block'], async (req: 
   try {
     const id = req.params.id;
     const requested = String(req.body?.status || 'BLOCKED').toUpperCase();
-    if (requested !== 'BLOCKED') {
-      return res.status(400).json({ error: "Invalid status. This endpoint only sets BLOCKED. Use /unblock to restore access." });
-    }
-
     const u = await findUserByIdOrCit(id);
     if (!u) return res.status(404).json({ error: 'Citizen not found' });
+
+    if (requested === 'VERIFIED' || requested === 'ACTIVE' || requested === 'UNBLOCKED') {
+      if (isUserBlocked(u)) {
+        await prisma.user.update({ where: { id: u.id }, data: { status: 'VERIFIED' } });
+        await applyCitizenBlockState(u.id, 'VERIFIED', { ip: req.ip, userAgent: req.headers['user-agent'] });
+        auditLogsCache = null;
+        io.emit('audit_logs_updated');
+      }
+
+      const persisted = await prisma.user.findUnique({ where: { id: u.id }, select: { id: true, email: true, phone: true, status: true } });
+      if (!persisted || isUserBlocked(persisted)) {
+        return res.status(500).json({ error: 'Failed to unblock citizen: database did not persist the change' });
+      }
+
+      invalidateCitizensListCache();
+      io.emit('users_updated');
+      io.emit('citizen_status_updated', { id: u.id, status: persisted.status });
+      const freshUsers = await fetchCitizensList();
+      io.emit('response_users_data', freshUsers);
+
+      return res.json({
+        success: true,
+        message: 'Citizen unblocked successfully',
+        data: { id: persisted.id, isBlocked: false, status: persisted.status, user: persisted }
+      });
+    }
 
     // Idempotent: if already blocked, skip re-enforcement but still confirm persisted state.
     if (!isUserBlocked(u)) {
