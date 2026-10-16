@@ -1405,7 +1405,7 @@ async function applyCitizenBlockState(userId: string, targetStatus: 'BLOCKED' | 
 }
 
 // Block: POST /api/admin/users/:id/block   body { status: 'BLOCKED' } (explicit, idempotent)
-app.post(['/api/admin/users/:id/block', '/api/v1/users/:id/block'], async (req: any, res: any) => {
+app.post(['/api/admin/users/:id/block', '/api/v1/users/:id/block', '/admin/users/:id/block'], async (req: any, res: any) => {
   try {
     const id = req.params.id;
     const requested = String(req.body?.status || 'BLOCKED').toUpperCase();
@@ -1470,7 +1470,7 @@ app.post(['/api/admin/users/:id/block', '/api/v1/users/:id/block'], async (req: 
 });
 
 // Unblock: POST /api/admin/users/:id/unblock   body {} (explicit, idempotent)
-app.post(['/api/admin/users/:id/unblock', '/api/v1/users/:id/unblock'], async (req: any, res: any) => {
+app.post(['/api/admin/users/:id/unblock', '/api/v1/users/:id/unblock', '/admin/users/:id/unblock'], async (req: any, res: any) => {
   try {
     const id = req.params.id;
     const u = await findUserByIdOrCit(id);
@@ -1505,7 +1505,7 @@ app.post(['/api/admin/users/:id/unblock', '/api/v1/users/:id/unblock'], async (r
 });
 
 // Bulk block: POST /api/admin/users/bulk-block   body { userIds: [...] }
-app.post(['/api/admin/users/bulk-block', '/api/v1/users/bulk-block'], async (req: any, res: any) => {
+app.post(['/api/admin/users/bulk-block', '/api/v1/users/bulk-block', '/admin/users/bulk-block'], async (req: any, res: any) => {
   try {
     const { userIds = [] } = req.body;
     if (!Array.isArray(userIds) || userIds.length === 0) {
@@ -1555,7 +1555,7 @@ app.post(['/api/admin/users/bulk-block', '/api/v1/users/bulk-block'], async (req
 });
 
 // Bulk unblock: POST /api/admin/users/bulk-unblock   body { userIds: [...] }
-app.post(['/api/admin/users/bulk-unblock', '/api/v1/users/bulk-unblock'], async (req: any, res: any) => {
+app.post(['/api/admin/users/bulk-unblock', '/api/v1/users/bulk-unblock', '/admin/users/bulk-unblock'], async (req: any, res: any) => {
   try {
     const { userIds = [] } = req.body;
     if (!Array.isArray(userIds) || userIds.length === 0) {
