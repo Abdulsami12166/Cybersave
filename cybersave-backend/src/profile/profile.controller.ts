@@ -1,4 +1,4 @@
-import { Controller, Put, Post, Body, UseGuards } from '@nestjs/common';
+import { Controller, Get, Put, Post, Body, UseGuards } from '@nestjs/common';
 import {
   ApiTags,
   ApiOperation,
@@ -16,6 +16,14 @@ import { GetUser } from '../common/decorators/user.decorator';
 @ApiBearerAuth()
 export class ProfileController {
   constructor(private readonly profileService: ProfileService) {}
+
+  @Get()
+  @ApiOperation({ summary: 'Get current user profile including addresses' })
+  @ApiResponse({ status: 200, description: 'User profile data' })
+  @ApiResponse({ status: 401, description: 'Unauthorized' })
+  async getProfile(@GetUser('sub') userId: string) {
+    return this.profileService.getProfile(userId);
+  }
 
   @Put()
   @ApiOperation({ summary: 'Update current user profile' })

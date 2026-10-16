@@ -137,4 +137,25 @@ export class ProfileService {
 
     return { success: true, avatarUrl: updatedProfile.avatarUrl };
   }
+
+  // ponytail: get current authenticated user's profile with normalized addresses array
+  async getProfile(userId: string) {
+    let targetUserId = userId;
+    const isMongoId = (s?: string) => typeof s === 'string' && /^[0-9a-fA-F]{24}$/.test(s);
+    if (!isMongoId(targetUserId)) {
+      try {
+        const u = await this.prisma.user.findFirst({
+          where: { OR: [{ email: targetUserId }, { phone: targetUserId }, { keycloakId: targetUserId }] },
+          select: { id: true },
+        });
+        if (u?.id) targetUserId = u.id;
+      } catch (_) {}
+    }
+    const profile = await this.prisma.profile.findUnique({ where: { userId: targetUserId } });
+    if (!profile) return null;
+    return {
+      ...profile,
+      addresses: Array.isArray(profile.addresses) ? profile.addresses : [],
+    };
+  }
 }

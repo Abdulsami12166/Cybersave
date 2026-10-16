@@ -145,6 +145,7 @@ export class AuthService {
           role: user.role,
           fullName: user.profile?.fullName || 'Citizen User',
           avatarUrl: user.profile?.avatarUrl || null,
+          profile: user.profile || null,
         },
       };
     }
@@ -228,6 +229,7 @@ export class AuthService {
         role: user.role,
         fullName: user.profile?.fullName || data.fullName || 'Citizen User',
         avatarUrl: user.profile?.avatarUrl || data.photoUrl || null,
+        profile: user.profile || null,
       },
     };
   }
@@ -273,6 +275,7 @@ export class AuthService {
             role: existingUser.role,
             fullName: existingUser.profile?.fullName || 'Citizen User',
             avatarUrl: existingUser.profile?.avatarUrl || null,
+            profile: existingUser.profile || null,
           },
         };
       }
@@ -341,6 +344,7 @@ export class AuthService {
         role: user.role,
         fullName: user.profile?.fullName || `Citizen_${user.id.slice(-4).toUpperCase()}`,
         avatarUrl: user.profile?.avatarUrl || null,
+        profile: user.profile || null,
       },
     };
   }
@@ -438,8 +442,11 @@ export class AuthService {
         user: {
           id: user.id,
           email: user.email,
+          phone: user.phone,
           role: user.role,
           fullName: user.profile?.fullName || 'Citizen User',
+          avatarUrl: user.profile?.avatarUrl || null,
+          profile: user.profile || null,
         }
       };
     }

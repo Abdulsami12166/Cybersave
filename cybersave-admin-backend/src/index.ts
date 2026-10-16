@@ -1153,22 +1153,35 @@ app.post(['/api/admin/applications/bulk-assign', '/api/v1/applications/bulk-assi
     if (mongoIds.length > 0) orConditions.push({ id: { in: mongoIds } });
     if (refNumbers.length > 0) orConditions.push({ refNumber: { in: refNumbers } });
 
+    // Validate operator eligibility if operatorId is provided
+    let finalOperatorName = operatorName;
+    if (operatorId) {
+      const opUser = await prisma.user.findFirst({
+        where: { id: operatorId, role: 'ADMIN', status: { not: 'SUSPENDED' } },
+        include: { profile: true }
+      });
+      if (!opUser) {
+        return res.status(400).json({ error: 'Selected operator is not eligible or suspended' });
+      }
+      finalOperatorName = opUser.profile?.fullName || opUser.email?.split('@')[0] || operatorName;
+    }
+
     const updated = await prisma.application.updateMany({
       where: { OR: orConditions },
-      data: { officialOfficer: operatorName }
+      data: { officialOfficer: finalOperatorName }
     });
 
     await prisma.auditLog.create({
       data: {
         userId: operatorId || 'admin_action',
         action: 'APPLICATIONS_BULK_ASSIGNED',
-        details: `Batch assigned ${updated.count} application(s) to ${operatorName}`,
+        details: `Batch assigned ${updated.count} application(s) to ${finalOperatorName}`,
       }
     }).catch(() => null);
 
     io.emit('applications_updated');
     io.emit('dashboard_updated');
-    res.json({ success: true, count: updated.count, operatorName });
+    res.json({ success: true, count: updated.count, operatorName: finalOperatorName, operatorId });
   } catch (e: any) {
     res.status(500).json({ error: e.message });
   }
@@ -1374,6 +1387,8 @@ async function applyCitizenBlockState(userId: string, targetStatus: 'BLOCKED' | 
 
     io.emit('force_logout', { userId, reason: 'Your account has been suspended/blocked by an Administrator. Please contact support.' });
     io.emit('user_blocked', { userId });
+  } else {
+    io.emit('user_unblocked', { userId });
   }
 
   invalidateCitizenDetailsCache(userId);
@@ -1510,9 +1525,11 @@ app.post(['/api/admin/users/bulk-block', '/api/v1/users/bulk-block'], async (req
       data: { status: 'BLOCKED' }
     });
 
-    for (const uid of mongoIds) {
-      await applyCitizenBlockState(uid, 'BLOCKED', { ip: req.ip, userAgent: req.headers['user-agent'] });
-    }
+    await Promise.all(
+      mongoIds.map((uid: string) =>
+        applyCitizenBlockState(uid, 'BLOCKED', { ip: req.ip, userAgent: req.headers['user-agent'] })
+      )
+    );
 
     await prisma.auditLog.create({
       data: {
@@ -1557,6 +1574,12 @@ app.post(['/api/admin/users/bulk-unblock', '/api/v1/users/bulk-unblock'], async 
       where: { OR: orConditions },
       data: { status: 'VERIFIED' }
     });
+
+    await Promise.all(
+      mongoIds.map((uid: string) =>
+        applyCitizenBlockState(uid, 'VERIFIED', { ip: req.ip, userAgent: req.headers['user-agent'] })
+      )
+    );
 
     await prisma.auditLog.create({
       data: {
@@ -3156,17 +3179,21 @@ export async function getFastOperatorsList() {
         createdAt: true,
         updatedAt: true,
         lastSeenAt: true,
+        profile: { select: { fullName: true } }
       },
       orderBy: { createdAt: 'desc' }
     })
   ]);
 
   const formattedOps = ops.map(o => {
+    const profileName = (o as any).profile?.fullName;
     const base = o.email ? o.email.split('@')[0] : '';
-    let displayName = 'Admin Officer';
-    if (o.email === 'admin@cybersave.com') displayName = 'Super Administrator';
-    else if (o.email === 'officer.admin@cybersave.gov.in') displayName = 'Principal Verification Officer';
-    else if (base) displayName = base.replace(/[._]/g, ' ').replace(/\b\w/g, (c: string) => c.toUpperCase());
+    let displayName = profileName || 'Admin Officer';
+    if (!profileName) {
+      if (o.email === 'admin@cybersave.com') displayName = 'Super Administrator';
+      else if (o.email === 'officer.admin@cybersave.gov.in') displayName = 'Principal Verification Officer';
+      else if (base) displayName = base.replace(/[._]/g, ' ').replace(/\b\w/g, (c: string) => c.toUpperCase());
+    }
 
     const isSuper = o.email === 'admin@cybersave.com' || o.email === 'officer.admin@cybersave.gov.in';
     const perms = Array.isArray(o.permissions)
@@ -3276,10 +3303,12 @@ app.post(['/api/admin/operators', '/api/v1/operators', '/api/operators'], async 
             district: department || 'CSC Operations & Verification Desk'
           }
         }
-      }
+      },
+      include: { profile: true }
     });
 
-    await prisma.auditLog.create({
+    // ponytail: non-blocking audit log
+    prisma.auditLog.create({
       data: {
         userId: newUser.id,
         action: 'OPERATOR_REGISTERED',
@@ -3294,7 +3323,26 @@ app.post(['/api/admin/operators', '/api/v1/operators', '/api/operators'], async 
     io.emit('operators_updated');
     io.emit('audit_logs_updated');
     io.emit('dashboard_updated');
-    res.status(201).json({ success: true, operator: newUser });
+
+    const formattedOperator = {
+      id: newUser.id,
+      name: newUser.profile?.fullName || name || cleanEmail.split('@')[0],
+      email: newUser.email,
+      phone: newUser.phone,
+      role: 'Field Operator',
+      department: newUser.profile?.district || department || 'CSC Operations & Verification Desk',
+      permissions: permissions,
+      joinedDate: new Date(newUser.createdAt).toLocaleDateString('en-GB'),
+      lastActive: 'Active now',
+      lastLogin: new Date(newUser.createdAt).toLocaleString('en-IN', {
+        day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit'
+      }),
+      lastLoginAt: new Date(newUser.createdAt).toISOString(),
+      status: 'Active',
+      avatarUrl: null,
+    };
+
+    res.status(201).json({ success: true, operator: formattedOperator });
   } catch (e: any) {
     res.status(500).json({ error: e.message });
   }

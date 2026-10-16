@@ -1825,10 +1825,20 @@ export function setupSockets(io: Server) {
       }
     });
 
-    socket.on('bulk_assign_applications', async (data: { applicationIds: string[]; operatorName: string }) => {
+    socket.on('bulk_assign_applications', async (data: { applicationIds: string[]; operatorName: string; operatorId?: string }) => {
       try {
         const ids = data?.applicationIds || [];
-        const opName = data?.operatorName || 'Principal Verification Officer (SDM)';
+        let opName = data?.operatorName || 'Principal Verification Officer (SDM)';
+        const opId = data?.operatorId;
+        if (opId) {
+          const opUser = await prisma.user.findFirst({
+            where: { id: opId, role: 'ADMIN', status: { not: 'SUSPENDED' } },
+            include: { profile: true }
+          });
+          if (opUser) {
+            opName = opUser.profile?.fullName || opUser.email?.split('@')[0] || opName;
+          }
+        }
         const isMongoId = (idStr?: any) => typeof idStr === 'string' && /^[0-9a-fA-F]{24}$/.test(idStr.trim());
         const mongoIds = ids.filter(isMongoId);
         const refNumbers = ids.filter(id => !isMongoId(id));
