@@ -320,6 +320,7 @@ export class RefundsService {
       }
     }
 
+    // ponytail: Limit query to 100 items to avoid unbounded scans and slow serialization
     return this.prisma.refundRequest.findMany({
       where,
       include: {
@@ -327,6 +328,7 @@ export class RefundsService {
         application: true,
       },
       orderBy: { createdAt: 'desc' },
+      take: 100,
     });
   }
 

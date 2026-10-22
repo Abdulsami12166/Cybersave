@@ -85,16 +85,14 @@ export class ProfileService {
       } catch (e) {}
     }
 
-    // Record audit log
-    try {
-      await this.prisma.auditLog.create({
-        data: {
-          userId: targetUserId,
-          action: 'UPDATE_PROFILE',
-          details: 'User updated profile information / address',
-        },
-      });
-    } catch (_) {}
+    // ponytail: Non-blocking audit log creation to return response immediately
+    this.prisma.auditLog.create({
+      data: {
+        userId: targetUserId,
+        action: 'UPDATE_PROFILE',
+        details: 'User updated profile information / address',
+      },
+    }).catch(() => {});
 
     // Real-time broadcast to Admin Panel & Mobile
     try {
