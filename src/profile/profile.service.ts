@@ -124,16 +124,44 @@ export class ProfileService {
   }
 
   async uploadAvatar(userId: string, base64Image: string) {
+    let targetUserId = userId;
+    const isMongoId = (s?: string) => typeof s === 'string' && /^[0-9a-fA-F]{24}$/.test(s);
+    if (!isMongoId(targetUserId)) {
+      try {
+        const u = await this.prisma.user.findFirst({
+          where: { OR: [{ email: targetUserId }, { phone: targetUserId }, { keycloakId: targetUserId }] },
+          select: { id: true },
+        });
+        if (u?.id) targetUserId = u.id;
+      } catch (_) {}
+    }
+
     const avatarUrl = await this.cloudinaryService.uploadBase64Image(
       base64Image,
       'cybersave/avatars',
     );
 
     const updatedProfile = await this.prisma.profile.upsert({
-      where: { userId },
+      where: { userId: targetUserId },
       update: { avatarUrl },
-      create: { userId, avatarUrl },
+      create: { userId: targetUserId, avatarUrl },
     });
+
+    try {
+      AdminGateway.broadcast('user_updated', {
+        userId: targetUserId,
+        profile: updatedProfile,
+        aadhaar: updatedProfile.aadhaarNumber,
+        pan: updatedProfile.panNumber,
+      });
+      AdminGateway.broadcast('user_profile_updated', {
+        userId: targetUserId,
+        profile: updatedProfile,
+        aadhaar: updatedProfile.aadhaarNumber,
+        pan: updatedProfile.panNumber,
+      });
+      AdminGateway.broadcast('users_updated');
+    } catch (_) {}
 
     return { success: true, avatarUrl: updatedProfile.avatarUrl };
   }
