@@ -3887,35 +3887,38 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
       const { name, email, phone, avatarUrl, kendraId, designation, district } = data || {};
       const normalizedPhone = phone !== undefined && phone !== null ? String(phone).trim() : undefined;
 
-      const allAdmins = await this.prisma.user.findMany({
-        where: { OR: [{ role: 'ADMIN' }, { email: 'admin@cybersave.com' }] },
+      // ponytail: strictly update only the targeted Super Admin account, never all admins
+      const targetAdmin = await this.prisma.user.findFirst({
+        where: data?.id
+          ? { id: data.id }
+          : { email: email || 'admin@cybersave.com' },
         include: { profile: true },
       });
 
-      for (const adm of allAdmins) {
-        await this.prisma.user.update({
-          where: { id: adm.id },
-          data: {
-            phone: normalizedPhone !== undefined ? normalizedPhone : adm.phone,
-          },
-        }).catch(() => null);
+      if (targetAdmin) {
+        if (normalizedPhone !== undefined) {
+          await this.prisma.user.update({
+            where: { id: targetAdmin.id },
+            data: { phone: normalizedPhone },
+          }).catch(() => null);
+        }
 
-        if (adm.profile) {
+        if (targetAdmin.profile) {
           await this.prisma.profile.update({
-            where: { id: adm.profile.id },
+            where: { id: targetAdmin.profile.id },
             data: {
-              fullName: name || adm.profile.fullName,
-              phone: normalizedPhone !== undefined ? normalizedPhone : adm.profile.phone,
-              district: district || adm.profile.district,
-              avatarUrl: avatarUrl !== undefined ? avatarUrl : adm.profile.avatarUrl,
+              fullName: name !== undefined ? name : targetAdmin.profile.fullName,
+              phone: normalizedPhone !== undefined ? normalizedPhone : targetAdmin.profile.phone,
+              district: district !== undefined ? district : targetAdmin.profile.district,
+              avatarUrl: avatarUrl !== undefined ? avatarUrl : targetAdmin.profile.avatarUrl,
             },
           }).catch(() => null);
         } else {
           await this.prisma.profile.create({
             data: {
-              userId: adm.id,
+              userId: targetAdmin.id,
               fullName: name || 'Super Administrator',
-              phone: normalizedPhone || '+91 98450 19823',
+              phone: normalizedPhone || targetAdmin.phone || '+91 98450 19823',
               district: district || 'Central Delhi, NCT of Delhi',
               avatarUrl: avatarUrl || '',
             },

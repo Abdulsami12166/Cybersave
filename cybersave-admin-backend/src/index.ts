@@ -4070,41 +4070,129 @@ app.get(['/api/admin/audit-logs', '/api/v1/audit-logs', '/api/audit-logs'], asyn
 
 app.get(['/api/admin/profile', '/api/v1/profile', '/api/admin/me'], async (req: any, res: any) => {
   try {
-    const adminUser = await Promise.race([
-      prisma.user.findFirst({
-        where: { role: 'ADMIN' },
-        select: { id: true, email: true, phone: true }
-      }),
-      new Promise<null>(resolve => setTimeout(() => resolve(null), 800))
-    ]).catch(() => null);
+    const adminUser = await prisma.user.findFirst({
+      where: { email: 'admin@cybersave.com' },
+      include: { profile: true }
+    });
+
+    const settingsDoc = await prisma.systemSetting.findUnique({
+      where: { key: 'admin_operational_settings' }
+    }).catch(() => null);
+    const extra = (settingsDoc?.value as any)?.profileExtra || {};
+
+    const name = extra.name || adminUser?.profile?.fullName || 'Sami Admin';
+    const email = extra.email || adminUser?.email || 'admin@cybersave.com';
+    const phone = extra.phone || adminUser?.phone || '+91 8309627631';
+    const avatarUrl = extra.avatarUrl || adminUser?.profile?.avatarUrl || `https://ui-avatars.com/api/?name=${encodeURIComponent(name)}&background=1E40AF&color=fff`;
 
     res.json({
       id: adminUser?.id || '6a86e9a1f70b059f5c1be1f9',
-      name: 'Suresh Kumar Sharma',
-      fullName: 'Suresh Kumar Sharma',
-      email: adminUser?.email || 'admin@cybersave.com',
-      phone: adminUser?.phone || '+91 98450 19823',
+      name,
+      fullName: name,
+      email,
+      phone,
       role: 'Super Admin',
-      kendraId: 'CSB-KENDRA-01',
-      designation: 'Principal Verification Officer (SDM)',
-      district: 'CyberSave Regional Hub',
-      avatarUrl: 'https://ui-avatars.com/api/?name=Suresh+Sharma&background=1E40AF&color=fff',
+      kendraId: extra.kendraId || 'CSB-KENDRA-01',
+      designation: extra.designation || 'Principal Verification Officer (SDM)',
+      district: extra.district || 'CyberSave Regional Hub',
+      avatarUrl,
       permissions: ['DASHBOARD', 'APPLICATIONS', 'TRANSACTIONS', 'SERVICES', 'USERS', 'OPERATORS', 'SUPPORT', 'AUDIT', 'SETTINGS']
     });
   } catch (e: any) {
     res.json({
       id: '6a86e9a1f70b059f5c1be1f9',
-      name: 'Suresh Kumar Sharma',
-      fullName: 'Suresh Kumar Sharma',
+      name: 'Sami Admin',
+      fullName: 'Sami Admin',
       email: 'admin@cybersave.com',
-      phone: '+91 98450 19823',
+      phone: '+91 8309627631',
       role: 'Super Admin',
       kendraId: 'CSB-KENDRA-01',
       designation: 'Principal Verification Officer (SDM)',
       district: 'CyberSave Regional Hub',
-      avatarUrl: 'https://ui-avatars.com/api/?name=Suresh+Sharma&background=1E40AF&color=fff',
+      avatarUrl: 'https://ui-avatars.com/api/?name=Sami+Admin&background=1E40AF&color=fff',
       permissions: ['DASHBOARD', 'APPLICATIONS', 'TRANSACTIONS', 'SERVICES', 'USERS', 'OPERATORS', 'SUPPORT', 'AUDIT', 'SETTINGS']
     });
+  }
+});
+
+app.put(['/api/admin/profile', '/api/v1/profile', '/api/admin/me'], async (req: any, res: any) => {
+  try {
+    const { id, name, email, phone, avatarUrl, kendraId, designation, district } = req.body;
+    const adminEmail = email || 'admin@cybersave.com';
+
+    // ponytail: strictly update only the Super Admin record, never operators
+    const superAdmin = await prisma.user.findFirst({
+      where: id ? { id } : { email: adminEmail },
+      include: { profile: true }
+    });
+
+    if (superAdmin) {
+      if (phone) {
+        await prisma.user.update({
+          where: { id: superAdmin.id },
+          data: { phone: String(phone).trim() }
+        }).catch(() => null);
+      }
+      if (superAdmin.profile) {
+        await prisma.profile.update({
+          where: { id: superAdmin.profile.id },
+          data: {
+            fullName: name !== undefined ? name : superAdmin.profile.fullName,
+            phone: phone || superAdmin.profile.phone,
+            district: district || superAdmin.profile.district,
+            avatarUrl: avatarUrl !== undefined ? avatarUrl : superAdmin.profile.avatarUrl
+          }
+        }).catch(() => null);
+      } else {
+        await prisma.profile.create({
+          data: {
+            userId: superAdmin.id,
+            fullName: name || 'Super Administrator',
+            phone: phone || '',
+            district: district || 'Central Delhi, NCT of Delhi',
+            avatarUrl: avatarUrl || null
+          }
+        }).catch(() => null);
+      }
+    }
+
+    const existingDoc = await prisma.systemSetting.findUnique({
+      where: { key: 'admin_operational_settings' }
+    }).catch(() => null);
+    const existingVal = (existingDoc?.value as any) || {};
+
+    const updatedProfileExtra = {
+      name: name || existingVal.profileExtra?.name || 'Super Administrator',
+      email: adminEmail,
+      phone: phone || existingVal.profileExtra?.phone || '+91 8309627631',
+      avatarUrl: avatarUrl !== undefined ? avatarUrl : (existingVal.profileExtra?.avatarUrl || ''),
+      kendraId: kendraId || existingVal.profileExtra?.kendraId || 'CSC-DEL-8841',
+      designation: designation || existingVal.profileExtra?.designation || 'Principal Verification Officer (SDM)',
+      district: district || existingVal.profileExtra?.district || 'Central Delhi, NCT of Delhi'
+    };
+
+    await prisma.systemSetting.upsert({
+      where: { key: 'admin_operational_settings' },
+      update: {
+        value: {
+          ...existingVal,
+          profileExtra: updatedProfileExtra
+        }
+      },
+      create: {
+        key: 'admin_operational_settings',
+        value: {
+          profileExtra: updatedProfileExtra
+        }
+      }
+    }).catch(() => null);
+
+    operatorsListCache = null;
+    io.emit('admin_profile_updated', updatedProfileExtra);
+
+    res.json({ success: true, profile: updatedProfileExtra });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
   }
 });
 

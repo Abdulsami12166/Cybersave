@@ -4120,8 +4120,9 @@ export function setupSockets(io: Server) {
     socket.on('update_admin_profile', async (data: any) => {
       try {
         const adminEmail = data?.email || 'admin@cybersave.com';
+        // ponytail: strictly target only the intended admin account by id or email
         let adminUser = await prisma.user.findFirst({
-          where: { OR: [{ email: adminEmail }, { role: 'ADMIN' }] },
+          where: data?.id ? { id: data.id } : { email: adminEmail },
           include: { profile: true }
         });
         if (adminUser) {
