@@ -1806,6 +1806,80 @@ export function setupSockets(io: Server) {
       }
     });
 
+    socket.on('update_application_checklist', async (data: {
+      id?: string;
+      applicationId?: string;
+      refNumber?: string;
+      checklist: any[];
+      adminId?: string;
+      adminEmail?: string;
+      adminName?: string;
+      adminRole?: string;
+    }) => {
+      try {
+        const targetId = data?.id || data?.applicationId || data?.refNumber;
+        if (!targetId || !Array.isArray(data?.checklist)) return;
+
+        const isMongoId = /^[0-9a-fA-F]{24}$/.test(String(targetId).trim());
+        let app: any = null;
+        if (isMongoId) {
+          app = await prisma.application.findUnique({ where: { id: String(targetId).trim() } });
+        }
+        if (!app) {
+          app = await prisma.application.findFirst({
+            where: isMongoId
+              ? { OR: [{ refNumber: String(targetId).trim() }, { id: String(targetId).trim() }] }
+              : { refNumber: String(targetId).trim() },
+          });
+        }
+        if (!app) return;
+
+        const actingName = data.adminName || (data.adminEmail ? data.adminEmail.split('@')[0] : 'Verification Officer');
+
+        const sanitized = data.checklist.map((item: any, idx: number) => ({
+          id: item.id || `check-${idx + 1}`,
+          label: item.label,
+          checked: Boolean(item.checked),
+          verifiedAt: item.checked ? (item.verifiedAt || new Date().toISOString()) : undefined,
+          verifiedBy: item.checked ? (item.verifiedBy || actingName) : undefined,
+        }));
+
+        const updated = await prisma.application.update({
+          where: { id: app.id },
+          data: { checklist: sanitized, updatedAt: new Date() },
+          include: { user: { include: { profile: true } }, service: true, refundRequests: true },
+        });
+
+        const checkedCount = sanitized.filter((c: any) => c.checked).length;
+
+        await prisma.auditLog.create({
+          data: {
+            userId: data.adminId || app.userId,
+            userName: actingName,
+            userEmail: data.adminEmail || '',
+            action: 'APPLICATION_CHECKLIST_UPDATED',
+            details: `Verification checklist updated for Application #${app.refNumber} (${checkedCount}/${sanitized.length} completed) by ${actingName}`,
+          },
+        }).catch(() => null);
+
+        const checklistBroadcast = {
+          id: app.id,
+          rawId: app.id,
+          refNumber: app.refNumber,
+          userId: app.userId,
+          checklist: sanitized,
+          checkedCount,
+          totalCount: sanitized.length,
+          updatedAt: updated.updatedAt.toISOString(),
+        };
+
+        io.emit('application_checklist_updated', checklistBroadcast);
+        io.emit('applications_updated', updated);
+      } catch (e: any) {
+        console.error('[Socket] update_application_checklist error:', e.message);
+      }
+    });
+
     socket.on('bulk_approve_applications', async (data: { applicationIds: string[]; adminName?: string; adminEmail?: string }) => {
       try {
         const ids = data?.applicationIds || [];

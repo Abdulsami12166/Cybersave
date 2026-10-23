@@ -56,6 +56,8 @@ export async function fetchApplicationsWithUsers(where: any = {}, take: number =
       refundStatus: true,
       service: true,
       refundRequests: true,
+      checklist: true,
+      internalNotes: true,
     }
   });
 
@@ -1106,6 +1108,90 @@ app.post(['/api/admin/applications/:id/assign', '/api/v1/applications/:id/assign
     res.json({ success: true, application: updated });
   } catch (e: any) {
     res.status(500).json({ error: e.message });
+  }
+});
+
+// ─── Application Verification Checklist Route ──────────────────────────────────
+app.all(['/api/admin/applications/:id/checklist', '/api/v1/applications/:id/checklist', '/api/applications/:id/checklist'], async (req: any, res: any) => {
+  if (!['POST', 'PUT', 'PATCH'].includes(req.method)) return res.status(405).json({ error: 'Method not allowed' });
+  try {
+    const targetId = String(req.params.id).trim();
+    const { checklist, adminId, adminName, adminEmail, adminRole } = req.body;
+    if (!Array.isArray(checklist)) {
+      return res.status(400).json({ error: 'Checklist must be an array' });
+    }
+
+    const isMongoId = /^[0-9a-fA-F]{24}$/.test(targetId);
+    let app: any = null;
+    if (isMongoId) {
+      app = await prisma.application.findUnique({ where: { id: targetId } });
+    }
+    if (!app) {
+      app = await prisma.application.findFirst({
+        where: isMongoId
+          ? { OR: [{ refNumber: targetId }, { id: targetId }] }
+          : { refNumber: targetId },
+      });
+    }
+    if (!app) return res.status(404).json({ error: `Application not found for identifier: ${targetId}` });
+
+    const actingName = adminName || (adminEmail ? adminEmail.split('@')[0] : 'Verification Officer');
+
+    const sanitizedChecklist = checklist.map((item: any, idx: number) => ({
+      id: item.id || `check-${idx + 1}`,
+      label: item.label,
+      checked: Boolean(item.checked),
+      verifiedAt: item.checked ? (item.verifiedAt || new Date().toISOString()) : undefined,
+      verifiedBy: item.checked ? (item.verifiedBy || actingName) : undefined,
+    }));
+
+    const updated = await prisma.application.update({
+      where: { id: app.id },
+      data: {
+        checklist: sanitizedChecklist,
+        updatedAt: new Date(),
+      },
+      include: {
+        user: { include: { profile: true } },
+        service: true,
+        refundRequests: true,
+      },
+    });
+
+    const checkedCount = sanitizedChecklist.filter((c: any) => c.checked).length;
+
+    await prisma.auditLog.create({
+      data: {
+        userId: adminId || app.userId,
+        userName: actingName,
+        userEmail: adminEmail || '',
+        action: 'APPLICATION_CHECKLIST_UPDATED',
+        details: `Verification checklist updated for Application #${app.refNumber} (${checkedCount}/${sanitizedChecklist.length} completed) by ${actingName}`,
+      },
+    }).catch(() => null);
+
+    const checklistBroadcast = {
+      id: app.id,
+      rawId: app.id,
+      refNumber: app.refNumber,
+      userId: app.userId,
+      checklist: sanitizedChecklist,
+      checkedCount,
+      totalCount: sanitizedChecklist.length,
+      updatedAt: updated.updatedAt.toISOString(),
+    };
+
+    io.emit('application_checklist_updated', checklistBroadcast);
+    io.emit('applications_updated', updated);
+
+    return res.json({
+      success: true,
+      message: 'Checklist updated successfully',
+      checklist: sanitizedChecklist,
+      application: updated,
+    });
+  } catch (e: any) {
+    return res.status(500).json({ error: e.message });
   }
 });
 
