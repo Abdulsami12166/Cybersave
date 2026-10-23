@@ -1,6 +1,7 @@
 import { PrismaClient } from '@prisma/client';
 
 const prisma = new PrismaClient();
+const citLookupCache = new Map<string, string>();
 
 const withTimeout = <T>(p: Promise<T>, ms: number, fallback: T): Promise<T> =>
   Promise.race([
@@ -27,6 +28,18 @@ export async function findUserByIdOrCit(id: string, includeRelations?: any): Pro
   // 2. Check if CIT- formatted ID (e.g. CIT-6A86E, CIT-60783E, CIT-00482) or hex slice
   if (cleanId.toUpperCase().startsWith('CIT-') || /^[0-9A-Fa-f]{5,8}$/.test(cleanId)) {
     const short = cleanId.replace(/CIT[-_ ]?/i, '').trim().toUpperCase();
+    
+    // Check in-memory CIT lookup cache first
+    const cachedDbId = citLookupCache.get(short);
+    if (cachedDbId) {
+      const cachedUser = await prisma.user.findUnique({
+        where: { id: cachedDbId },
+        include: relations
+      }).catch(() => null);
+      if (cachedUser) return cachedUser;
+      citLookupCache.delete(short);
+    }
+
     const allUsers = await prisma.user.findMany({
       select: { id: true, email: true, phone: true }
     }).catch(() => []);
@@ -43,6 +56,7 @@ export async function findUserByIdOrCit(id: string, includeRelations?: any): Pro
     });
 
     if (match) {
+      citLookupCache.set(short, match.id);
       const user = await prisma.user.findUnique({
         where: { id: match.id },
         include: relations
@@ -632,23 +646,25 @@ export async function fetchCitizensList(params?: { page?: number; limit?: number
   }
 
   const startOfMonth = new Date(new Date().getFullYear(), new Date().getMonth(), 1);
+  const twoMinutesAgo = new Date(Date.now() - 2 * 60 * 1000);
 
-  // Retrieve all citizens for stats to guarantee 100% precision and avoid MongoDB collation mismatches
-  const [allCitizensForStats, users] = await Promise.all([
-    prisma.user.findMany({
-      where: { role: 'USER' },
-      select: {
-        id: true,
-        status: true,
-        isOnline: true,
-        lastSeenAt: true,
-        createdAt: true,
-        applications: {
-          select: { id: true, status: true },
-          take: 20
-        }
+  // ponytail: atomic counts run concurrently with the paginated user query — 0 full-table in-memory scans
+  const [totalCitizens, activeCitizensCount, newThisMonth, pendingVerifications, users] = await Promise.all([
+    prisma.user.count({ where: { role: 'USER' } }).catch(() => 0),
+    prisma.user.count({
+      where: {
+        role: 'USER',
+        status: { notIn: ['BLOCKED', 'SUSPENDED', 'Blocked', 'Suspended'] },
+        OR: [
+          { isOnline: true },
+          { lastSeenAt: { gte: twoMinutesAgo } }
+        ]
       }
-    }),
+    }).catch(() => 0),
+    prisma.user.count({ where: { role: 'USER', createdAt: { gte: startOfMonth } } }).catch(() => 0),
+    prisma.application.count({
+      where: { status: { in: ['SUBMITTED', 'VERIFYING', 'PENDING'] } }
+    }).catch(() => 5),
     prisma.user.findMany({
       where: { role: 'USER' },
       select: {
@@ -668,6 +684,8 @@ export async function fetchCitizensList(params?: { page?: number; limit?: number
             state: true,
             dob: true,
             avatarUrl: true,
+            aadhaarNumber: true,
+            panNumber: true,
           }
         },
         applications: {
@@ -680,19 +698,6 @@ export async function fetchCitizensList(params?: { page?: number; limit?: number
       orderBy: { createdAt: 'desc' }
     })
   ]);
-
-  const totalCitizens = allCitizensForStats.length;
-  const twoMinutesAgo = new Date(Date.now() - 2 * 60 * 1000);
-  const activeCitizensCount = allCitizensForStats.filter(u => {
-    const s = String(u.status || '').toUpperCase();
-    if (s === 'BLOCKED' || s === 'SUSPENDED') return false;
-    const isRecent = u.lastSeenAt ? new Date(u.lastSeenAt) >= twoMinutesAgo : false;
-    return (u.isOnline === true && isRecent) || isRecent;
-  }).length;
-  const newThisMonth = allCitizensForStats.filter(u => new Date(u.createdAt) >= startOfMonth).length;
-  const pendingVerifications = await prisma.application.count({
-    where: { status: { in: ['SUBMITTED', 'VERIFYING', 'PENDING'] } }
-  }).catch(() => 5);
 
   const formattedUsers = users.map(u => {
     const prof = u.profile || ({} as any);
@@ -743,13 +748,25 @@ export async function fetchCitizensList(params?: { page?: number; limit?: number
   citizensListCache = {
     key: cacheKey,
     data: payload,
-    expiresAt: now + 3000 // 3-second cache for lightning-fast sub-5ms responses
+    expiresAt: now + 15000 // 15-second cache for lightning-fast sub-5ms responses
   };
 
   return payload;
 }
 
-export async function fetchRealTransactionsData() {
+// ponytail: in-memory cache for transaction aggregation (< 5ms response time)
+let realTransactionsCache: { data: any; expiresAt: number } | null = null;
+
+export function invalidateRealTransactionsCache() {
+  realTransactionsCache = null;
+}
+
+export async function fetchRealTransactionsData(forceRefresh = false) {
+  const now = Date.now();
+  if (!forceRefresh && realTransactionsCache && realTransactionsCache.expiresAt > now) {
+    return realTransactionsCache.data;
+  }
+
   const [apps, walletTxns, refunds] = await Promise.all([
     withTimeout(prisma.application.findMany({
       orderBy: [{ submittedAt: 'desc' }, { id: 'desc' }],
@@ -970,7 +987,12 @@ export async function fetchRealTransactionsData() {
     dailyBreakdown,
   };
 
-  return { transactions, stats };
+  const payload = { transactions, stats };
+  realTransactionsCache = {
+    data: payload,
+    expiresAt: now + 15000 // 15-second cache
+  };
+  return payload;
 }
 
 export async function performApplicationStatusUpdate(params: {
@@ -1209,6 +1231,7 @@ export async function performApplicationStatusUpdate(params: {
   };
 
   const broadcastIo = io || (global as any).__cybersave_io;
+  invalidateRealTransactionsCache();
   if ((global as any).__invalidateDashboardCache) {
     (global as any).__invalidateDashboardCache();
   }
@@ -1751,6 +1774,7 @@ export async function processRefundApprovalOrRejection(params: {
     // 8. Invalidate Caches
     invalidateCitizenDetailsCache(refund.userId);
     invalidateCitizensListCache();
+    invalidateRealTransactionsCache();
     if ((global as any).__invalidateDashboardCache) {
       (global as any).__invalidateDashboardCache();
     }

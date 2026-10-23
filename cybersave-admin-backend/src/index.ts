@@ -447,7 +447,7 @@ export async function buildDashboardData(forceRefresh = false): Promise<any> {
 
   dashboardCache = {
     data: payload,
-    expiresAt: now + 3000 // 3-second smart cache for lightning response time (< 5ms)
+    expiresAt: now + 15000 // 15-second smart cache for lightning response time (< 5ms)
   };
 
   return payload;

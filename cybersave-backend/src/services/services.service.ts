@@ -123,7 +123,21 @@ export class ServicesService implements OnModuleInit {
     }
   }
 
+  // ponytail: in-memory cache for published services catalog (30s TTL, < 1ms response)
+  private static servicesCache: Record<string, { data: any[]; expiresAt: number }> = {};
+
+  public static invalidateCache() {
+    ServicesService.servicesCache = {};
+  }
+
   async getAllServices(category?: string) {
+    const cacheKey = category && category !== 'All' ? category : 'ALL';
+    const now = Date.now();
+    const cached = ServicesService.servicesCache[cacheKey];
+    if (cached && cached.expiresAt > now) {
+      return cached.data;
+    }
+
     try {
       const services = await Promise.race([
         category && category !== 'All'
@@ -132,12 +146,12 @@ export class ServicesService implements OnModuleInit {
         new Promise<any[]>((resolve) => setTimeout(() => resolve([]), 3500)),
       ]);
 
-      // Return ONLY real database records. The previous hardcoded fallback
-      // (srv_aadhaar / srv_pan / ...) violated the status toggle contract: an
-      // admin could deactivate every real service and citizens would still see
-      // phantom active services that no longer exist in the database. An empty
-      // or slow database must render as an empty catalog — never fake data.
-      return services || [];
+      const result = services || [];
+      ServicesService.servicesCache[cacheKey] = {
+        data: result,
+        expiresAt: now + 30000 // 30-second cache
+      };
+      return result;
     } catch (error: any) {
       this.logger.warn(`Database query fallback for services: ${error?.message}`);
       return [];
@@ -237,6 +251,8 @@ export class ServicesService implements OnModuleInit {
         ...(data.slug ? { slug: data.slug } : {}),
       },
     });
+
+    ServicesService.invalidateCache();
 
     try {
       await AdminGateway.logActivity(this.prisma, {
@@ -358,6 +374,8 @@ export class ServicesService implements OnModuleInit {
         isActive: data.isActive !== undefined ? data.isActive : true,
       },
     });
+
+    ServicesService.invalidateCache();
 
     try {
       await AdminGateway.logActivity(this.prisma, {

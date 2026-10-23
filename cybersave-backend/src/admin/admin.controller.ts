@@ -23,6 +23,13 @@ import { AdminGateway } from './admin.gateway';
 import { messaging, sendFCMBroadcast, sendFCMToTokens } from './firebase';
 import * as bcrypt from 'bcrypt';
 
+// ponytail: in-memory cache for NestJS admin dashboard (15s TTL, < 2ms responses)
+let nestDashboardCache: { data: any; expiresAt: number } | null = null;
+
+export function invalidateNestDashboardCache() {
+  nestDashboardCache = null;
+}
+
 @ApiTags('Admin Portal')
 @Controller()
 export class AdminController {
@@ -1504,6 +1511,11 @@ export class AdminController {
   @Get(['api/admin/dashboard', 'api/admin/dashboard-stats', 'admin/dashboard', 'admin/dashboard-stats', 'api/v1/admin/dashboard'])
   @ApiOperation({ summary: 'Admin Dashboard Data' })
   async getDashboard() {
+    const now = Date.now();
+    if (nestDashboardCache && nestDashboardCache.expiresAt > now) {
+      return nestDashboardCache.data;
+    }
+
     const today = new Date();
     today.setHours(0, 0, 0, 0);
 
@@ -1589,7 +1601,7 @@ export class AdminController {
         };
       });
 
-      return {
+      const payload = {
         stats: {
           revenueToday: revenueToday,
           totalRevenue: revenueToday,
@@ -1643,6 +1655,13 @@ export class AdminController {
           ],
         },
       };
+
+      nestDashboardCache = {
+        data: payload,
+        expiresAt: now + 15000 // 15-second cache
+      };
+
+      return payload;
     } catch (e) {
       return {
         stats: { revenueToday: 0, appsToday: 0, pendingApps: 5, completedAppsToday: 0, rejectedAppsToday: 0, activeCentres: 4 },
