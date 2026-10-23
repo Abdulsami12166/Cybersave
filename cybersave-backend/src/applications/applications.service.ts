@@ -534,11 +534,52 @@ export class ApplicationsService {
 
     const targetStatus = validStatusMap[status] || (status as ApplicationStatus);
 
+    // ponytail: strictly obtain the verified decision-making admin from database
+    let resolvedAdminUser: any = null;
+    if (adminInfo?.adminId && /^[0-9a-fA-F]{24}$/.test(String(adminInfo.adminId).trim())) {
+      resolvedAdminUser = await this.prisma.user.findUnique({
+        where: { id: String(adminInfo.adminId).trim() },
+        include: { profile: true },
+      }).catch(() => null);
+    }
+    if (!resolvedAdminUser && adminInfo?.adminEmail) {
+      resolvedAdminUser = await this.prisma.user.findFirst({
+        where: { email: String(adminInfo.adminEmail).trim().toLowerCase() },
+        include: { profile: true },
+      }).catch(() => null);
+    }
+
+    const verifiedName = resolvedAdminUser?.profile?.fullName?.trim() ||
+      adminInfo?.adminName?.trim() ||
+      (resolvedAdminUser?.email ? resolvedAdminUser.email.split('@')[0] : 'Verification Officer');
+
+    const verifiedRole = resolvedAdminUser?.email === 'admin@cybersave.com'
+      ? 'Super Administrator'
+      : (resolvedAdminUser?.profile?.designation || (resolvedAdminUser?.role === 'ADMIN' ? 'Verification Officer (SDM)' : 'Field Operator'));
+
+    const verifiedOfficerDisplay = `${verifiedName} (${verifiedRole})`;
+
+    const existingFormData = (app.formData as any) || {};
+    const updatedFormData = {
+      ...existingFormData,
+      decision: {
+        type: targetStatus,
+        adminId: resolvedAdminUser?.id || adminInfo?.adminId || null,
+        adminName: verifiedName,
+        adminEmail: resolvedAdminUser?.email || adminInfo?.adminEmail || '',
+        adminRole: verifiedRole,
+        timestamp: new Date().toISOString(),
+        rejectionReason: targetStatus === ApplicationStatus.REJECTED ? (rejectionReason || 'Application rejected during administrative verification.') : null,
+      },
+    };
+
     const updated = await this.prisma.application.update({
       where: { id: app.id },
       data: {
         status: targetStatus,
         rejectionReason: targetStatus === ApplicationStatus.REJECTED ? (rejectionReason || 'Application rejected during administrative verification.') : null,
+        officialOfficer: targetStatus === ApplicationStatus.APPROVED ? verifiedOfficerDisplay : null,
+        formData: updatedFormData,
         updatedAt: new Date(),
       },
       include: {
@@ -551,10 +592,10 @@ export class ApplicationsService {
       AdminGateway.broadcast('applications_updated', updated);
       AdminGateway.broadcast('application_status_changed', updated);
 
-      const actingName = adminInfo?.adminName || (adminInfo?.adminEmail ? adminInfo.adminEmail.split('@')[0] : (updated.officialOfficer || 'Field Operator'));
-      const actingEmail = adminInfo?.adminEmail || '';
-      const actingId = adminInfo?.adminId;
-      const actingRole = adminInfo?.adminRole || (actingEmail === 'admin@cybersave.com' ? 'Super Administrator' : 'Sub-Admin / Operator');
+      const actingName = verifiedName;
+      const actingEmail = resolvedAdminUser?.email || adminInfo?.adminEmail || '';
+      const actingId = resolvedAdminUser?.id || adminInfo?.adminId;
+      const actingRole = verifiedRole;
 
       let auditAct = `APPLICATION_${targetStatus}`;
       let auditDet = `Application #${updated.refNumber} (${updated.serviceTitle}) status transitioned to ${targetStatus} by ${actingRole} ${actingName}`;
@@ -806,6 +847,10 @@ export class ApplicationsService {
       throw new NotFoundException('Application not found');
     }
 
+    if (app.status !== ApplicationStatus.APPROVED && app.status !== ApplicationStatus.COMPLETED) {
+      throw new BadRequestException('Certificate is not available for unapproved or rejected applications');
+    }
+
     const formData = (app.formData as any) || {};
     const citizenName =
       formData.fullName ||
@@ -818,6 +863,9 @@ export class ApplicationsService {
       ? new Date(app.updatedAt).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })
       : new Date().toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' });
 
+    const decision = formData?.decision;
+    const certOfficer = (decision?.type === 'APPROVED' ? decision.adminName : null) || app.officialOfficer || 'Authorized Verification Authority';
+
     return {
       success: true,
       applicationId: app.id,
@@ -827,7 +875,7 @@ export class ApplicationsService {
       certNumber,
       citizenName,
       approvalDate,
-      issuingAuthority: app.officialOfficer || 'Officer Sharma (SDM)',
+      issuingAuthority: certOfficer,
       downloadUrl: `/api/v1/applications/${app.refNumber}/certificate.pdf`,
     };
   }
@@ -846,6 +894,10 @@ export class ApplicationsService {
       throw new NotFoundException('Application not found');
     }
 
+    if (app.status !== ApplicationStatus.APPROVED && app.status !== ApplicationStatus.COMPLETED) {
+      throw new BadRequestException('Certificate is not available for unapproved or rejected applications');
+    }
+
     const formData = (app.formData as any) || {};
     const citizenName =
       formData.fullName ||
@@ -860,7 +912,8 @@ export class ApplicationsService {
     const approvalDate = app.updatedAt
       ? new Date(app.updatedAt).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })
       : new Date().toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' });
-    const officer = app.officialOfficer || 'Officer Sharma (SDM)';
+    const decision = formData?.decision;
+    const officer = (decision?.type === 'APPROVED' ? decision.adminName : null) || app.officialOfficer || 'Authorized Verification Authority';
 
     // Import pdfkit dynamically
     const PDFDocument = require('pdfkit');

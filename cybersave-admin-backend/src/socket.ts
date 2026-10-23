@@ -1844,13 +1844,16 @@ export function setupSockets(io: Server) {
           verifiedBy: item.checked ? (item.verifiedBy || actingName) : undefined,
         }));
 
+        const checkedCount = sanitized.filter((c: any) => c.checked).length;
+        // ponytail: advance status to IN_PROGRESS when checks begin ensures mobile timeline updates
+        const shouldAdvance = checkedCount > 0 && app.status === 'SUBMITTED';
+        const nextStatus = shouldAdvance ? 'IN_PROGRESS' : app.status;
+
         const updated = await prisma.application.update({
           where: { id: app.id },
-          data: { checklist: sanitized, updatedAt: new Date() },
+          data: { checklist: sanitized, status: nextStatus as any, updatedAt: new Date() },
           include: { user: { include: { profile: true } }, service: true, refundRequests: true },
         });
-
-        const checkedCount = sanitized.filter((c: any) => c.checked).length;
 
         await prisma.auditLog.create({
           data: {
@@ -1874,6 +1877,15 @@ export function setupSockets(io: Server) {
         };
 
         io.emit('application_checklist_updated', checklistBroadcast);
+        io.emit('application_status_changed', {
+          id: updated.id,
+          rawId: updated.id,
+          refNumber: updated.refNumber,
+          userId: updated.userId,
+          status: updated.status,
+          checklist: sanitized,
+          updatedAt: updated.updatedAt,
+        });
         io.emit('applications_updated', updated);
       } catch (e: any) {
         console.error('[Socket] update_application_checklist error:', e.message);

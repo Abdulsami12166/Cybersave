@@ -1054,11 +1054,54 @@ export async function performApplicationStatusUpdate(params: {
     ? (rejectionReason || 'Documents could not be verified by administrative verification officer.')
     : null;
 
+  // ponytail: strictly obtain the verified decision-making admin from database, not arbitrary global name
+  let resolvedAdminUser: any = null;
+  if (adminId && /^[0-9a-fA-F]{24}$/.test(String(adminId).trim())) {
+    resolvedAdminUser = await prisma.user.findUnique({
+      where: { id: String(adminId).trim() },
+      include: { profile: true },
+    }).catch(() => null);
+  }
+  if (!resolvedAdminUser && adminEmail) {
+    resolvedAdminUser = await prisma.user.findFirst({
+      where: { email: String(adminEmail).trim().toLowerCase() },
+      include: { profile: true },
+    }).catch(() => null);
+  }
+
+  const verifiedName = resolvedAdminUser?.profile?.fullName?.trim() ||
+    adminName?.trim() ||
+    (resolvedAdminUser?.email ? resolvedAdminUser.email.split('@')[0] : 'Verification Officer');
+
+  const verifiedRole = resolvedAdminUser?.email === 'admin@cybersave.com'
+    ? 'Super Administrator'
+    : (resolvedAdminUser?.profile?.designation || (resolvedAdminUser?.role === 'ADMIN' ? 'Verification Officer (SDM)' : 'Field Operator'));
+
+  const verifiedOfficerDisplay = `${verifiedName} (${verifiedRole})`;
+
+  // Save decision record in formData to keep complete audit trail on the application
+  const existingFormData = (app.formData as any) || {};
+  const updatedFormData = {
+    ...existingFormData,
+    decision: {
+      type: finalStatus,
+      adminId: resolvedAdminUser?.id || adminId || null,
+      adminName: verifiedName,
+      adminEmail: resolvedAdminUser?.email || adminEmail || '',
+      adminRole: verifiedRole,
+      timestamp: new Date().toISOString(),
+      rejectionReason: finalRejectionReason,
+    },
+  };
+
   const updated = await prisma.application.update({
     where: { id: app.id },
     data: {
       status: finalStatus as any,
       rejectionReason: finalRejectionReason,
+      // Record actual approving officer for approved; clear for rejected so rejecting admin is not shown as approving
+      officialOfficer: finalStatus === 'APPROVED' ? verifiedOfficerDisplay : null,
+      formData: updatedFormData,
       updatedAt: new Date(),
     },
     include: {
@@ -1068,9 +1111,9 @@ export async function performApplicationStatusUpdate(params: {
     }
   });
 
-  const actingName = adminName || (adminEmail ? adminEmail.split('@')[0] : (updated.officialOfficer || 'Administrative Officer'));
-  const actingEmail = adminEmail || '';
-  const actingRole = adminRole || (actingEmail === 'admin@cybersave.com' ? 'Super Administrator' : 'Verification Officer');
+  const actingName = verifiedName;
+  const actingEmail = resolvedAdminUser?.email || adminEmail || '';
+  const actingRole = verifiedRole;
 
   let auditAction = `APPLICATION_${finalStatus}`;
   let auditDetails = `Application #${updated.refNumber} (${updated.serviceTitle}) updated to ${finalStatus} by ${actingRole} ${actingName}.`;
@@ -1084,7 +1127,7 @@ export async function performApplicationStatusUpdate(params: {
 
   await prisma.auditLog.create({
     data: {
-      userId: adminId || app.userId,
+      userId: resolvedAdminUser?.id || adminId || app.userId,
       userName: actingName,
       userEmail: actingEmail,
       action: auditAction,
@@ -1138,6 +1181,8 @@ export async function performApplicationStatusUpdate(params: {
     refundStatus: updated.refundStatus,
     updatedAt: updated.updatedAt.toISOString(),
     officialOfficer: updated.officialOfficer,
+    decision: updatedFormData.decision,
+    formData: updated.formData,
     user: {
       id: updated.user?.id,
       email: updated.user?.email,

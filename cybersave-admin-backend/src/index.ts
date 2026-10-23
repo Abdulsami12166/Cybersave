@@ -1006,6 +1006,48 @@ app.get(['/api/admin/applications/:id', '/api/v1/applications/:id', '/api/applic
     }
 
     if (!app) return res.status(404).json({ error: 'Application not found' });
+
+    // ponytail: backfill decision maker from authentic audit log if missing on historical record
+    if ((!app.officialOfficer && (app.status === 'APPROVED' || app.status === 'COMPLETED')) || !(app.formData as any)?.decision) {
+      const historicalLog = await prisma.auditLog.findFirst({
+        where: {
+          details: { contains: app.refNumber },
+          action: { in: ['APPLICATION_APPROVED', 'APPLICATION_REJECTED'] }
+        },
+        orderBy: { createdAt: 'desc' }
+      }).catch(() => null);
+
+      if (historicalLog) {
+        let historicalAdmin = null;
+        if (historicalLog.userId && /^[0-9a-fA-F]{24}$/.test(historicalLog.userId)) {
+          historicalAdmin = await prisma.user.findUnique({
+            where: { id: historicalLog.userId },
+            include: { profile: true }
+          }).catch(() => null);
+        }
+        const logAny = historicalLog as any;
+        const histName = historicalAdmin?.profile?.fullName || logAny?.userName || null;
+        if (histName) {
+          const histRole = historicalAdmin?.email === 'admin@cybersave.com' ? 'Super Administrator' : 'Verification Officer';
+          const decisionType = historicalLog.action === 'APPLICATION_APPROVED' ? 'APPROVED' : 'REJECTED';
+          const existingFd = (app.formData as any) || {};
+          if (!existingFd.decision) {
+            existingFd.decision = {
+              type: decisionType,
+              adminId: historicalLog.userId,
+              adminName: histName,
+              adminRole: histRole,
+              timestamp: historicalLog.createdAt?.toISOString?.() || new Date().toISOString()
+            };
+            app.formData = existingFd;
+          }
+          if (!app.officialOfficer && (app.status === 'APPROVED' || app.status === 'COMPLETED')) {
+            app.officialOfficer = `${histName} (${histRole})`;
+          }
+        }
+      }
+    }
+
     res.json(app);
   } catch (e: any) {
     res.status(500).json({ error: e.message });
@@ -1145,10 +1187,16 @@ app.all(['/api/admin/applications/:id/checklist', '/api/v1/applications/:id/chec
       verifiedBy: item.checked ? (item.verifiedBy || actingName) : undefined,
     }));
 
+    const checkedCount = sanitizedChecklist.filter((c: any) => c.checked).length;
+    // ponytail: advancing status to IN_PROGRESS when checks begin ensures mobile timeline updates
+    const shouldAdvance = checkedCount > 0 && app.status === 'SUBMITTED';
+    const nextStatus = shouldAdvance ? 'IN_PROGRESS' : app.status;
+
     const updated = await prisma.application.update({
       where: { id: app.id },
       data: {
         checklist: sanitizedChecklist,
+        status: nextStatus as any,
         updatedAt: new Date(),
       },
       include: {
@@ -1157,8 +1205,6 @@ app.all(['/api/admin/applications/:id/checklist', '/api/v1/applications/:id/chec
         refundRequests: true,
       },
     });
-
-    const checkedCount = sanitizedChecklist.filter((c: any) => c.checked).length;
 
     await prisma.auditLog.create({
       data: {
@@ -1182,6 +1228,15 @@ app.all(['/api/admin/applications/:id/checklist', '/api/v1/applications/:id/chec
     };
 
     io.emit('application_checklist_updated', checklistBroadcast);
+    io.emit('application_status_changed', {
+      id: updated.id,
+      rawId: updated.id,
+      refNumber: updated.refNumber,
+      userId: updated.userId,
+      status: updated.status,
+      checklist: sanitizedChecklist,
+      updatedAt: updated.updatedAt,
+    });
     io.emit('applications_updated', updated);
 
     return res.json({

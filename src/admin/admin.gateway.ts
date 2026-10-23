@@ -1817,11 +1817,52 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
       });
 
       if (app) {
+        // ponytail: strictly obtain the verified decision-making admin from database
+        let resolvedAdminUser: any = null;
+        if (data.adminId && /^[0-9a-fA-F]{24}$/.test(String(data.adminId).trim())) {
+          resolvedAdminUser = await this.prisma.user.findUnique({
+            where: { id: String(data.adminId).trim() },
+            include: { profile: true },
+          }).catch(() => null);
+        }
+        if (!resolvedAdminUser && data.adminEmail) {
+          resolvedAdminUser = await this.prisma.user.findFirst({
+            where: { email: String(data.adminEmail).trim().toLowerCase() },
+            include: { profile: true },
+          }).catch(() => null);
+        }
+
+        const verifiedName = resolvedAdminUser?.profile?.fullName?.trim() ||
+          data.adminName?.trim() ||
+          (resolvedAdminUser?.email ? resolvedAdminUser.email.split('@')[0] : 'Verification Officer');
+
+        const verifiedRole = resolvedAdminUser?.email === 'admin@cybersave.com'
+          ? 'Super Administrator'
+          : (resolvedAdminUser?.profile?.designation || (resolvedAdminUser?.role === 'ADMIN' ? 'Verification Officer (SDM)' : 'Field Operator'));
+
+        const verifiedOfficerDisplay = `${verifiedName} (${verifiedRole})`;
+
+        const existingFormData = (app.formData as any) || {};
+        const updatedFormData = {
+          ...existingFormData,
+          decision: {
+            type: mappedStatus,
+            adminId: resolvedAdminUser?.id || data.adminId || null,
+            adminName: verifiedName,
+            adminEmail: resolvedAdminUser?.email || data.adminEmail || '',
+            adminRole: verifiedRole,
+            timestamp: new Date().toISOString(),
+            rejectionReason: mappedStatus === 'REJECTED' ? (data.rejectionReason || 'Application rejected during administrative verification.') : null,
+          },
+        };
+
         const updated = await this.prisma.application.update({
           where: { id: app.id },
           data: {
             status: mappedStatus as any,
             rejectionReason: mappedStatus === 'REJECTED' ? (data.rejectionReason || 'Application rejected during administrative verification.') : null,
+            officialOfficer: mappedStatus === 'APPROVED' ? verifiedOfficerDisplay : null,
+            formData: updatedFormData,
             updatedAt: new Date(),
           },
           include: {
@@ -1841,13 +1882,15 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
           userId: updated.userId,
           status: updated.status,
           rejectionReason: updated.rejectionReason,
+          officialOfficer: updated.officialOfficer,
+          decision: updatedFormData.decision,
           updatedAt: updated.updatedAt,
         });
 
-        const actingOfficerName = data.adminName || (data.adminEmail ? data.adminEmail.split('@')[0] : (updated.officialOfficer || 'Field Operator'));
-        const actingOfficerEmail = data.adminEmail || '';
-        const actingOfficerId = data.adminId;
-        const actingRole = data.adminRole || (actingOfficerEmail === 'admin@cybersave.com' ? 'Super Administrator' : 'Sub-Admin / Operator');
+        const actingOfficerName = verifiedName;
+        const actingOfficerEmail = resolvedAdminUser?.email || data.adminEmail || '';
+        const actingOfficerId = resolvedAdminUser?.id || data.adminId;
+        const actingRole = verifiedRole;
 
         // Record in system audit log
         let auditAction = `APPLICATION_${mappedStatus}`;
@@ -2665,13 +2708,16 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
         verifiedBy: item.checked ? (item.verifiedBy || actingName) : undefined,
       }));
 
+      const checkedCount = sanitized.filter(c => c.checked).length;
+      // ponytail: advancing status to IN_PROGRESS when checks begin ensures mobile timeline updates
+      const shouldAdvance = checkedCount > 0 && app.status === 'SUBMITTED';
+      const nextStatus = shouldAdvance ? 'IN_PROGRESS' : app.status;
+
       const updated = await this.prisma.application.update({
         where: { id: app.id },
-        data: { checklist: sanitized, updatedAt: new Date() },
+        data: { checklist: sanitized, status: nextStatus as any, updatedAt: new Date() },
         include: { user: { include: { profile: true } }, service: true },
       });
-
-      const checkedCount = sanitized.filter(c => c.checked).length;
 
       AdminGateway.broadcast('application_checklist_updated', {
         id: app.id,
@@ -2681,6 +2727,15 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
         checklist: sanitized,
         checkedCount,
         totalCount: sanitized.length,
+      });
+      AdminGateway.broadcast('application_status_changed', {
+        id: updated.id,
+        rawId: updated.id,
+        refNumber: updated.refNumber,
+        userId: updated.userId,
+        status: updated.status,
+        checklist: sanitized,
+        updatedAt: updated.updatedAt,
       });
       AdminGateway.broadcast('applications_updated', updated);
     } catch (e) {
