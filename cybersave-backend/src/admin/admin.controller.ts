@@ -2144,43 +2144,57 @@ export class AdminController {
   @ApiOperation({ summary: 'Bulk block citizens' })
   async bulkBlockCitizens(@Body() body: any) {
     const userIds = body?.userIds || [];
-    if (!Array.isArray(userIds) || userIds.length === 0) {
+    const rawIds = Array.isArray(userIds) ? userIds.map((id: any) => String(id).trim()).filter(Boolean) : [];
+    const uniqueIds = Array.from(new Set(rawIds));
+    if (uniqueIds.length === 0) {
       throw new BadRequestException('No user IDs provided');
     }
     const isMongo = (s?: any) => typeof s === 'string' && /^[0-9a-fA-F]{24}$/.test(String(s).trim());
-    const mongoIds = userIds.filter(isMongo);
-    const nonMongo = userIds.filter((id: any) => !isMongo(id));
+    const mongoIds = uniqueIds.filter(isMongo);
+    const nonMongo = uniqueIds.filter((id: any) => !isMongo(id));
 
     const orConditions: any[] = [];
     if (mongoIds.length > 0) orConditions.push({ id: { in: mongoIds } });
-    if (nonMongo.length > 0) orConditions.push({ email: { in: nonMongo } });
+    if (nonMongo.length > 0) {
+      orConditions.push({ email: { in: nonMongo } });
+      const citMatches = nonMongo.filter((c: any) => typeof c === 'string' && (c.toUpperCase().startsWith('CIT-') || /^[0-9A-Fa-f]{5,8}$/.test(c)));
+      for (const cit of citMatches) {
+        const short = String(cit).replace(/CIT[-_ ]?/i, '').toLowerCase();
+        orConditions.push({ id: { endsWith: short } });
+      }
+    }
 
     const updated = await this.prisma.user.updateMany({
       where: { OR: orConditions },
       data: { status: 'BLOCKED' },
     });
 
-    await Promise.all(
-      mongoIds.map(async (uid: string) => {
-        AdminGateway.broadcast('user_blocked', { userId: uid });
-        AdminGateway.broadcast('force_logout', { userId: uid, reason: 'Your account has been blocked by an Administrator.' });
-        await this.prisma.auditLog.create({
-          data: {
-            userId: uid,
-            action: 'USER_BLOCKED',
-            details: 'Administrator BLOCKED citizen in bulk.',
-          },
-        }).catch(() => null);
-      }),
-    );
+    const matchedUsers = await this.prisma.user.findMany({
+      where: { OR: orConditions },
+      select: { id: true },
+    }).catch(() => []);
+    const updatedIds = matchedUsers.length > 0 ? matchedUsers.map(u => u.id) : mongoIds;
 
+    await this.prisma.auditLog.create({
+      data: {
+        userId: 'admin_action',
+        action: 'USERS_BULK_BLOCKED',
+        details: `Batch BLOCKED ${updated.count} citizen(s).`,
+      },
+    }).catch(() => null);
+
+    for (const uid of updatedIds) {
+      AdminGateway.broadcast('user_blocked', { userId: uid });
+      AdminGateway.broadcast('force_logout', { userId: uid, reason: 'Your account has been blocked by an Administrator.' });
+    }
     AdminGateway.broadcast('users_updated');
-    AdminGateway.broadcast('citizens_bulk_updated', { userIds, status: 'BLOCKED' });
+    AdminGateway.broadcast('citizens_bulk_updated', { userIds: updatedIds, status: 'BLOCKED' });
 
     return {
       success: true,
-      message: 'Citizens blocked successfully',
+      message: `Successfully blocked ${updated.count} citizen(s)`,
       count: updated.count,
+      updatedIds,
       status: 'BLOCKED',
     };
   }
@@ -2189,42 +2203,56 @@ export class AdminController {
   @ApiOperation({ summary: 'Bulk unblock citizens' })
   async bulkUnblockCitizens(@Body() body: any) {
     const userIds = body?.userIds || [];
-    if (!Array.isArray(userIds) || userIds.length === 0) {
+    const rawIds = Array.isArray(userIds) ? userIds.map((id: any) => String(id).trim()).filter(Boolean) : [];
+    const uniqueIds = Array.from(new Set(rawIds));
+    if (uniqueIds.length === 0) {
       throw new BadRequestException('No user IDs provided');
     }
     const isMongo = (s?: any) => typeof s === 'string' && /^[0-9a-fA-F]{24}$/.test(String(s).trim());
-    const mongoIds = userIds.filter(isMongo);
-    const nonMongo = userIds.filter((id: any) => !isMongo(id));
+    const mongoIds = uniqueIds.filter(isMongo);
+    const nonMongo = uniqueIds.filter((id: any) => !isMongo(id));
 
     const orConditions: any[] = [];
     if (mongoIds.length > 0) orConditions.push({ id: { in: mongoIds } });
-    if (nonMongo.length > 0) orConditions.push({ email: { in: nonMongo } });
+    if (nonMongo.length > 0) {
+      orConditions.push({ email: { in: nonMongo } });
+      const citMatches = nonMongo.filter((c: any) => typeof c === 'string' && (c.toUpperCase().startsWith('CIT-') || /^[0-9A-Fa-f]{5,8}$/.test(c)));
+      for (const cit of citMatches) {
+        const short = String(cit).replace(/CIT[-_ ]?/i, '').toLowerCase();
+        orConditions.push({ id: { endsWith: short } });
+      }
+    }
 
     const updated = await this.prisma.user.updateMany({
       where: { OR: orConditions },
       data: { status: 'VERIFIED' },
     });
 
-    await Promise.all(
-      mongoIds.map(async (uid: string) => {
-        AdminGateway.broadcast('user_unblocked', { userId: uid });
-        await this.prisma.auditLog.create({
-          data: {
-            userId: uid,
-            action: 'USER_UNBLOCKED',
-            details: 'Administrator UNBLOCKED citizen in bulk.',
-          },
-        }).catch(() => null);
-      }),
-    );
+    const matchedUsers = await this.prisma.user.findMany({
+      where: { OR: orConditions },
+      select: { id: true },
+    }).catch(() => []);
+    const updatedIds = matchedUsers.length > 0 ? matchedUsers.map(u => u.id) : mongoIds;
 
+    await this.prisma.auditLog.create({
+      data: {
+        userId: 'admin_action',
+        action: 'USERS_BULK_UNBLOCKED',
+        details: `Batch UNBLOCKED ${updated.count} citizen(s).`,
+      },
+    }).catch(() => null);
+
+    for (const uid of updatedIds) {
+      AdminGateway.broadcast('user_unblocked', { userId: uid });
+    }
     AdminGateway.broadcast('users_updated');
-    AdminGateway.broadcast('citizens_bulk_updated', { userIds, status: 'VERIFIED' });
+    AdminGateway.broadcast('citizens_bulk_updated', { userIds: updatedIds, status: 'VERIFIED' });
 
     return {
       success: true,
-      message: 'Citizens unblocked successfully',
+      message: `Successfully unblocked ${updated.count} citizen(s)`,
       count: updated.count,
+      updatedIds,
       status: 'VERIFIED',
     };
   }

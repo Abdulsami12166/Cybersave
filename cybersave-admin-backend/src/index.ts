@@ -1594,29 +1594,41 @@ app.post(['/api/admin/users/:id/unblock', '/api/v1/users/:id/unblock', '/admin/u
 app.post(['/api/admin/users/bulk-block', '/api/v1/users/bulk-block', '/admin/users/bulk-block'], async (req: any, res: any) => {
   try {
     const { userIds = [] } = req.body;
-    if (!Array.isArray(userIds) || userIds.length === 0) {
+    const rawIds = Array.isArray(userIds) ? userIds.map((id: any) => String(id).trim()).filter(Boolean) : [];
+    const uniqueIds = Array.from(new Set(rawIds));
+    if (uniqueIds.length === 0) {
       return res.status(400).json({ error: 'No user IDs provided' });
     }
 
     const isMongo = (idStr?: any) => typeof idStr === 'string' && /^[0-9a-fA-F]{24}$/.test(idStr.trim());
-    const mongoIds = userIds.filter(isMongo);
-    const nonMongo = userIds.filter((id: any) => !isMongo(id));
+    const mongoIds = uniqueIds.filter(isMongo);
+    const nonMongo = uniqueIds.filter(id => !isMongo(id));
 
     const orConditions: any[] = [];
     if (mongoIds.length > 0) orConditions.push({ id: { in: mongoIds } });
-    if (nonMongo.length > 0) orConditions.push({ email: { in: nonMongo } });
+    if (nonMongo.length > 0) {
+      orConditions.push({ email: { in: nonMongo } });
+      const citMatches = nonMongo.filter(c => c.toUpperCase().startsWith('CIT-') || /^[0-9A-Fa-f]{5,8}$/.test(c));
+      for (const cit of citMatches) {
+        const short = cit.replace(/CIT[-_ ]?/i, '').toLowerCase();
+        orConditions.push({ id: { endsWith: short } });
+      }
+    }
 
+    // 1. Bulk update users in single query
     const updated = await prisma.user.updateMany({
       where: { OR: orConditions },
       data: { status: 'BLOCKED' }
     });
 
-    await Promise.all(
-      mongoIds.map((uid: string) =>
-        applyCitizenBlockState(uid, 'BLOCKED', { ip: req.ip, userAgent: req.headers['user-agent'] })
-      )
-    );
+    // 2. Query exact matching MongoDB IDs for confirmed feedback
+    const matchedUsers = await prisma.user.findMany({
+      where: { OR: orConditions },
+      select: { id: true }
+    }).catch(() => []);
+    const updatedIds = matchedUsers.length > 0 ? matchedUsers.map(u => u.id) : mongoIds;
 
+    // 3. Batched single audit log entry (does not run N serial inserts)
     await prisma.auditLog.create({
       data: {
         userId: 'admin_action',
@@ -1627,14 +1639,47 @@ app.post(['/api/admin/users/bulk-block', '/api/v1/users/bulk-block', '/admin/use
       }
     }).catch(() => null);
 
+    // 4. Invalidate caches and broadcast realtime events
     invalidateCitizensListCache();
     auditLogsCache = null;
+    for (const uid of updatedIds) {
+      invalidateCitizenDetailsCache(uid);
+      io.emit('force_logout', { userId: uid, reason: 'Your account has been suspended/blocked by an Administrator. Please contact support.' });
+      io.emit('user_blocked', { userId: uid });
+    }
     io.emit('audit_logs_updated');
     io.emit('users_updated');
-    io.emit('citizens_bulk_updated', { userIds, status: 'BLOCKED' });
-    const freshUsers = await fetchCitizensList();
-    io.emit('response_users_data', freshUsers);
-    res.json({ success: true, message: 'Citizens blocked successfully', count: updated.count, status: 'BLOCKED' });
+    io.emit('citizens_bulk_updated', { userIds: updatedIds, status: 'BLOCKED' });
+
+    // 5. Send fast HTTP response immediately (< 50ms)
+    res.json({
+      success: true,
+      message: `Successfully blocked ${updated.count} citizen(s)`,
+      count: updated.count,
+      updatedIds,
+      status: 'BLOCKED'
+    });
+
+    // 6. Asynchronous non-blocking push notifications & list refresh
+    setImmediate(async () => {
+      try {
+        await Promise.allSettled(
+          updatedIds.map(uid =>
+            dispatchNotificationToCitizen({
+              userId: uid,
+              title: 'Account Blocked by Administrator ⚠️',
+              body: 'Your Cybersave citizen account has been blocked by the administrative authority. Please contact support.',
+              type: 'WARNING',
+              io
+            })
+          )
+        );
+      } catch (_) {}
+      try {
+        const freshUsers = await fetchCitizensList();
+        io.emit('response_users_data', freshUsers);
+      } catch (_) {}
+    });
   } catch (e: any) {
     res.status(500).json({ error: e.message || 'Failed to block citizens' });
   }
@@ -1644,29 +1689,41 @@ app.post(['/api/admin/users/bulk-block', '/api/v1/users/bulk-block', '/admin/use
 app.post(['/api/admin/users/bulk-unblock', '/api/v1/users/bulk-unblock', '/admin/users/bulk-unblock'], async (req: any, res: any) => {
   try {
     const { userIds = [] } = req.body;
-    if (!Array.isArray(userIds) || userIds.length === 0) {
+    const rawIds = Array.isArray(userIds) ? userIds.map((id: any) => String(id).trim()).filter(Boolean) : [];
+    const uniqueIds = Array.from(new Set(rawIds));
+    if (uniqueIds.length === 0) {
       return res.status(400).json({ error: 'No user IDs provided' });
     }
 
     const isMongo = (idStr?: any) => typeof idStr === 'string' && /^[0-9a-fA-F]{24}$/.test(idStr.trim());
-    const mongoIds = userIds.filter(isMongo);
-    const nonMongo = userIds.filter((id: any) => !isMongo(id));
+    const mongoIds = uniqueIds.filter(isMongo);
+    const nonMongo = uniqueIds.filter(id => !isMongo(id));
 
     const orConditions: any[] = [];
     if (mongoIds.length > 0) orConditions.push({ id: { in: mongoIds } });
-    if (nonMongo.length > 0) orConditions.push({ email: { in: nonMongo } });
+    if (nonMongo.length > 0) {
+      orConditions.push({ email: { in: nonMongo } });
+      const citMatches = nonMongo.filter(c => c.toUpperCase().startsWith('CIT-') || /^[0-9A-Fa-f]{5,8}$/.test(c));
+      for (const cit of citMatches) {
+        const short = cit.replace(/CIT[-_ ]?/i, '').toLowerCase();
+        orConditions.push({ id: { endsWith: short } });
+      }
+    }
 
+    // 1. Bulk update users in single query
     const updated = await prisma.user.updateMany({
       where: { OR: orConditions },
       data: { status: 'VERIFIED' }
     });
 
-    await Promise.all(
-      mongoIds.map((uid: string) =>
-        applyCitizenBlockState(uid, 'VERIFIED', { ip: req.ip, userAgent: req.headers['user-agent'] })
-      )
-    );
+    // 2. Query exact matching MongoDB IDs for confirmed feedback
+    const matchedUsers = await prisma.user.findMany({
+      where: { OR: orConditions },
+      select: { id: true }
+    }).catch(() => []);
+    const updatedIds = matchedUsers.length > 0 ? matchedUsers.map(u => u.id) : mongoIds;
 
+    // 3. Batched single audit log entry
     await prisma.auditLog.create({
       data: {
         userId: 'admin_action',
@@ -1677,14 +1734,33 @@ app.post(['/api/admin/users/bulk-unblock', '/api/v1/users/bulk-unblock', '/admin
       }
     }).catch(() => null);
 
+    // 4. Invalidate caches and broadcast realtime events
     invalidateCitizensListCache();
     auditLogsCache = null;
+    for (const uid of updatedIds) {
+      invalidateCitizenDetailsCache(uid);
+      io.emit('user_unblocked', { userId: uid });
+    }
     io.emit('audit_logs_updated');
     io.emit('users_updated');
-    io.emit('citizens_bulk_updated', { userIds, status: 'VERIFIED' });
-    const freshUsers = await fetchCitizensList();
-    io.emit('response_users_data', freshUsers);
-    res.json({ success: true, message: 'Citizens unblocked successfully', count: updated.count, status: 'VERIFIED' });
+    io.emit('citizens_bulk_updated', { userIds: updatedIds, status: 'VERIFIED' });
+
+    // 5. Send fast HTTP response immediately (< 50ms)
+    res.json({
+      success: true,
+      message: `Successfully unblocked ${updated.count} citizen(s)`,
+      count: updated.count,
+      updatedIds,
+      status: 'VERIFIED'
+    });
+
+    // 6. Asynchronous non-blocking list refresh
+    setImmediate(async () => {
+      try {
+        const freshUsers = await fetchCitizensList();
+        io.emit('response_users_data', freshUsers);
+      } catch (_) {}
+    });
   } catch (e: any) {
     res.status(500).json({ error: e.message || 'Failed to unblock citizens' });
   }
