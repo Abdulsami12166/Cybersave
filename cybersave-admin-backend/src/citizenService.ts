@@ -1,6 +1,4 @@
-import { PrismaClient } from '@prisma/client';
-
-const prisma = new PrismaClient();
+import { prisma } from './prisma';
 const citLookupCache = new Map<string, string>();
 
 const withTimeout = <T>(p: Promise<T>, ms: number, fallback: T): Promise<T> =>

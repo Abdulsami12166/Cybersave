@@ -2048,6 +2048,142 @@ export class AdminController {
     return { success: true, status: nextStatus === 'BLOCKED' ? 'Blocked' : 'Verified' };
   }
 
+  // ponytail: atomic bulk block across all candidate routes
+  @Post(['api/admin/users/bulk-block', 'api/v1/users/bulk-block', 'admin/users/bulk-block'])
+  @ApiOperation({ summary: 'Bulk block citizens atomically' })
+  async bulkBlockCitizens(@Body() body: { userIds: string[] }) {
+    const rawIds = Array.isArray(body?.userIds) ? body.userIds.map((id: any) => String(id).trim()).filter(Boolean) : [];
+    const uniqueIds = Array.from(new Set(rawIds));
+    if (uniqueIds.length === 0) {
+      throw new BadRequestException('No user IDs provided');
+    }
+
+    const isMongo = (s?: string) => typeof s === 'string' && /^[0-9a-fA-F]{24}$/.test(s);
+    const mongoIds = uniqueIds.filter(isMongo);
+    const nonMongo = uniqueIds.filter(id => !isMongo(id));
+
+    const resolvedIds = new Set<string>(mongoIds);
+    if (nonMongo.length > 0) {
+      const matched: any[] = await this.prisma.user.findMany({
+        where: {
+          OR: [
+            { email: { in: nonMongo } },
+            { phone: { in: nonMongo } },
+          ],
+        },
+        select: { id: true },
+      }).catch(() => []);
+      matched.forEach((u: any) => resolvedIds.add(u.id));
+
+      const citMatches = nonMongo.filter(c => c.toUpperCase().startsWith('CIT-') || /^[0-9A-Fa-f]{5,8}$/.test(c));
+      if (citMatches.length > 0) {
+        const allUsers: any[] = await this.prisma.user.findMany({ select: { id: true } }).catch(() => []);
+        for (const cit of citMatches) {
+          const short = cit.replace('CIT-', '').toUpperCase();
+          const match = allUsers.find((u: any) => u.id.substring(0, 5).toUpperCase() === short || u.id.slice(-6).toUpperCase() === short);
+          if (match) resolvedIds.add(match.id);
+        }
+      }
+    }
+
+    const targetIds = Array.from(resolvedIds);
+    if (targetIds.length === 0) {
+      throw new NotFoundException('No matching citizens found for provided IDs');
+    }
+
+    const updated = await this.prisma.user.updateMany({
+      where: { id: { in: targetIds } },
+      data: { status: 'BLOCKED' },
+    });
+
+    await this.prisma.auditLog.create({
+      data: {
+        userId: 'admin_action',
+        action: 'USERS_BULK_BLOCKED',
+        details: `Administrator bulk blocked ${updated.count} citizen(s).`,
+      },
+    }).catch(() => null);
+
+    AdminGateway.broadcast('citizens_bulk_updated', { userIds: targetIds, status: 'BLOCKED' });
+    AdminGateway.broadcast('users_updated');
+
+    return {
+      success: true,
+      message: `Successfully blocked ${updated.count} citizen(s)`,
+      count: updated.count,
+      updatedIds: targetIds,
+      status: 'BLOCKED',
+    };
+  }
+
+  // ponytail: atomic bulk unblock across all candidate routes
+  @Post(['api/admin/users/bulk-unblock', 'api/v1/users/bulk-unblock', 'admin/users/bulk-unblock'])
+  @ApiOperation({ summary: 'Bulk unblock citizens atomically' })
+  async bulkUnblockCitizens(@Body() body: { userIds: string[] }) {
+    const rawIds = Array.isArray(body?.userIds) ? body.userIds.map((id: any) => String(id).trim()).filter(Boolean) : [];
+    const uniqueIds = Array.from(new Set(rawIds));
+    if (uniqueIds.length === 0) {
+      throw new BadRequestException('No user IDs provided');
+    }
+
+    const isMongo = (s?: string) => typeof s === 'string' && /^[0-9a-fA-F]{24}$/.test(s);
+    const mongoIds = uniqueIds.filter(isMongo);
+    const nonMongo = uniqueIds.filter(id => !isMongo(id));
+
+    const resolvedIds = new Set<string>(mongoIds);
+    if (nonMongo.length > 0) {
+      const matched: any[] = await this.prisma.user.findMany({
+        where: {
+          OR: [
+            { email: { in: nonMongo } },
+            { phone: { in: nonMongo } },
+          ],
+        },
+        select: { id: true },
+      }).catch(() => []);
+      matched.forEach((u: any) => resolvedIds.add(u.id));
+
+      const citMatches = nonMongo.filter(c => c.toUpperCase().startsWith('CIT-') || /^[0-9A-Fa-f]{5,8}$/.test(c));
+      if (citMatches.length > 0) {
+        const allUsers: any[] = await this.prisma.user.findMany({ select: { id: true } }).catch(() => []);
+        for (const cit of citMatches) {
+          const short = cit.replace('CIT-', '').toUpperCase();
+          const match = allUsers.find((u: any) => u.id.substring(0, 5).toUpperCase() === short || u.id.slice(-6).toUpperCase() === short);
+          if (match) resolvedIds.add(match.id);
+        }
+      }
+    }
+
+    const targetIds = Array.from(resolvedIds);
+    if (targetIds.length === 0) {
+      throw new NotFoundException('No matching citizens found for provided IDs');
+    }
+
+    const updated = await this.prisma.user.updateMany({
+      where: { id: { in: targetIds } },
+      data: { status: 'VERIFIED' },
+    });
+
+    await this.prisma.auditLog.create({
+      data: {
+        userId: 'admin_action',
+        action: 'USERS_BULK_UNBLOCKED',
+        details: `Administrator bulk unblocked ${updated.count} citizen(s).`,
+      },
+    }).catch(() => null);
+
+    AdminGateway.broadcast('citizens_bulk_updated', { userIds: targetIds, status: 'VERIFIED' });
+    AdminGateway.broadcast('users_updated');
+
+    return {
+      success: true,
+      message: `Successfully unblocked ${updated.count} citizen(s)`,
+      count: updated.count,
+      updatedIds: targetIds,
+      status: 'VERIFIED',
+    };
+  }
+
   @Post([
     'api/v1/notifications/broadcast',
     'api/admin/notifications/broadcast',

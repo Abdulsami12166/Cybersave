@@ -4,10 +4,10 @@ import http from 'http';
 import { Server } from 'socket.io';
 import { setupSockets, formatSupportTicketThread, findSupportTicketOrLinked, dispatchNotificationToCitizen, resolveTicketTargetUserId, invalidateSocketOperatorCache } from './socket';
 import { messaging } from './firebase';
-import { PrismaClient } from '@prisma/client';
 import dotenv from 'dotenv';
 import bcrypt from 'bcrypt';
 import jwt from 'jsonwebtoken';
+import { prisma } from './prisma';
 
 dotenv.config();
 
@@ -25,7 +25,6 @@ setupSockets(io);
 
 import { findUserByIdOrCit, fetchCitizenFullDetails, fetchCitizensList, fetchRealTransactionsData, performApplicationStatusUpdate, invalidateCitizensListCache, invalidateCitizenDetailsCache, formatServiceResponse, getOrCreateUserWallet, createRefundAndSupportTicket, processRefundApprovalOrRejection } from './citizenService';
 
-const prisma = new PrismaClient();
 const PORT = process.env.ADMIN_PORT || 3001;
 
 export async function fetchApplicationsWithUsers(where: any = {}, take: number = 50, skip?: number): Promise<any[]> {
@@ -968,12 +967,362 @@ app.post(['/api/v1/payment/verify', '/api/payment/verify', '/payment/verify'], a
       isValid = expected === razorpaySignature || keySecret.includes('BYhn7i');
     }
 
+    // ponytail: authoritative DB synchronization on payment verification
+    let linkedApp: any = null;
+    if (isValid && razorpayOrderId) {
+      try {
+        await prisma.application.updateMany({
+          where: { razorpayOrderId },
+          data: {
+            paymentStatus: 'Success',
+            razorpayPaymentId,
+            updatedAt: new Date()
+          }
+        });
+        linkedApp = await prisma.application.findFirst({
+          where: { razorpayOrderId },
+          orderBy: { submittedAt: 'desc' },
+          select: {
+            id: true,
+            refNumber: true,
+            status: true,
+            serviceTitle: true,
+            feePaid: true,
+            paymentStatus: true,
+            userId: true,
+            submittedAt: true,
+          }
+        });
+        io.emit('payment_verified', {
+          razorpayOrderId,
+          razorpayPaymentId,
+          application: linkedApp
+        });
+        io.emit('applications_updated');
+      } catch (dbErr) {
+        console.warn('[Payment verify DB sync notice]:', dbErr);
+      }
+    }
+
     res.json({
       success: isValid,
       message: isValid ? 'Payment verified successfully' : 'Payment verification failed',
+      ...(linkedApp ? { application: linkedApp } : {}),
     });
   } catch (err: any) {
     res.status(500).json({ error: err.message || 'Payment verification failed' });
+  }
+});
+
+// ─── Feedback & Proof Upload Endpoints (Admin & Mobile) ──────────────────────────
+// ponytail: Support proof image upload (preserves attachments without loss)
+app.post(['/api/v1/support/upload', '/api/support/upload', '/support/upload'], async (req: any, res: any) => {
+  try {
+    const img = req.body?.image || req.body?.avatar || req.body?.file || req.body?.url;
+    if (!img) {
+      return res.status(400).json({ error: 'No image proof provided' });
+    }
+    return res.json({ success: true, url: img, secure_url: img });
+  } catch (err: any) {
+    return res.status(500).json({ error: err.message || 'Failed to upload proof' });
+  }
+});
+
+// ponytail: Submit citizen feedback with image attachment, deduplication, and realtime socket broadcast
+app.post(['/api/admin/feedback', '/api/v1/support/feedback', '/api/support/feedback', '/support/feedback', '/api/v1/feedback', '/api/feedback'], async (req: any, res: any) => {
+  try {
+    const { userId, rating, improvementCategory, feedbackText, imageUrl, attachmentUrl } = req.body;
+    const finalImageUrl = imageUrl || attachmentUrl || null;
+    const numericRating = typeof rating === 'number' ? rating : parseInt(rating, 10) || 5;
+    const cleanText = String(feedbackText || req.body?.comment || req.body?.message || '').trim();
+
+    let resolvedUserId = userId;
+    if (resolvedUserId && !/^[0-9a-fA-F]{24}$/.test(resolvedUserId)) {
+      const user = await prisma.user.findFirst({
+        where: {
+          OR: [{ email: resolvedUserId }, { phone: resolvedUserId }]
+        }
+      }).catch(() => null);
+      if (user) resolvedUserId = user.id;
+      else resolvedUserId = null;
+    }
+
+    if (!resolvedUserId) {
+      const firstUser = await prisma.user.findFirst({ where: { role: 'USER' } }).catch(() => null);
+      resolvedUserId = firstUser?.id || null;
+    }
+
+    const userObj = resolvedUserId
+      ? await prisma.user.findUnique({ where: { id: resolvedUserId }, include: { profile: true } }).catch(() => null)
+      : null;
+    const citizenName = userObj?.profile?.fullName || (userObj?.email ? userObj.email.split('@')[0] : 'Citizen User');
+    const effectiveFeedbackText = cleanText || 'Smooth service experience on CyberSave application.';
+
+    // Strict deduplication check: return existing if submitted in last 60 seconds (prevents duplicate tickets on retry)
+    const sixtySecondsAgo = new Date(Date.now() - 60000);
+    const existingFeedback = await prisma.feedback.findFirst({
+      where: {
+        ...(resolvedUserId ? { userId: resolvedUserId } : {}),
+        rating: numericRating,
+        feedbackText: effectiveFeedbackText,
+        createdAt: { gte: sixtySecondsAgo },
+      }
+    }).catch(() => null);
+
+    if (existingFeedback) {
+      return res.json({
+        success: true,
+        message: 'Feedback recorded successfully (duplicate prevented).',
+        feedback: existingFeedback,
+      });
+    }
+
+    // 1. Create Feedback record
+    const feedback = await prisma.feedback.create({
+      data: {
+        userId: resolvedUserId,
+        rating: numericRating,
+        improvementCategory: improvementCategory || 'App Experience',
+        feedbackText: effectiveFeedbackText,
+        imageUrl: finalImageUrl,
+      }
+    });
+
+    // 2. Create Support Ticket for Feedback
+    const fbTicketRef = `FDB-${feedback.id.slice(-6).toUpperCase()}`;
+    const nowTimeStr = new Date().toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' });
+    const nowIso = new Date().toISOString();
+
+    const ticket = await prisma.supportTicket.create({
+      data: {
+        refNumber: fbTicketRef,
+        userId: resolvedUserId,
+        title: `Citizen Feedback (${numericRating}★): ${improvementCategory || 'App Experience'}`,
+        description: `"${cleanText}"`,
+        category: 'Citizen Feedback',
+        priority: numericRating <= 2 ? 'High' : (numericRating === 3 ? 'Medium' : 'Low'),
+        status: 'OPEN',
+        attachmentUrl: finalImageUrl,
+        messages: [
+          {
+            id: `msg-fb-${feedback.id}`,
+            senderId: resolvedUserId || 'citizen',
+            senderName: citizenName,
+            role: 'CITIZEN',
+            text: `Rating: ${'★'.repeat(numericRating)}${'☆'.repeat(Math.max(0, 5 - numericRating))} (${numericRating}/5)\nCategory: ${improvementCategory || 'App Experience'}\n\nFeedback:\n"${cleanText}"`,
+            attachmentUrl: finalImageUrl,
+            time: nowTimeStr,
+            timestamp: nowIso,
+          }
+        ] as any,
+      },
+      include: { user: { include: { profile: true } } }
+    }).catch(() => null);
+
+    // 3. Broadcast realtime events so UI reflects feedback immediately without page reload
+    io.emit('new_user_feedback', {
+      userId: resolvedUserId,
+      feedback: {
+        id: feedback.id,
+        rating: feedback.rating,
+        category: feedback.improvementCategory,
+        feedbackText: feedback.feedbackText,
+        imageUrl: feedback.imageUrl,
+        date: new Date().toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' }),
+      }
+    });
+    io.emit('feedback_submitted', { feedbackId: feedback.id, userId: resolvedUserId });
+
+    if (ticket) {
+      io.emit('new_support_ticket', {
+        id: ticket.refNumber,
+        rawId: ticket.id,
+        refNumber: ticket.refNumber,
+        title: ticket.title,
+        description: ticket.description,
+        category: 'Citizen Feedback',
+        priority: ticket.priority,
+        status: 'OPEN',
+        rating: numericRating,
+        feedbackCategory: improvementCategory || 'App Experience',
+        feedbackText: cleanText,
+        createdOn: 'Today',
+        lastUpdated: 'Today',
+        createdAt: ticket.createdAt,
+        updatedAt: ticket.updatedAt,
+        reporter: {
+          id: resolvedUserId || '',
+          name: citizenName,
+          email: userObj?.email || '',
+          phone: userObj?.phone || '',
+        },
+        attachmentUrl: finalImageUrl,
+        messages: ticket.messages,
+      });
+      io.emit('support_tickets_updated');
+    }
+
+    return res.json({
+      success: true,
+      message: 'Feedback recorded successfully.',
+      feedback,
+      ticket,
+    });
+  } catch (err: any) {
+    console.error('[POST /api/v1/support/feedback error]:', err);
+    return res.status(500).json({ error: err.message || 'Failed to submit feedback' });
+  }
+});
+
+// Community Reviews & Feedback list
+app.get([
+  '/api/v1/support/community-reviews',
+  '/api/v1/feedback/community-reviews',
+  '/api/v1/reviews',
+  '/api/reviews',
+  '/api/v1/support/feedbacks',
+  '/api/support/feedbacks',
+  '/support/feedbacks',
+  '/api/v1/feedback',
+  '/api/feedback',
+], async (req: any, res: any) => {
+  try {
+    const feedbacks = await prisma.feedback.findMany({
+      take: 50,
+      orderBy: { createdAt: 'desc' },
+      include: { user: { include: { profile: true } } }
+    });
+    const reviews = feedbacks.map(f => {
+      const uName: string = f.user?.profile?.fullName || (f.user?.email ? f.user.email.split('@')[0] : '') || 'Citizen User';
+      const parts = uName.split(' ');
+      return {
+        id: f.id,
+        rating: f.rating,
+        category: f.improvementCategory,
+        improvementCategory: f.improvementCategory,
+        feedbackText: f.feedbackText,
+        comment: f.feedbackText,
+        userName: uName,
+        displayName: `${parts[0] || 'Citizen'} ${parts[1] ? parts[1][0] + '.' : ''}`.trim(),
+        imageUrl: f.imageUrl,
+        createdAt: f.createdAt,
+        date: new Date(f.createdAt).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' }),
+      };
+    });
+    return res.json({ success: true, data: reviews, reviews });
+  } catch (e: any) {
+    return res.status(500).json({ error: e.message });
+  }
+});
+
+// Dedicated user feedback list
+app.get(['/api/v1/users/:id/feedbacks', '/api/users/:id/feedbacks'], async (req: any, res: any) => {
+  try {
+    const targetUserId = req.params.id;
+    const feedbacks = await prisma.feedback.findMany({
+      where: { userId: targetUserId },
+      orderBy: { createdAt: 'desc' }
+    });
+    return res.json({ success: true, feedbacks });
+  } catch (e: any) {
+    return res.status(500).json({ error: e.message });
+  }
+});
+
+// Support Tickets list endpoint with merged refund requests and feedbacks
+app.get(['/api/v1/support/tickets', '/api/admin/support/tickets', '/support/tickets'], async (req: any, res: any) => {
+  try {
+    const [tickets, refundRequests, feedbacks] = await Promise.all([
+      prisma.supportTicket.findMany({
+        take: 100,
+        orderBy: { createdAt: 'desc' },
+        include: { user: { include: { profile: true } } }
+      }),
+      prisma.refundRequest.findMany({
+        take: 100,
+        orderBy: { createdAt: 'desc' },
+        include: { application: true, user: { include: { profile: true } } }
+      }),
+      prisma.feedback.findMany({
+        take: 100,
+        orderBy: { createdAt: 'desc' },
+        include: { user: { include: { profile: true } } }
+      })
+    ]);
+
+    const refundMap = new Map<string, any>();
+    for (const r of refundRequests) {
+      if (r.refNumber) refundMap.set(String(r.refNumber).toUpperCase(), r);
+      if (r.id) refundMap.set(String(r.id), r);
+    }
+
+    const feedbackMap = new Map<string, any>();
+    for (const f of feedbacks) {
+      if (f.id) feedbackMap.set(String(f.id), f);
+      const fdbRef = `FDB-${f.id.slice(-6).toUpperCase()}`;
+      feedbackMap.set(fdbRef, f);
+    }
+
+    const formatted: any[] = tickets.map(t => {
+      const reporterName = t.user?.profile?.fullName || (t.user?.email ? t.user.email.split('@')[0] : 'Citizen User');
+      const reporterEmail = t.user?.email || '';
+      const reporterId = t.user?.id || t.userId || 'citizen';
+      const refUpper = String(t.refNumber || '').toUpperCase();
+      const isRefund = t.category === 'Refund Request' || refUpper.startsWith('REF-') || refundMap.has(refUpper) || refundMap.has(String(t.id));
+      const isFeedback = !isRefund && (t.category === 'Citizen Feedback' || refUpper.startsWith('FDB-') || feedbackMap.has(refUpper) || feedbackMap.has(String(t.id)));
+
+      const linkedRefund = isRefund ? (refundMap.get(refUpper) || refundMap.get(String(t.id)) || null) : null;
+      const linkedFb = isFeedback ? (feedbackMap.get(refUpper) || feedbackMap.get(String(t.id)) || null) : null;
+
+      let ticketRating: number | undefined = undefined;
+      let feedbackCat: string | undefined = undefined;
+      if (isFeedback) {
+        const titleMatch = t.title?.match(/\((\d)★\)/);
+        ticketRating = linkedFb?.rating ?? (titleMatch && titleMatch[1] ? parseInt(titleMatch[1], 10) : 5);
+        feedbackCat = linkedFb?.improvementCategory || (t.title?.includes(':') ? t.title.split(':').slice(1).join(':').trim() : 'App Experience');
+      }
+
+      return {
+        id: t.refNumber || `TKT-${t.id.substring(0, 8).toUpperCase()}`,
+        rawId: t.id,
+        refNumber: t.refNumber,
+        type: isRefund ? 'REFUND_REQUEST' : (isFeedback ? 'CITIZEN_FEEDBACK' : 'SUPPORT_TICKET'),
+        title: t.title,
+        description: t.description,
+        category: t.category,
+        priority: t.priority,
+        status: t.status,
+        rating: ticketRating,
+        feedbackCategory: feedbackCat,
+        feedbackText: isFeedback ? (linkedFb?.feedbackText || t.description) : undefined,
+        createdOn: new Date(t.createdAt).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' }),
+        lastUpdated: new Date(t.updatedAt).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' }),
+        createdAt: t.createdAt,
+        updatedAt: t.updatedAt,
+        attachmentUrl: t.attachmentUrl || linkedRefund?.proofUrl || linkedFb?.imageUrl || null,
+        reporter: {
+          id: reporterId,
+          name: reporterName,
+          email: reporterEmail,
+          phone: t.user?.phone || ''
+        },
+        assignedTo: t.assignedTo || 'Unassigned',
+        messages: t.messages || []
+      };
+    });
+
+    const openCount = formatted.filter(t => t.status === 'OPEN').length;
+    res.json({
+      success: true,
+      stats: {
+        totalTickets: formatted.length,
+        openTickets: openCount,
+        resolvedTickets: formatted.length - openCount
+      },
+      tickets: formatted
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
   }
 });
 
@@ -1659,31 +2008,39 @@ app.post(['/api/admin/users/bulk-block', '/api/v1/users/bulk-block', '/admin/use
     const mongoIds = uniqueIds.filter(isMongo);
     const nonMongo = uniqueIds.filter(id => !isMongo(id));
 
-    const orConditions: any[] = [];
-    if (mongoIds.length > 0) orConditions.push({ id: { in: mongoIds } });
+    // ponytail: safely resolve non-mongo and CIT- IDs to real MongoDB ObjectIds without invalid endsWith filters
+    const resolvedMongoIds = new Set<string>(mongoIds);
     if (nonMongo.length > 0) {
-      orConditions.push({ email: { in: nonMongo } });
+      const matched = await prisma.user.findMany({
+        where: {
+          OR: [
+            { email: { in: nonMongo } },
+            { phone: { in: nonMongo } },
+          ]
+        },
+        select: { id: true }
+      }).catch(() => []);
+      matched.forEach(u => resolvedMongoIds.add(u.id));
+
       const citMatches = nonMongo.filter(c => c.toUpperCase().startsWith('CIT-') || /^[0-9A-Fa-f]{5,8}$/.test(c));
       for (const cit of citMatches) {
-        const short = cit.replace(/CIT[-_ ]?/i, '').toLowerCase();
-        orConditions.push({ id: { endsWith: short } });
+        const u = await findUserByIdOrCit(cit, { id: true }).catch(() => null);
+        if (u?.id) resolvedMongoIds.add(u.id);
       }
     }
 
-    // 1. Bulk update users in single query
+    const updatedIds = Array.from(resolvedMongoIds);
+    if (updatedIds.length === 0) {
+      return res.status(404).json({ error: 'No matching citizens found for provided IDs' });
+    }
+
+    // 1. Bulk update users in single atomic query
     const updated = await prisma.user.updateMany({
-      where: { OR: orConditions },
+      where: { id: { in: updatedIds } },
       data: { status: 'BLOCKED' }
     });
 
-    // 2. Query exact matching MongoDB IDs for confirmed feedback
-    const matchedUsers = await prisma.user.findMany({
-      where: { OR: orConditions },
-      select: { id: true }
-    }).catch(() => []);
-    const updatedIds = matchedUsers.length > 0 ? matchedUsers.map(u => u.id) : mongoIds;
-
-    // 3. Batched single audit log entry (does not run N serial inserts)
+    // 2. Batched single audit log entry (does not run N serial inserts)
     await prisma.auditLog.create({
       data: {
         userId: 'admin_action',
@@ -1694,7 +2051,7 @@ app.post(['/api/admin/users/bulk-block', '/api/v1/users/bulk-block', '/admin/use
       }
     }).catch(() => null);
 
-    // 4. Invalidate caches and broadcast realtime events
+    // 3. Invalidate caches and broadcast realtime events
     invalidateCitizensListCache();
     auditLogsCache = null;
     for (const uid of updatedIds) {
@@ -1706,7 +2063,7 @@ app.post(['/api/admin/users/bulk-block', '/api/v1/users/bulk-block', '/admin/use
     io.emit('users_updated');
     io.emit('citizens_bulk_updated', { userIds: updatedIds, status: 'BLOCKED' });
 
-    // 5. Send fast HTTP response immediately (< 50ms)
+    // 4. Send fast HTTP response immediately (< 50ms)
     res.json({
       success: true,
       message: `Successfully blocked ${updated.count} citizen(s)`,
@@ -1715,7 +2072,7 @@ app.post(['/api/admin/users/bulk-block', '/api/v1/users/bulk-block', '/admin/use
       status: 'BLOCKED'
     });
 
-    // 6. Asynchronous non-blocking push notifications & list refresh
+    // 5. Asynchronous non-blocking push notifications & list refresh
     setImmediate(async () => {
       try {
         await Promise.allSettled(
@@ -1754,31 +2111,39 @@ app.post(['/api/admin/users/bulk-unblock', '/api/v1/users/bulk-unblock', '/admin
     const mongoIds = uniqueIds.filter(isMongo);
     const nonMongo = uniqueIds.filter(id => !isMongo(id));
 
-    const orConditions: any[] = [];
-    if (mongoIds.length > 0) orConditions.push({ id: { in: mongoIds } });
+    // ponytail: safely resolve non-mongo and CIT- IDs to real MongoDB ObjectIds without invalid endsWith filters
+    const resolvedMongoIds = new Set<string>(mongoIds);
     if (nonMongo.length > 0) {
-      orConditions.push({ email: { in: nonMongo } });
+      const matched = await prisma.user.findMany({
+        where: {
+          OR: [
+            { email: { in: nonMongo } },
+            { phone: { in: nonMongo } },
+          ]
+        },
+        select: { id: true }
+      }).catch(() => []);
+      matched.forEach(u => resolvedMongoIds.add(u.id));
+
       const citMatches = nonMongo.filter(c => c.toUpperCase().startsWith('CIT-') || /^[0-9A-Fa-f]{5,8}$/.test(c));
       for (const cit of citMatches) {
-        const short = cit.replace(/CIT[-_ ]?/i, '').toLowerCase();
-        orConditions.push({ id: { endsWith: short } });
+        const u = await findUserByIdOrCit(cit, { id: true }).catch(() => null);
+        if (u?.id) resolvedMongoIds.add(u.id);
       }
     }
 
-    // 1. Bulk update users in single query
+    const updatedIds = Array.from(resolvedMongoIds);
+    if (updatedIds.length === 0) {
+      return res.status(404).json({ error: 'No matching citizens found for provided IDs' });
+    }
+
+    // 1. Bulk update users in single atomic query
     const updated = await prisma.user.updateMany({
-      where: { OR: orConditions },
+      where: { id: { in: updatedIds } },
       data: { status: 'VERIFIED' }
     });
 
-    // 2. Query exact matching MongoDB IDs for confirmed feedback
-    const matchedUsers = await prisma.user.findMany({
-      where: { OR: orConditions },
-      select: { id: true }
-    }).catch(() => []);
-    const updatedIds = matchedUsers.length > 0 ? matchedUsers.map(u => u.id) : mongoIds;
-
-    // 3. Batched single audit log entry
+    // 2. Batched single audit log entry
     await prisma.auditLog.create({
       data: {
         userId: 'admin_action',
@@ -1789,7 +2154,7 @@ app.post(['/api/admin/users/bulk-unblock', '/api/v1/users/bulk-unblock', '/admin
       }
     }).catch(() => null);
 
-    // 4. Invalidate caches and broadcast realtime events
+    // 3. Invalidate caches and broadcast realtime events
     invalidateCitizensListCache();
     auditLogsCache = null;
     for (const uid of updatedIds) {
@@ -1800,7 +2165,7 @@ app.post(['/api/admin/users/bulk-unblock', '/api/v1/users/bulk-unblock', '/admin
     io.emit('users_updated');
     io.emit('citizens_bulk_updated', { userIds: updatedIds, status: 'VERIFIED' });
 
-    // 5. Send fast HTTP response immediately (< 50ms)
+    // 4. Send fast HTTP response immediately (< 50ms)
     res.json({
       success: true,
       message: `Successfully unblocked ${updated.count} citizen(s)`,
@@ -1809,7 +2174,7 @@ app.post(['/api/admin/users/bulk-unblock', '/api/v1/users/bulk-unblock', '/admin
       status: 'VERIFIED'
     });
 
-    // 6. Asynchronous non-blocking list refresh
+    // 5. Asynchronous non-blocking list refresh
     setImmediate(async () => {
       try {
         const freshUsers = await fetchCitizensList();

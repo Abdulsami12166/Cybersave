@@ -86,8 +86,17 @@ export class PaymentController {
       message: isValid ? 'Payment verified successfully' : 'Payment verification failed',
     };
 
-    if (isValid) {
+    if (isValid && body.razorpayOrderId) {
       try {
+        // ponytail: authoritative DB synchronization on payment verification
+        await this.prisma.application.updateMany({
+          where: { razorpayOrderId: body.razorpayOrderId },
+          data: {
+            paymentStatus: 'Success',
+            razorpayPaymentId: body.razorpayPaymentId,
+            updatedAt: new Date(),
+          },
+        });
         const isMongoId = (id?: string) => typeof id === 'string' && /^[0-9a-fA-F]{24}$/.test(id);
         const where: any = { razorpayOrderId: body.razorpayOrderId };
         // Only filter by user when we have a real ObjectId — otherwise an

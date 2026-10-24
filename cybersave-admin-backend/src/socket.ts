@@ -1,10 +1,8 @@
 import { Server, Socket } from 'socket.io';
-import { PrismaClient } from '@prisma/client';
 import { messaging } from './firebase';
 import bcrypt from 'bcrypt';
 import { findUserByIdOrCit, fetchCitizenFullDetails, fetchCitizensList, invalidateCitizensListCache, invalidateCitizenDetailsCache, fetchRealTransactionsData, performApplicationStatusUpdate, formatServiceResponse, processRefundApprovalOrRejection, createRefundAndSupportTicket, getOrCreateUserWallet } from './citizenService';
-
-const prisma = new PrismaClient();
+import { prisma } from './prisma';
 
 export const isRealOfficer = (off?: any): string => {
   if (!off || typeof off !== 'string') return '';

@@ -2172,27 +2172,40 @@ export class AdminController {
     const mongoIds = uniqueIds.filter(isMongo);
     const nonMongo = uniqueIds.filter((id: any) => !isMongo(id));
 
-    const orConditions: any[] = [];
-    if (mongoIds.length > 0) orConditions.push({ id: { in: mongoIds } });
+    // ponytail: safely resolve non-mongo and CIT- IDs without invalid endsWith filter
+    const resolvedIds = new Set<string>(mongoIds);
     if (nonMongo.length > 0) {
-      orConditions.push({ email: { in: nonMongo } });
+      const matched: any[] = await this.prisma.user.findMany({
+        where: {
+          OR: [
+            { email: { in: nonMongo } },
+            { phone: { in: nonMongo } },
+          ],
+        },
+        select: { id: true },
+      }).catch(() => []);
+      matched.forEach((u: any) => resolvedIds.add(u.id));
+
       const citMatches = nonMongo.filter((c: any) => typeof c === 'string' && (c.toUpperCase().startsWith('CIT-') || /^[0-9A-Fa-f]{5,8}$/.test(c)));
-      for (const cit of citMatches) {
-        const short = String(cit).replace(/CIT[-_ ]?/i, '').toLowerCase();
-        orConditions.push({ id: { endsWith: short } });
+      if (citMatches.length > 0) {
+        const allUsers: any[] = await this.prisma.user.findMany({ select: { id: true } }).catch(() => []);
+        for (const cit of citMatches) {
+          const short = String(cit).replace('CIT-', '').toUpperCase();
+          const match = allUsers.find((u: any) => u.id.substring(0, 5).toUpperCase() === short || u.id.slice(-6).toUpperCase() === short);
+          if (match) resolvedIds.add(match.id);
+        }
       }
     }
 
+    const updatedIds = Array.from(resolvedIds);
+    if (updatedIds.length === 0) {
+      throw new NotFoundException('No matching citizens found for provided IDs');
+    }
+
     const updated = await this.prisma.user.updateMany({
-      where: { OR: orConditions },
+      where: { id: { in: updatedIds } },
       data: { status: 'BLOCKED' },
     });
-
-    const matchedUsers = await this.prisma.user.findMany({
-      where: { OR: orConditions },
-      select: { id: true },
-    }).catch(() => []);
-    const updatedIds = matchedUsers.length > 0 ? matchedUsers.map(u => u.id) : mongoIds;
 
     await this.prisma.auditLog.create({
       data: {
@@ -2231,27 +2244,40 @@ export class AdminController {
     const mongoIds = uniqueIds.filter(isMongo);
     const nonMongo = uniqueIds.filter((id: any) => !isMongo(id));
 
-    const orConditions: any[] = [];
-    if (mongoIds.length > 0) orConditions.push({ id: { in: mongoIds } });
+    // ponytail: safely resolve non-mongo and CIT- IDs without invalid endsWith filter
+    const resolvedIds = new Set<string>(mongoIds);
     if (nonMongo.length > 0) {
-      orConditions.push({ email: { in: nonMongo } });
+      const matched: any[] = await this.prisma.user.findMany({
+        where: {
+          OR: [
+            { email: { in: nonMongo } },
+            { phone: { in: nonMongo } },
+          ],
+        },
+        select: { id: true },
+      }).catch(() => []);
+      matched.forEach((u: any) => resolvedIds.add(u.id));
+
       const citMatches = nonMongo.filter((c: any) => typeof c === 'string' && (c.toUpperCase().startsWith('CIT-') || /^[0-9A-Fa-f]{5,8}$/.test(c)));
-      for (const cit of citMatches) {
-        const short = String(cit).replace(/CIT[-_ ]?/i, '').toLowerCase();
-        orConditions.push({ id: { endsWith: short } });
+      if (citMatches.length > 0) {
+        const allUsers: any[] = await this.prisma.user.findMany({ select: { id: true } }).catch(() => []);
+        for (const cit of citMatches) {
+          const short = String(cit).replace('CIT-', '').toUpperCase();
+          const match = allUsers.find((u: any) => u.id.substring(0, 5).toUpperCase() === short || u.id.slice(-6).toUpperCase() === short);
+          if (match) resolvedIds.add(match.id);
+        }
       }
     }
 
+    const updatedIds = Array.from(resolvedIds);
+    if (updatedIds.length === 0) {
+      throw new NotFoundException('No matching citizens found for provided IDs');
+    }
+
     const updated = await this.prisma.user.updateMany({
-      where: { OR: orConditions },
+      where: { id: { in: updatedIds } },
       data: { status: 'VERIFIED' },
     });
-
-    const matchedUsers = await this.prisma.user.findMany({
-      where: { OR: orConditions },
-      select: { id: true },
-    }).catch(() => []);
-    const updatedIds = matchedUsers.length > 0 ? matchedUsers.map(u => u.id) : mongoIds;
 
     await this.prisma.auditLog.create({
       data: {
